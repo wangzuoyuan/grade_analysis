@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端测试（pytest，班主任版基线）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # 测试用数据目录，避免落到 ~/.exam-tracker
+      # 注意：job 级 env 只能用 github 上下文，runner.* 仅在 step 内可用
+      EXAM_TRACKER_DIR: ${{ github.workspace }}/.ci/exam-data
+      EXAM_TRACKER_BACKUP_DIR: ${{ github.workspace }}/.ci/exam-backups
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements-lock.txt
+
+      - name: 安装依赖（按锁文件约束，与本地文档一致）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --constraint requirements-lock.txt
+          pip install pytest httpx --constraint requirements-lock.txt
+
+      - name: 准备数据目录
+        run: mkdir -p "$EXAM_TRACKER_DIR" "$EXAM_TRACKER_BACKUP_DIR"
+
+      - name: 运行测试
+        run: pytest tests/ -q
+
+  frontend:
+    name: 前端类型检查与构建（教学版基线）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      - name: UI 契约测试
+        run: npm run test:ui
+
+      - name: 生产构建
+        run: npm run build

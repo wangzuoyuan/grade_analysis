@@ -1,0 +1,14 @@
+# 合并版入口反代（候选）：/api → backend，其余 → frontend。
+# 端口由 docker-compose.yml 的 CADDY_PORT 占位控制（候选 8081），
+# 不占用旧站 8080；上线当天以 check-ports.sh 实测为准。
+:8080 {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

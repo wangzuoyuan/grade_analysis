@@ -1,0 +1,1 @@
+from app.db.models import get_db, Teacher, Exam, Upload, SubjectScore, TotalScore, ClassAverage, Base, engine  # noqa

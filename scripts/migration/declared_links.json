@@ -1,0 +1,26 @@
+{
+  "scope": "synthetic-rehearsal",
+  "note": "P7 合成声明表：link 与跨域同一个人只认本表，绝不按同班号/同名/同学号自动建。confirm_basis 一律写 rehearsal-declared（演练声明，非人工逐人确认）。",
+  "links": [
+    {
+      "academic_year": "2024-2025",
+      "h_grade": 1,
+      "h_class_num": 6,
+      "t_label": "6",
+      "t_subject": "物理",
+      "share_history_from": null
+    }
+  ],
+  "students": [
+    {
+      "h_student_id": "20240601",
+      "t_student_id": "20240601",
+      "note": "秦甲：两源同号同名，仅因声明而确认"
+    },
+    {
+      "h_student_id": "20240602",
+      "t_student_id": "20240602",
+      "note": "秦乙：同上"
+    }
+  ]
+}

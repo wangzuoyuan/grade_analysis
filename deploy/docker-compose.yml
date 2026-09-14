@@ -1,0 +1,76 @@
+# 合并版部署候选配置（D01，项目名固定 performance_unified）。
+#
+# 范围声明：本文件是**候选配置**，已在合成环境验证 `docker compose config`
+# 语法；真实 NAS 上的端口占用、镜像可用性、目录规划属上线前现场步骤
+# （清单见 SWITCHOVER.md）。设计原则（docs/planning/04-migration.md）：
+# - 不复用旧栈（grade_tracker）的 data 卷/备份目录/容器——全部独立路径；
+# - 不删除旧容器/卷/目录，旧应用保持可访问直至用户在候选验收后决定下线；
+# - 项目名固定于配置（顶层 name），目录名不写死，规避 NAS 中文目录
+#   裸跑 compose 误建名为 docker 的平行栈问题。
+name: performance_unified
+
+services:
+  backend:
+    # 可构建候选（Q07）：无预发布镜像时 `docker compose build backend` 本地
+    # 构建即可启动；BACKEND_IMAGE 仍可指向已发布镜像（build 产物打同名 tag，
+    # 二者共存）。构建上下文 = 仓库 backend/ 目录（Dockerfile 所在处）。
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-ghcr.io/example/performance-unified-backend}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file:
+      # 凭据经运行环境注入（APP_PASSWORD 等），不入迁移报告。可选加载：
+      # 未复制 backend.env 时 config/up 不因缺文件失败（无凭据→公网路径
+      # 不可用，内网健康检查不受影响）；现场按 backend.env.example 填写。
+      - path: ./backend.env
+        required: false
+    environment:
+      # 数据/备份目录显式独立：绝不指向旧栈的 ~/.exam-tracker 或旧 data 卷
+      - EXAM_TRACKER_DIR=/data
+      - EXAM_TRACKER_BACKUP_DIR=/data/backups
+    volumes:
+      - ${DATA_DIR:-./data}:/data       # 合并版独立数据目录（db.sqlite/backups/导出）
+    expose:
+      - "8000"
+    healthcheck:
+      # Q07：镜像内不装 wget/curl；python 是基础镜像（python:3.11-slim）
+      # 必备，健康检查用它直连 /api/health（鉴权白名单端点，无需登录）。
+      # 非 2xx 时 urlopen 抛异常 → 非零退出，等效失败。
+      test: ["CMD", "python", "-c", "import sys,urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    # X02（ 终审）：与 backend 同构的可构建候选——仓库 frontend/Dockerfile
+    # （Next standalone 产物，node:20-slim）。无预发布镜像时 `docker compose build frontend`
+    # 本地构建；FRONTEND_IMAGE 仍可指向已发布镜像（build 产物打同名 tag，二者共存）。
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    image: ${FRONTEND_IMAGE:-ghcr.io/example/performance-unified-frontend}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      # 端口占位（候选值 8081，避开旧站 8080）：上线当天先跑
+      # deploy/check-ports.sh 实测 NAS 占用后再定，绝不与旧站冲突。
+      - "${CADDY_PORT:-8081}:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

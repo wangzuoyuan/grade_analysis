@@ -1,0 +1,71 @@
+/**
+ * 作业跟进页共用小工具（P5-FE）。
+ *
+ * 约束（契约 p5-homework.md §0）：
+ * - 提交率分母 = 应交快照（确认时冻结）− excused；快照为空 → 一律显示
+ *   「无法计算（无可靠分母）」，绝不推断其余全交、绝不显示百分比或 0%；
+ * - 状态四值白名单；unknown 只保留原样（附中文注记），不翻译成已交/缺交。
+ */
+
+import type { HomeworkScopeQuery, HomeworkStatus, WorkspaceMode } from '@/lib/api-v1'
+import type { WorkspaceFilter } from '@/lib/workspace'
+
+/** 把工作台筛选映射为作业端点的作用域查询参数（'all'/缺省不传，由后端按绑定解析）。 */
+export function homeworkScopeQuery(filter: WorkspaceFilter): HomeworkScopeQuery {
+  const q: HomeworkScopeQuery = {}
+  if (typeof filter.academic_year_id === 'number') q.academic_year_id = filter.academic_year_id
+  if (typeof filter.class_id === 'number') q.class_id = filter.class_id
+  if (typeof filter.teaching_class_id === 'number') q.teaching_class_id = filter.teaching_class_id
+  return q
+}
+
+/** 提交率展示：不可计算时给确定文案，绝不显示百分比（H03：不推断其余全交）。 */
+export function formatSubmissionRate(rate: number | null, unavailable: boolean): string {
+  if (unavailable || rate == null) return '无法计算（无可靠分母）'
+  return `${(rate * 100).toFixed(1)}%`
+}
+
+/** 交作业状态选项（录入行编辑器/批次编辑共用同一份白名单与文案）。 */
+export const HOMEWORK_STATUS_OPTIONS: Array<{ value: HomeworkStatus; label: string }> = [
+  { value: 'submitted', label: '已交' },
+  { value: 'missing', label: '缺交' },
+  { value: 'excused', label: '请假免交' },
+  { value: 'unknown', label: '未记录（unknown）' },
+]
+
+const STATUS_LABELS: Record<string, string> = {
+  submitted: '已交',
+  missing: '缺交',
+  excused: '请假免交',
+  unknown: '未记录（unknown）',
+}
+
+/** 状态中文标签；unknown 保留语义注记，绝不推断成已交/缺交。 */
+export function homeworkStatusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status
+}
+
+/** 批次状态标签（active/revoked）。 */
+export function assignmentStatusLabel(status: string): string {
+  if (status === 'active') return '有效'
+  if (status === 'revoked') return '已撤销'
+  return status
+}
+
+/**
+ * 相关性方向文案（契约 §4：Y 是名次，数值越小名次越好；
+ * r<0 → submit_up_rank_up，r>0 → submit_up_rank_down）。
+ */
+export function correlationDirectionLabel(direction: string | null): string {
+  if (direction === 'submit_up_rank_up') return '提交率越高，名次越好（r 为负）'
+  if (direction === 'submit_up_rank_down') return '提交率越高，名次越差（r 为正）'
+  return '—'
+}
+
+/** 两工作台的作业域说明（容器头与空态复用）。 */
+export function homeworkDomainNote(mode: WorkspaceMode, scopeSubject: string | null): string {
+  if (mode === 'homeroom') {
+    return '行政班全科作业，以及关联教学班的任教学科作业（经共享投影，成员为关联交集）'
+  }
+  return `任教学科（${scopeSubject ?? '解析中…'}）作业；其他学科不进入教学工作台`
+}
