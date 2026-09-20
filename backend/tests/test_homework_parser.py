@@ -47,3 +47,20 @@ def test_is_full_submission():
     assert is_full_submission("全交、陈晓帆") is False
     assert is_full_submission("陈晓帆") is False
     assert is_full_submission("") is False
+
+
+def test_evaluation_tone_poor_marker_rule():
+    """单字「差」只在独立成段或「差：细节」打头时算负面；藏在词内不算。"""
+    from app.api.homework import _evaluation_tone
+
+    assert _evaluation_tone("差") == "negative"
+    assert _evaluation_tone("差：最后两题没写完") == "negative"
+    assert _evaluation_tone("差:潦草") == "negative"
+    assert _evaluation_tone("不认真") == "negative"
+    assert _evaluation_tone("不合格") == "negative"
+    assert _evaluation_tone("优秀") == "neutral"
+    assert _evaluation_tone("误差分析") == "neutral"
+    assert _evaluation_tone("差错订正") == "neutral"
+    assert _evaluation_tone("练习册") == "neutral"
+    assert _evaluation_tone("迟到｜差") == "negative"
+    assert _evaluation_tone("迟到｜误差分析") == "neutral"

@@ -85,12 +85,41 @@ export interface ClassesCatalogHomeroom {
   grade: number
   class_num: number
   label: string
+  /** 非空 = 本学年尚无本班，目录延续自更早学年（未换届自动延续）。 */
+  carried_from_academic_year_id?: number | null
+  carried_from_academic_year_name?: string | null
 }
 
 export interface ClassesCatalogTeaching {
   class_id: number
   label: string
   subject: string
+  status?: 'active' | 'inactive'
+  carried_from_academic_year_id?: number | null
+  carried_from_academic_year_name?: string | null
+}
+
+export interface TeachingClassManageResponse {
+  classes: ClassesCatalogTeaching[]
+}
+
+export function listManagedTeachingClasses(academicYearId?: number, subject?: string): Promise<TeachingClassManageResponse> {
+  return request<TeachingClassManageResponse>(withQuery(`${API_V1_BASE}/teaching/classes`, {
+    academic_year_id: academicYearId,
+    subject,
+  }))
+}
+
+export function createTeachingClass(req: { academic_year_id?: number; label: string; subject?: string }): Promise<TeachingClassManageResponse> {
+  return request<TeachingClassManageResponse>(`${API_V1_BASE}/teaching/classes`, {
+    method: 'POST', body: JSON.stringify(req),
+  })
+}
+
+export function updateTeachingClass(classId: number, req: { label?: string; status?: 'active' | 'inactive' }): Promise<TeachingClassManageResponse> {
+  return request<TeachingClassManageResponse>(`${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(classId))}`, {
+    method: 'PATCH', body: JSON.stringify(req),
+  })
 }
 
 export interface ClassesCatalog {
@@ -125,6 +154,9 @@ export interface ScopeState {
   link_id: number | null
   link_version: number | null
   as_of: string
+  /** 未换届自动延续：当前作用域的班级实际延续自更早学年。 */
+  carried_from_academic_year_id?: number | null
+  carried_from_academic_year_name?: string | null
 }
 
 /* ------------------------------------------------------------------ */
@@ -398,6 +430,7 @@ export interface ImportsPreviewResult {
 
 /** confirm 409 时随错误体返回的冲突条目（契约 §1.2：person/subject/exam/库内值/新值）。 */
 export interface ImportConfirmConflict {
+  kind?: 'student_scores' | 'class_averages'
   person: string
   subject: string | null
   exam_name: string
@@ -453,14 +486,31 @@ export interface HomeroomSubjectStat {
   small_sample?: boolean
 }
 
-/** 班主任总分统计（契约 §2.1 stats.totals；总分无缺考计数）。 */
 export interface HomeroomTotalStat {
   total_type: string
   avg: number | null
   max: number | null
   min: number | null
   valid_count: number
+  rank_min?: number | null
+  rank_max?: number | null
   small_sample?: boolean
+}
+
+export interface WeeklyFocusStudent {
+  student_id: string
+  name: string
+  score: number
+  reasons: string[]
+}
+
+export interface HomeroomWeeklyFocusResponse {
+  metadata: ResponseMetadata
+  class_id: number
+  week: { start: string; end: string }
+  students: WeeklyFocusStudent[]
+  total_count: number
+  note: string
 }
 
 /** GET /api/v1/homeroom/analysis/exams/{exam_name}/stats 的响应。 */
@@ -470,6 +520,26 @@ export interface HomeroomStatsResponse {
   totals: HomeroomTotalStat[]
   cohort_size: number
   small_sample?: boolean
+}
+
+export interface HomeroomClassAverageRow {
+  class_type: string | null
+  class_num: number
+  teacher_name: string | null
+  subjects: Record<string, number | null>
+  totals: Record<string, number | null>
+  total_ranks: Record<string, number | null>
+}
+
+export interface HomeroomClassAveragesResponse {
+  metadata: ResponseMetadata
+  exam_name: string
+  grade: number
+  subjects: string[]
+  total_types: string[]
+  /** 当前班主任绑定行政班班号（班级对比页高亮本班；无绑定班为 null） */
+  current_class_num?: number | null
+  rows: HomeroomClassAverageRow[]
 }
 
 /**
@@ -495,6 +565,94 @@ export interface HomeroomStudentRow {
 export interface HomeroomStudentsResponse {
   metadata: ResponseMetadata
   students: HomeroomStudentRow[]
+}
+
+export interface HomeroomFocusStudent {
+  person_id: PersonId
+  name: string | null
+  alias: string | null
+  total_score: number | null
+  xueji_rank: number | null
+  issues: string[]
+  weak_subjects: string[]
+  previous_rank: number | null
+  rank_change: number | null
+  rank_range: number | null
+  exam_count: number
+}
+
+export interface HomeroomFocusResponse {
+  metadata: ResponseMetadata
+  exam_name: string
+  total_type: string
+  basis: string
+  config: {
+    high_score_max: number
+    critical_min: number
+    critical_max: number
+    weak_min: number
+    subject_weakness_diff: number
+    progress_rank_threshold: number
+    volatility_rank_threshold: number
+  }
+  students: HomeroomFocusStudent[]
+}
+
+export interface HomeroomRankMetric {
+  value: string
+  label: string
+  kind: 'subject_percentile' | 'subject_grade_score' | 'total_rank'
+}
+
+export interface HomeroomRankMetricsResponse {
+  metadata: ResponseMetadata
+  grade: number
+  metrics: HomeroomRankMetric[]
+}
+
+export interface HomeroomRankFrequencyResponse {
+  metadata: ResponseMetadata
+  metric: string
+  metric_label: string
+  metric_kind: string
+  exams: Array<{ exam_name: string; exam_date: string | null }>
+  bins: Array<{ key: string; label: string; separator_after: boolean }>
+  students: Array<{
+    person_id: PersonId
+    name: string | null
+    alias: string | null
+    counts: Record<string, number>
+    total_count: number
+  }>
+  metric_note: string
+}
+
+export interface HomeroomRankRangeResponse {
+  metadata: ResponseMetadata
+  exam_name: string
+  metric: string
+  metric_label: string
+  metric_kind: string
+  rank_min: number
+  rank_max: number
+  students: Array<{
+    person_id: PersonId
+    name: string | null
+    alias: string | null
+    score: number | null
+    class_rank: number | null
+    year_rank: number | null
+  }>
+  metric_note: string
+}
+
+export interface HomeroomRankDistributionResponse {
+  metadata: ResponseMetadata
+  exam_name: string
+  grade: number
+  bins: Array<{ key: string; label: string }>
+  series: Array<{ total_type: string; counts: Record<string, number> }>
+  metric_note: string
 }
 
 /** 段位查询（契约 §2.1 bands）：metric=score 时须带 subject（学科名）。 */
@@ -523,6 +681,8 @@ export interface HomeroomTrendPoint {
   exam_date: string | null
   score: number | null
   grade_score?: number | null
+  rank: number | null
+  rank_basis: 'school' | 'grade_percentile' | null
 }
 
 /** 一个学年的分段（结构上防止跨年连算，E03）。 */
@@ -598,9 +758,9 @@ export interface TeachingClassCompareResponse {
 
 const API_V1_BASE = '/api/v1'
 
-type QueryValue = string | number | undefined | null
+export type QueryValue = string | number | boolean | undefined | null
 
-function withQuery(path: string, query: Record<string, QueryValue>): string {
+export function withQuery(path: string, query: Record<string, QueryValue>): string {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
@@ -818,6 +978,7 @@ export function readImportConflicts(err: unknown): ImportConfirmConflict[] | nul
     const o = item as Record<string, unknown>
     if (typeof o.person !== 'string' || typeof o.exam_name !== 'string') continue
     list.push({
+      kind: o.kind === 'class_averages' ? 'class_averages' : 'student_scores',
       person: o.person,
       subject: typeof o.subject === 'string' ? o.subject : null,
       exam_name: o.exam_name,
@@ -902,6 +1063,18 @@ export function fetchHomeroomStats(
   )
 }
 
+export function fetchHomeroomClassAverages(
+  examName: string,
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomClassAveragesResponse> {
+  return request<HomeroomClassAveragesResponse>(
+    withQuery(
+      `${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/class-averages`,
+      { ...q },
+    ),
+  )
+}
+
 /** GET /api/v1/homeroom/analysis/exams/{exam_name}/students（契约 p3 §2.1） */
 export function fetchHomeroomStudents(
   examName: string,
@@ -909,6 +1082,74 @@ export function fetchHomeroomStudents(
 ): Promise<HomeroomStudentsResponse> {
   return request<HomeroomStudentsResponse>(
     withQuery(`${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/students`, { ...q }),
+  )
+}
+
+export function fetchHomeroomFocus(
+  examName: string,
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomFocusResponse> {
+  return request<HomeroomFocusResponse>(
+    withQuery(`${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/focus`, { ...q }),
+  )
+}
+
+/** GET /api/v1/homeroom/analysis/weekly-focus 班主任本周关注：连续缺交、本周激增、最近考试临界/偏科、谈话待办。 */
+export function fetchHomeroomWeeklyFocus(
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomWeeklyFocusResponse> {
+  return request<HomeroomWeeklyFocusResponse>(
+    withQuery(`${API_V1_BASE}/homeroom/analysis/weekly-focus`, { ...q }),
+  )
+}
+
+export function fetchHomeroomRankMetrics(
+  mode: 'frequency' | 'range',
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomRankMetricsResponse> {
+  return request<HomeroomRankMetricsResponse>(
+    withQuery(`${API_V1_BASE}/homeroom/analysis/rank-metrics`, { mode, ...q }),
+  )
+}
+
+export function fetchHomeroomRankFrequency(
+  metric: string,
+  examNames: string[],
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomRankFrequencyResponse> {
+  return request<HomeroomRankFrequencyResponse>(
+    withQuery(`${API_V1_BASE}/homeroom/analysis/rank-frequency`, {
+      metric,
+      exam_names: examNames.join(','),
+      ...q,
+    }),
+  )
+}
+
+export function fetchHomeroomRankRange(
+  examName: string,
+  metric: string,
+  rankMin: number,
+  rankMax: number,
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomRankRangeResponse> {
+  return request<HomeroomRankRangeResponse>(
+    withQuery(
+      `${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/rank-range`,
+      { metric, rank_min: rankMin, rank_max: rankMax, ...q },
+    ),
+  )
+}
+
+export function fetchHomeroomRankDistribution(
+  examName: string,
+  q: AnalysisScopeQuery = {},
+): Promise<HomeroomRankDistributionResponse> {
+  return request<HomeroomRankDistributionResponse>(
+    withQuery(
+      `${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/rank-distribution`,
+      { ...q },
+    ),
   )
 }
 
@@ -1102,6 +1343,8 @@ export interface RolloverPreviewStudent {
   current_alias: string | null
   next_alias?: string | null
   note?: string | null
+  /** 教学班换届：来源教学班标签（班主任换届无此字段）。 */
+  class_label?: string | null
 }
 
 /** GET /homeroom/rollover/preview 的响应（token 来自 preview，R4 同语义：pending/未过期/无成员漂移）。 */
@@ -1157,6 +1400,47 @@ export function rolloverConfirm(req: RolloverConfirmRequest): Promise<RolloverCo
 export function rolloverUndo(token: string): Promise<RolloverUndoResult> {
   return request<RolloverUndoResult>(
     `${API_V1_BASE}/homeroom/rollover/${encodeURIComponent(token)}/undo`,
+    { method: 'POST' },
+  )
+}
+
+/* ---- §2.2 教学班换届（与班主任换届同语义，作用对象为教学班） ---- */
+
+export interface TeachingRolloverClassResult {
+  class_id: number
+  label: string
+  class_created: boolean
+}
+
+/** POST /api/v1/teaching/rollover 的响应（一次可升入多个教学班；字段未冻结，宽松读取）。 */
+export interface TeachingRolloverConfirmResult {
+  rolled_over?: number
+  academic_year_id?: number
+  classes?: TeachingRolloverClassResult[]
+  [key: string]: unknown
+}
+
+/** GET /api/v1/teaching/rollover/preview?from_academic_year_id=（来源学年无教学班 → 409）。 */
+export function teachingRolloverPreview(fromAcademicYearId: number): Promise<RolloverPreview> {
+  return request<RolloverPreview>(
+    withQuery(`${API_V1_BASE}/teaching/rollover/preview`, {
+      from_academic_year_id: fromAcademicYearId,
+    }),
+  )
+}
+
+/** POST /api/v1/teaching/rollover：单事务建新学年教学班 + 成员有效期 + 教学域新学段 alias。 */
+export function teachingRolloverConfirm(req: RolloverConfirmRequest): Promise<TeachingRolloverConfirmResult> {
+  return request<TeachingRolloverConfirmResult>(`${API_V1_BASE}/teaching/rollover`, {
+    method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+/** POST /api/v1/teaching/rollover/{token}/undo：快照回滚；conflicted 学生逐人保留现状。 */
+export function teachingRolloverUndo(token: string): Promise<RolloverUndoResult> {
+  return request<RolloverUndoResult>(
+    `${API_V1_BASE}/teaching/rollover/${encodeURIComponent(token)}/undo`,
     { method: 'POST' },
   )
 }
@@ -1493,8 +1777,8 @@ export function deleteNote(
 /* 字段名以 backend/app/api/homework_schemas.py 为唯一事实源。           */
 /* ------------------------------------------------------------------ */
 
-/** 交作业状态四值（契约 §0：无记录不推断已交；unknown 不冒充连续也不断言已交）。 */
-export type HomeworkStatus = 'submitted' | 'missing' | 'excused' | 'unknown'
+/** 交作业状态：默认已交，只登记缺交或请假例外。 */
+export type HomeworkStatus = 'submitted' | 'missing' | 'excused'
 
 /** 录入模式（契约 §1.1）：full=全交台账+例外 / names=名单 / detailed=逐行明细。 */
 export type HomeworkInputKind = 'full' | 'names' | 'detailed'
@@ -1514,6 +1798,7 @@ export interface HomeworkRowInput {
   name_or_alias?: string | null
   status: HomeworkStatus | string
   evaluation?: string | null
+  attendance?: string | null
 }
 
 /** 三模式录入规格（契约 §1.1；full 的例外在全员展开后整体覆盖，行顺序不影响结果）。 */
@@ -1549,6 +1834,9 @@ export interface HomeworkSubmissionBrief {
   name: string | null
   status: string
   evaluation?: string | null
+  attendance?: string | null
+  special_note?: string | null
+  quality_negative?: boolean
 }
 
 /** 同日同科同种类已有批次（契约 §1.1 H02：提示「编辑既有或新建」，绝不自动叠加）。 */
@@ -1582,7 +1870,6 @@ export interface HomeworkConfirmResponse {
   submitted: number
   missing: number
   excused: number
-  unknown: number
 }
 
 /** PATCH /homework/assignments/{id} 的请求体（revision 乐观锁必带）。 */
@@ -1590,6 +1877,9 @@ export interface HomeworkPatchRequest {
   revision: number
   rows?: HomeworkRowInput[]
   due_date?: string | null
+  homework_type?: string
+  assigned_date?: string
+  subject?: string
 }
 
 export interface HomeworkPatchResponse {
@@ -1614,7 +1904,6 @@ export interface HomeworkRateStats {
   submitted: number
   missing: number
   excused: number
-  unknown: number
   submission_rate: number | null
   rate_unavailable: boolean
 }
@@ -1628,6 +1917,14 @@ export interface HomeworkAssignmentListItem extends HomeworkRateStats {
   due_date?: string | null
   revision: number
   status: string
+  attendance_count: number
+  negative_count: number
+  excused_ids?: number[]
+  missing_ids?: number[]
+  attendance_ids?: number[]
+  negative_ids?: number[]
+  /** 忘带学生 id 列表（忘带是缺交子集，仅供筛选展示，不改 missing 计数） */
+  forgot_ids?: number[] | null
 }
 
 export interface HomeworkAssignmentListResponse {
@@ -1657,7 +1954,9 @@ export interface HomeworkDashboardGroup extends HomeworkRateStats {
   /** 周聚合 = 该周周一 ISO 日期；月聚合 = 月首 ISO 日期。 */
   label: string
   assignments: number
+  negative_count?: number
 }
+
 
 export interface HomeworkDashboardResponse {
   metadata: ResponseMetadata
@@ -1676,10 +1975,7 @@ export interface HomeworkStudentEvent {
   evaluation?: string | null
 }
 
-/**
- * 学生连续缺交（契约 §2）：遇 unknown → current_missing_streak 置 null 且
- * streak_basis='unknown'（不冒充连续，也不断言已交）；前端必须标注「连续性未知」。
- */
+/** 学生连续缺交；没有缺交/请假记录的批次按已交处理。 */
 export interface HomeworkStudentStreaks {
   current_missing_streak: number | null
   streak_basis: string
@@ -1707,7 +2003,18 @@ export interface HomeworkWarningStudent {
   missing_count: number
   current_streak: number | null
   streak_basis: string
+  /** 连续口径：班主任按学科、教学按作业种类分别计算。 */
+  streak_subject?: string | null
+  streak_homework_type?: string | null
   recent_missing: HomeworkRecentMissing[]
+}
+
+export interface HomeworkAuxWarningStudent {
+  person_id: PersonId
+  name: string | null
+  count: number
+  dates: string[]
+  details: string[]
 }
 
 /** 预警响应（basis='events'：按收交事件逐次统计，非按日折算）。 */
@@ -1715,7 +2022,28 @@ export interface HomeworkWarningsResponse {
   metadata: ResponseMetadata
   basis: string
   min_missing: number
+  min_streak?: number | null
   students: HomeworkWarningStudent[]
+  quality: HomeworkAuxWarningStudent[]
+  forgot: HomeworkAuxWarningStudent[]
+}
+
+export interface HomeworkWarningDismissPayload {
+  mode: WorkspaceMode
+  academic_year_id?: number
+  class_id?: number
+  teaching_class_id?: number
+  subject?: string
+  person_id: PersonId
+  warning_kind?: string
+  dismiss_date?: string
+}
+
+export interface HomeworkWarningDismissResponse {
+  ok: boolean
+  person_id: PersonId
+  warning_kind: string
+  dismissed_date: string
 }
 
 export interface HomeworkCorrelationPair {
@@ -1768,6 +2096,21 @@ export interface HomeworkSemesterCurrentResponse {
   id: number
   academic_year_id: number
   is_current: boolean
+}
+
+export interface CurrentSemester {
+  id: number | null
+  academic_year_id: number
+  academic_year_name: string
+  name: string
+  start_date: string
+  end_date: string
+  mode: string
+}
+
+/** GET /api/v1/homework/current-semester: 全应用唯一的当前学期。 */
+export function homeworkCurrentSemester(): Promise<CurrentSemester> {
+  return request<CurrentSemester>(`${API_V1_BASE}/homework/current-semester`)
 }
 
 /** DELETE 409 冲突清单条目：该批次上有后续评价编辑的人。 */
@@ -1863,11 +2206,11 @@ export function homeworkDeleteAssignment(
   )
 }
 
-/** GET /api/v1/homework/dashboard（按周/月聚合；仅计有可靠分母的批次）。 */
+/** GET /api/v1/homework/dashboard（按日/周/月聚合；仅计有可靠分母的批次）。 */
 export function homeworkDashboard(
   mode: WorkspaceMode,
   q: HomeworkScopeQuery & { subject?: string; homework_type?: string } = {},
-  groupBy: 'week' | 'month' = 'month',
+  groupBy: 'day' | 'week' | 'month' = 'month',
 ): Promise<HomeworkDashboardResponse> {
   return request<HomeworkDashboardResponse>(
     withQuery(`${API_V1_BASE}/homework/dashboard`, { mode, group_by: groupBy, ...q }),
@@ -1878,7 +2221,7 @@ export function homeworkDashboard(
 export function homeworkStudentEvents(
   personId: PersonId,
   mode: WorkspaceMode,
-  q: HomeworkScopeQuery = {},
+  q: HomeworkScopeQuery & { all_history?: boolean } = {},
 ): Promise<HomeworkStudentResponse> {
   return request<HomeworkStudentResponse>(
     withQuery(`${API_V1_BASE}/homework/students/${encodeURIComponent(String(personId))}`, {
@@ -1891,9 +2234,22 @@ export function homeworkStudentEvents(
 /** GET /api/v1/homework/warnings（缺交预警时间轴，事件口径 basis='events'）。 */
 export function homeworkWarnings(
   mode: WorkspaceMode,
-  q: HomeworkScopeQuery & { min_missing?: number; subject?: string; homework_type?: string } = {},
+  q: HomeworkScopeQuery & { min_missing?: number; min_streak?: number; subject?: string; homework_type?: string; date_from?: string; date_to?: string } = {},
 ): Promise<HomeworkWarningsResponse> {
   return request<HomeworkWarningsResponse>(withQuery(`${API_V1_BASE}/homework/warnings`, { mode, ...q }))
+}
+
+/** POST /api/v1/homework/warnings/dismiss（人工解除作业预警，记录跟进日志）。 */
+export function dismissHomeworkWarning(
+  payload: HomeworkWarningDismissPayload,
+): Promise<HomeworkWarningDismissResponse> {
+  return request<HomeworkWarningDismissResponse>(`${API_V1_BASE}/homework/warnings/dismiss`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...payload,
+      warning_kind: payload.warning_kind ?? 'quality',
+    }),
+  })
 }
 
 /** GET /api/v1/homework/correlation（成绩 × 作业 Pearson 描述统计；绝不表述为因果）。 */
@@ -1926,6 +2282,46 @@ export function homeworkCreateSemester(req: {
 }): Promise<HomeworkSemestersResponse> {
   return request<HomeworkSemestersResponse>(`${API_V1_BASE}/homework/semesters`, {
     method: 'POST',
+    body: JSON.stringify(req),
+  })
+}
+
+/** 统计排除名册条目（ADR-023）：excluded=缺交不计看板/排行/预警，明细保留。 */
+export interface HomeworkStatsExclusionEntry {
+  person_id: PersonId
+  name: string | null
+  alias: string | null
+  excluded: boolean
+}
+
+export interface HomeworkStatsExclusionResponse {
+  metadata: ResponseMetadata
+  data_domain: string
+  class_ref_id: number
+  entries: HomeworkStatsExclusionEntry[]
+}
+
+/** GET /api/v1/homework/stats-exclusion（当前班名册与排除状态）。 */
+export function homeworkStatsExclusion(
+  mode: WorkspaceMode,
+  q: HomeworkScopeQuery = {},
+): Promise<HomeworkStatsExclusionResponse> {
+  return request<HomeworkStatsExclusionResponse>(
+    withQuery(`${API_V1_BASE}/homework/stats-exclusion`, { mode, ...q }),
+  )
+}
+
+/** PUT /api/v1/homework/stats-exclusion（开/关一人；幂等，业务记录永不删除）。 */
+export function homeworkStatsExclusionSet(req: {
+  mode: WorkspaceMode
+  academic_year_id?: number
+  class_id?: number
+  teaching_class_id?: number
+  person_id: PersonId
+  excluded: boolean
+}): Promise<HomeworkStatsExclusionResponse> {
+  return request<HomeworkStatsExclusionResponse>(`${API_V1_BASE}/homework/stats-exclusion`, {
+    method: 'PUT',
     body: JSON.stringify(req),
   })
 }

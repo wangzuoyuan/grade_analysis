@@ -9,11 +9,10 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - `subject`（学科）与 `homework_type`（作业种类）分列；同日同科同种类多份作业 = 多个
   assignment（不同 batch_token），绝不合并。
 - 应交分母 = assignment.expected_members_json（确认时快照），不是当天班级人数；快照按规则
-  扣除 excused 后为有效分母。**仅有缺交历史、无可靠分母的批次显示"无法计算"，不推断其余全交。**
-- 状态：submitted/missing/excused/unknown。**无记录不推断已交；评价缺失不推断缺交；unknown
-  不打断连续缺交的判定（不冒充连续，也不断言已交）。**
-- 连续缺交按收交事件（assignment.assigned_date）排序：submitted/excused 打断连续；unknown
-  处中断连续段（不跨未知宣称连续）。
+  扣除 excused 后为有效分母。旧迁移批次按原班级与事件日有效成员恢复名单。
+- 状态：submitted/missing/excused。采用例外登记：名单中没有缺交或请假记录的人默认已交；
+  旧 unknown 仅作存储兼容，业务读取归一为 submitted，不再向老师展示。
+- 连续缺交按收交事件（assignment.assigned_date）排序：submitted 打断连续，excused 跳过。
 - 双向共享：assignment 归属一域（data_domain + class_ref_id）；对侧经 **active link + 期满 +
   LinkedStudent 交集 + share_categories 含 current_subject_homework** 才可读/写同一事实（读走
   _queries 同风格的门；写走带 link 校验的端点）。其他教学班/其他学科绝不互见。
@@ -37,14 +36,14 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 
 - 请求：`{mode, class_id(homeroom)|teaching_class_id(teaching), academic_year_id?, subject, homework_type,
   assigned_date, due_date?, input: {kind: full|names|detailed, names?: [str], rows?: [{name_or_alias,
-  status: submitted|missing|excused|unknown, evaluation?}], all_submitted?: bool, exceptions?: [{name_or_alias,
+  status: submitted|missing|excused, evaluation?}], all_submitted?: bool, exceptions?: [{name_or_alias,
   status, evaluation?}]}}`
 - 解析（零写入，token 化）：
   - `full`（全交台账）：展开当期应交成员快照为 submitted，再应用 exceptions（明确个人例外）；
     **先解析全批次再应用例外，行顺序不影响结果**（H01）。
   - `names`：仅列出的学生为 submitted（其余不写行——不推断缺交）。
   - `detailed`：逐人行。姓名歧义（同班同名）→ 422 列候选；学号优先消歧。
-  - unknown 状态允许显式录入（历史不清楚时）。
+  - 未列为缺交或请假的应交成员默认已交；不提供 unknown 录入。
   - 同日同科同种类已有批次：preview 返回 `existing_batches: [{assignment_id, batch_token, revision}]`
     提示"编辑既有批次或新建"；**不自动叠加**（H02）。
 - 响应：`{token, expires_at, assignment: {subject, homework_type, assigned_date, expected_members:
@@ -56,7 +55,7 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 
 - 校验后单事务写入 HomeworkAssignment（batch_token、expected_members_json、status='active'）+
   HomeworkSubmission 逐人行；同 batch_token 重试 → 幂等返回既有结果（不新增）。
-- 响应：`{assignment_id, revision, submitted, missing, excused, unknown}`。
+- 响应：`{assignment_id, revision, submitted, missing, excused}`。
 
 ### 1.3 编辑 / 撤销
 
@@ -71,17 +70,17 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - `GET /api/v1/homework/assignments?mode=&class_id|teaching_class_id=&academic_year_id=&subject?
   &homework_type?&from_date?&to_date?` → 分页列表（含 revision/status/submitted_count/missing_count/
   submission_rate|null 分母标注 `rate_unavailable: true`）。
-- `GET /api/v1/homework/dashboard?mode=&class_id|teaching_class_id=&group_by=week|month` → 按期聚合：
+- `GET /api/v1/homework/dashboard?mode=&class_id|teaching_class_id=&group_by=day|week|month` → 按期聚合：
   `{groups: [{label, assignments, submitted, missing, expected_count, rate?, rate_unavailable?}]}`
   （v2：expected_count 必须返回组内批次应交快照的真实合计；不可计算时明确标注，不得恒 0 误导）。
 - 学生维度（画像页消费）：`GET /api/v1/homework/students/{person_id}?mode=` → 该生事件流
   `{events: [{assignment_id, assigned_date, subject, homework_type, status, evaluation?}], streaks:
-  {current_missing_streak: int|null(遇 unknown 即 null), longest_missing_streak}}`。
+  {current_missing_streak: int, longest_missing_streak}}`。
 
 ## 3. 预警时间轴（H03 红线）
 
 - `GET /api/v1/homework/warnings?mode=&class_id|teaching_class_id=&min_missing=2&subject?` →
-  `{students: [{person_id, name, missing_count, current_streak, streak_basis: 'events'|'unknown',
+  `{students: [{person_id, name, missing_count, current_streak, streak_basis: 'events'|'legacy_events',
   recent_missing: [{assigned_date, subject, homework_type}]}]}`。
 - 仅缺交历史批次（无分母）的学生照常列出缺交计数（事件维度），但 submission_rate 类指标不计算。
 - 日维度统计与事件维度预警分别标注口径（响应字段 `basis`）。
@@ -122,6 +121,7 @@ H06（学期自动/手工/重复编辑 4xx）→ §5 测试。
 
 - `/homeroom/homework` 与 `/teaching/homework`：录入（智能输入框 + 全交/名单/明细三模式 + 例外）、
   批次列表（rate/无法计算标注）、撤销冲突展示。
-- 预警时间轴页（events 口径标注）；相关性散点页（r 不可计算态）。
+- 预警时间轴页（events 口径标注）；相关性散点卡挂载于两域成绩分析页底部
+  （作业跟进页不再挂载；r 不可计算态，考试跟随成绩页顶部选择）。
 - 学期设置卡（自动/手工切换、重复编辑错误提示）。
 - 沿用 P2/P3/P4 组件与风格；旧 /homework 系列页迁移替换。

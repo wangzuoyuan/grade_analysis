@@ -27,7 +27,7 @@ from datetime import date
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.context import WorkspaceContext
@@ -96,7 +96,10 @@ def teaching_subject_for_year(
         row[0]
         for row in (
             db.query(TeachingClass.subject)
-            .filter(TeachingClass.academic_year_id == academic_year_id)
+            .filter(
+                TeachingClass.academic_year_id == academic_year_id,
+                TeachingClass.status == "active",
+            )
             .distinct()
             .all()
         )
@@ -108,6 +111,12 @@ def teaching_subject_for_year(
                 "subject must be a non-empty string", details={"param": "subject"}
             )
         return subject
+    if not subjects:
+        # 未换届自动延续：本学年无任何教学班时沿用最近旧学年的学科口径
+        #（唯一才延续；多学科旧学年保持需显式/未配置）。
+        carried = carryover_subjects(db, academic_year_id)
+        if len(carried) == 1:
+            return next(iter(carried))
     if not subjects:
         raise WorkspaceNotConfigured("teaching subject not configured")
     if len(subjects) == 1:
@@ -128,11 +137,145 @@ def teaching_class_ids_for_subject(
             .filter(
                 TeachingClass.academic_year_id == academic_year_id,
                 TeachingClass.subject == subject,
+                TeachingClass.status == "active",
             )
             .order_by(TeachingClass.sort_order.asc(), TeachingClass.id.asc())
             .all()
         )
     ]
+
+
+# ────────────────────────────── 学年延续（未换届自动延续） ──────────────────────────────
+# 换届不是每学年必须操作：目标学年还没有建立本班/教学班时，读侧沿最近一个
+# 有班的旧学年延续（零写入、不建新行），成员有效期本就开放（valid_to NULL），
+# 因此旧班成员在新学年继续可见可用；教师随时可用换届把名册正式升入新学年。
+# 延续只向「更晚的学年」投影旧班，绝不把后来的班投影回历史学年；旧学年
+# 自身无班且更早已无班时保持未配置错误，不猜测。
+
+
+def carryover_homeroom_class(db: Session, teacher, academic_year_id: int):
+    """目标学年无绑定行政班时，沿教师各年级绑定对 (grade, 班号) 取最近一个
+    更早学年的行政班作延续班；无候选返回 None（调用方按未配置处理）。"""
+    ay = db.get(AcademicYear, academic_year_id)
+    if ay is None or teacher is None:
+        return None
+    pairs = [
+        (grade, getattr(teacher, f"target_class_high{grade}"))
+        for grade in (1, 2, 3)
+    ]
+    pairs = [(g, n) for g, n in pairs if n is not None]
+    if not pairs:
+        return None
+    return (
+        db.query(AdministrativeClass)
+        .join(AcademicYear, AcademicYear.id == AdministrativeClass.academic_year_id)
+        .filter(
+            AcademicYear.start_date < ay.start_date,
+            or_(
+                *[
+                    and_(
+                        AdministrativeClass.grade == g,
+                        AdministrativeClass.class_num == n,
+                    )
+                    for g, n in pairs
+                ]
+            ),
+        )
+        .order_by(
+            AcademicYear.start_date.desc(),
+            AcademicYear.id.desc(),
+            AdministrativeClass.id.desc(),
+        )
+        .first()
+    )
+
+
+def carryover_year_any(db: Session, academic_year_id: int):
+    """目标学年没有任何教学班时，最近一个有 active 教学班的更早学年；无则 None。"""
+    ay = db.get(AcademicYear, academic_year_id)
+    if ay is None:
+        return None
+    if (
+        db.query(TeachingClass.id)
+        .filter(TeachingClass.academic_year_id == ay.id)
+        .first()
+        is not None
+    ):
+        return None
+    return (
+        db.query(AcademicYear)
+        .join(TeachingClass, TeachingClass.academic_year_id == AcademicYear.id)
+        .filter(
+            AcademicYear.start_date < ay.start_date,
+            TeachingClass.status == "active",
+        )
+        .order_by(AcademicYear.start_date.desc(), AcademicYear.id.desc())
+        .first()
+    )
+
+
+def carryover_subjects(db: Session, academic_year_id: int) -> set:
+    """延续学年的 active 学科集合（目标学年无任何教学班时才有意义）。"""
+    cy = carryover_year_any(db, academic_year_id)
+    if cy is None:
+        return set()
+    return {
+        row[0]
+        for row in (
+            db.query(TeachingClass.subject)
+            .filter(
+                TeachingClass.academic_year_id == cy.id,
+                TeachingClass.status == "active",
+            )
+            .distinct()
+            .all()
+        )
+    }
+
+
+def carryover_teaching_year(db: Session, subject: str, academic_year_id: int):
+    """目标学年该学科无任何教学班时，最近一个有该学科 active 班的更早学年。"""
+    ay = db.get(AcademicYear, academic_year_id)
+    if ay is None:
+        return None
+    if (
+        db.query(TeachingClass.id)
+        .filter(
+            TeachingClass.academic_year_id == ay.id,
+            TeachingClass.subject == subject,
+        )
+        .first()
+        is not None
+    ):
+        return None
+    return (
+        db.query(AcademicYear)
+        .join(TeachingClass, TeachingClass.academic_year_id == AcademicYear.id)
+        .filter(
+            AcademicYear.start_date < ay.start_date,
+            TeachingClass.subject == subject,
+            TeachingClass.status == "active",
+        )
+        .order_by(AcademicYear.start_date.desc(), AcademicYear.id.desc())
+        .first()
+    )
+
+
+def carryover_teaching_classes(db: Session, subject: str, academic_year_id: int):
+    """延续口径下目标学年该学科应展示/可用的教学班（旧学年 active 班，排序同目录）。"""
+    cy = carryover_teaching_year(db, subject, academic_year_id)
+    if cy is None:
+        return []
+    return (
+        db.query(TeachingClass)
+        .filter(
+            TeachingClass.academic_year_id == cy.id,
+            TeachingClass.subject == subject,
+            TeachingClass.status == "active",
+        )
+        .order_by(TeachingClass.sort_order.asc(), TeachingClass.id.asc())
+        .all()
+    )
 
 
 def build_teaching_params(
@@ -157,10 +300,13 @@ def build_teaching_params(
                 details={"teaching_class_id": teaching_class_id},
             )
         if tc.academic_year_id != ay.id:
-            raise ResourceOutOfScope(
-                "teaching class not in this academic year",
-                details={"teaching_class_id": teaching_class_id, "academic_year_id": ay.id},
-            )
+            # 未换届自动延续：本学年该学科无班时接受最近旧学年的班。
+            cy = carryover_teaching_year(db, tc.subject, ay.id)
+            if cy is None or tc.academic_year_id != cy.id:
+                raise ResourceOutOfScope(
+                    "teaching class not in this academic year",
+                    details={"teaching_class_id": teaching_class_id, "academic_year_id": ay.id},
+                )
         if tc.subject != resolved_subject:
             raise InvalidScopeParam(
                 "subject does not match teaching class",
@@ -169,6 +315,9 @@ def build_teaching_params(
         class_ids = [tc.id]
     else:
         class_ids = teaching_class_ids_for_subject(db, ay.id, resolved_subject)
+        if not class_ids:
+            # 未换届自动延续：本学年该学科无班时沿用最近旧学年的班并集。
+            class_ids = [tc.id for tc in carryover_teaching_classes(db, resolved_subject, ay.id)]
         if not class_ids:
             raise WorkspaceNotConfigured(
                 "no teaching class configured",

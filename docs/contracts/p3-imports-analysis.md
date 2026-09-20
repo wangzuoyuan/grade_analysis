@@ -58,6 +58,10 @@
   - homeroom 模式：ScoreFact 写全科 + 总分（total_type 行），`class_ref_id=行政班 id`，`source='import:<filename>'`。
   - teaching 模式：ScoreFact 仅任教学科（其他学科列丢弃并计入 warnings），`class_ref_id=教学班 id`；
     文件中学生补入 TeachingClassMember（成员同步）。
+  - `class_averages` 文件：写入独立的 `workspace_class_average` 官方年级班均事实，按
+    `(domain, academic_year_id, exam_name, grade, class_num)` 定位；保留班级类型、班主任、各科均分与
+    各总分口径。它与学生明细可以在同一次多文件 preview/confirm 中提交，并与整批共享原子性、日期一致性、
+    幂等和 `revise` 修订规则；不得从当前行政班的 `ScoreFact` 样本反推或冒充全年级班均表。
   - 幂等/冲突（按自然键 `(domain, academic_year_id, exam_name, identity, subject_key, total_key)` 与库内比对）：
     同值 → skipped；无键 → 插入；**不同值 → revise=false 时整批 409 + `conflicts`
     列表（person/subject/exam_name/库内值/新值）零写入；revise=true 时覆写并 `data_revision+1`（E05 修订语义）**。
@@ -122,6 +126,11 @@
 - `GET exams/{exam_name}/students` → `{metadata, students: [{person_id, name, alias, scores:
   {subject: score|null}, totals: {total_type: score|null}, shared_conflicts?}]}`
   （linked 学生的任教学科冲突按 §1.4.1 标注 shared_conflict，供前端展示"待人工核对"）
+- `GET exams/{exam_name}/class-averages` → `{metadata, grade, subjects, total_types,
+  current_class_num, rows: [{class_type, class_num, teacher_name, subject_averages, total_averages, total_ranks}]}`。
+  数据只读自已确认导入的官方班级均分表；总分排名按全体已导入班级同口径均分降序、同分同名次计算。
+  某总分口径全为 0 时视为来源未提供，排名返回空，不制造并列第一。
+  `current_class_num` 为当前班主任绑定行政班班号（前端班级对比页用于高亮本班；无绑定班时为 null）。
 - `GET trends?person_id=` → `{person_id, name, years: [{academic_year_id, academic_year_name,
   subjects: {subject: [{exam_name, exam_date, score, grade_score?}]}, totals: {...}}]}`
   （E03：跨学年分段展示，不跨年直接比较九科总分；响应按学年分组即结构上防止跨年连算）
@@ -153,7 +162,8 @@
 
 ## 3. 前端页面（P3-FE 波次）
 
-- `/homeroom/scores`：考试选择（/shared/exams）→ stats 卡 + 学生表（全科+总分+冲突标注）+ 段位分布 + 趋势入口。
+- `/homeroom/scores`：考试选择（/shared/exams）→ 考试概览、完整年级班均表（班型分组、各科、总分/排名、
+  分组平均/最高/最低及导出）、学生明细、名次段位、排名频次、区间筛选、重点关注。
 - `/teaching/scores`：考试选择 → 单科 stats + 学生行（rank/grade_score/source_domain）+ 班级对比卡。
 - `/upload`（重构）：mode 感知（当前工作台决定导入域与范围参数），preview 表格展示 items/warnings，
   confirm 含 revise 开关（冲突时提示）；沿用既有拖拽/文件选择 UI 模式。

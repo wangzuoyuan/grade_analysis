@@ -61,9 +61,8 @@ def test_h01_full_with_exception_and_counts(client, v1_seed):
     confirmed = _confirm(client, body["token"])
     assert confirmed.status_code == 200, confirmed.text
     counts = confirmed.json()
-    assert (counts["submitted"], counts["missing"], counts["excused"], counts["unknown"]) == (
-        2, 0, 1, 0,
-    )
+    assert (counts["submitted"], counts["missing"], counts["excused"]) == (2, 0, 1)
+    assert "unknown" not in counts
 
     detail = client.get(
         f"/api/v1/homework/assignments/{counts['assignment_id']}",
@@ -103,7 +102,8 @@ def test_h01_detailed_row_order_equivalent(client, v1_seed):
     confirmed = _confirm(client, p1.json()["token"])
     assert confirmed.status_code == 200
     counts = confirmed.json()
-    assert (counts["submitted"], counts["missing"]) == (1, 1)
+    # 秦丙未登记例外，默认已交。
+    assert (counts["submitted"], counts["missing"]) == (2, 1)
 
 
 def test_h01_conflicting_rows_same_person_rejected(client, v1_seed):

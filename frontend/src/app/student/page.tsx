@@ -228,23 +228,28 @@ export default function StudentSearchPage() {
   const rankColumnLabel =
     typeof filter.teaching_class_id === 'number' ? '班内排名' : '名次（全部所教班）'
 
-  // 班主任工作台：学生检索按任教学科教学班组织，指引到 v1 学生管理，不混域取数
+  // 班主任工作台：教学域学生档案按任教学科教学班组织，指引到班主任工作台
   if (mode === 'homeroom') {
     return (
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">学生检索</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">学生档案</h1>
           <p className="mt-1 text-sm text-slate-500">按任教学科教学班组织，属教学工作台</p>
         </div>
         <Card>
           <CardContent className="flex flex-col items-center justify-center gap-3 py-10 text-center">
             <Users className="h-8 w-8 text-slate-300" />
             <p className="text-sm text-slate-600">
-              学生检索按教学班与任教学科组织；班主任工作台请使用「学生管理」查看行政班名册与全科画像。
+              此处为任教学科教学班学生档案；班主任工作台请进入「学生档案」或「学生信息」查看行政班学生。
             </p>
-            <Button asChild>
-              <Link href="/homeroom/students">进入学生管理</Link>
-            </Button>
+            <div className="flex gap-2">
+              <Button asChild>
+                <Link href="/homeroom/profile">班主任学生档案</Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href="/homeroom/students">进入学生信息</Link>
+              </Button>
+            </div>
             <WorkspaceSwitcher />
           </CardContent>
         </Card>
@@ -257,10 +262,10 @@ export default function StudentSearchPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            学生检索
+            学生档案
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            {subject ? `当前学科：${subject} · ` : ''}按姓名或学号查找学生画像，支持按教学班与学年筛选
+            {subject ? `当前学科：${subject} · ` : ''}按姓名或学号查找学生档案，支持按教学班与学年筛选
             {switching ? ' · 正在切换…' : ''}
           </p>
         </div>

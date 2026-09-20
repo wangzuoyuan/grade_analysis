@@ -130,7 +130,7 @@ export function AliasHistoryPanel({ personId, name }: { personId: PersonId; name
   return (
     <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
       <p className="text-xs font-semibold text-slate-500">
-        学号（别名）历史 · {name ?? '（未命名）'}
+        学号历史 · {name ?? '（未命名）'}
         <span className="ml-2 font-normal text-slate-400">换号接续到同一人，历史档案不中断</span>
       </p>
 

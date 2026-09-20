@@ -18,6 +18,7 @@ import {
   ArrowRightLeft,
   Loader2,
   RefreshCw,
+  Settings2,
   UserMinus,
   UserPlus,
   Users,
@@ -26,21 +27,25 @@ import {
 import {
   ApiV1Error,
   addTeachingMember,
+  createTeachingClass,
   fetchClasses,
   fetchSharedConfig,
   importTeachingMembersConfirm,
   importTeachingMembersPreview,
   listTeachingMembers,
+  listManagedTeachingClasses,
   normalizeTeachingMembers,
   removeTeachingMember,
   syncFromHomeroomConfirm,
   syncFromHomeroomPreview,
+  updateTeachingClass,
   type ClassesCatalog,
   type LinkSummary,
   type SharedConfig,
   type TeachingImportLine,
   type TeachingImportPreview,
   type TeachingMember,
+  type ClassesCatalogTeaching,
   type TeachingMembersResponse,
   type TeachingSyncPreview,
 } from '@/lib/api-v1'
@@ -113,13 +118,8 @@ function LinkGuidance({ detail }: { detail?: string | null }) {
   )
 }
 
-const SOURCE_LABEL: Record<string, string> = {
-  manual: '手动',
-  link_projection: '行政班投影',
-}
-
 export function TeachingMembersManager() {
-  const { filter, generation, switching } = useWorkspace()
+  const { filter, setFilter, scope, generation, switching } = useWorkspace()
 
   // 配置（学年 + 关联）与班级目录
   const [config, setConfig] = useState<SharedConfig | null>(null)
@@ -127,6 +127,10 @@ export function TeachingMembersManager() {
   const [classes, setClasses] = useState<ClassesCatalog | null>(null)
   const [classesError, setClassesError] = useState<string | null>(null)
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null)
+  const [managedClasses, setManagedClasses] = useState<ClassesCatalogTeaching[] | null>(null)
+  const [classLabel, setClassLabel] = useState('')
+  const [classBusy, setClassBusy] = useState(false)
+  const [classManageError, setClassManageError] = useState<string | null>(null)
   const reqRef = useRef(0)
 
   // 成员列表
@@ -168,6 +172,40 @@ export function TeachingMembersManager() {
     ? filter.academic_year_id
     : config?.current_academic_year?.id ?? null
 
+  const loadManagedClasses = useCallback(() => {
+    if (yearId == null) return
+    listManagedTeachingClasses(yearId, scope?.subject ?? undefined)
+      .then((result) => setManagedClasses(result.classes ?? []))
+      .catch((err: unknown) => setClassManageError(apiErrorMessage(err)))
+  }, [yearId, scope?.subject])
+
+  useEffect(() => { loadManagedClasses() }, [loadManagedClasses, generation])
+
+  async function handleCreateClass() {
+    if (yearId == null || classLabel.trim() === '') return
+    setClassBusy(true); setClassManageError(null)
+    try {
+      const result = await createTeachingClass({ academic_year_id: yearId, label: classLabel.trim(), subject: scope?.subject ?? undefined })
+      setManagedClasses(result.classes ?? []); setClassLabel(''); loadConfig()
+    } catch (err) { setClassManageError(apiErrorMessage(err)) } finally { setClassBusy(false) }
+  }
+
+  async function handleRenameClass(item: ClassesCatalogTeaching) {
+    const label = window.prompt('请输入新的教学班名称', item.label)?.trim()
+    if (!label || label === item.label) return
+    setClassBusy(true); setClassManageError(null)
+    try { const result = await updateTeachingClass(item.class_id, { label }); setManagedClasses(result.classes ?? []); loadConfig() }
+    catch (err) { setClassManageError(apiErrorMessage(err)) } finally { setClassBusy(false) }
+  }
+
+  async function handleToggleClass(item: ClassesCatalogTeaching) {
+    setClassBusy(true); setClassManageError(null)
+    try {
+      const result = await updateTeachingClass(item.class_id, { status: item.status === 'inactive' ? 'active' : 'inactive' })
+      setManagedClasses(result.classes ?? []); loadConfig()
+    } catch (err) { setClassManageError(apiErrorMessage(err)) } finally { setClassBusy(false) }
+  }
+
   const loadConfig = useCallback(() => {
     setConfigError(null)
     fetchSharedConfig()
@@ -199,16 +237,24 @@ export function TeachingMembersManager() {
       })
   }, [yearId])
 
-  // 默认选中第一个教学班；班级列表变化时保持有效选择
+  // 页内选班与顶部/侧栏的全局工作台范围使用同一个 filter 事实源。
   useEffect(() => {
-    if (classes == null) return
+    if (classes == null || managedClasses == null) return
     const ids = classes.teaching.map((c) => c.class_id)
+    const historicalIds = managedClasses.map((c) => c.class_id)
     if (ids.length === 0) {
-      setSelectedClassId(null)
+      if (typeof filter.teaching_class_id === 'number' && historicalIds.includes(filter.teaching_class_id)) {
+        setSelectedClassId(filter.teaching_class_id)
+      } else {
+        setSelectedClassId(null)
+      }
+    } else if (typeof filter.teaching_class_id === 'number' && historicalIds.includes(filter.teaching_class_id)) {
+      setSelectedClassId(filter.teaching_class_id)
     } else if (selectedClassId == null || !ids.includes(selectedClassId)) {
       setSelectedClassId(ids[0])
+      setFilter({ teaching_class_id: ids[0] })
     }
-  }, [classes, selectedClassId])
+  }, [classes, managedClasses, selectedClassId, filter.teaching_class_id, setFilter])
 
   const loadMembers = useCallback(() => {
     if (selectedClassId == null) {
@@ -281,7 +327,9 @@ export function TeachingMembersManager() {
     return config.links.find((l) => l.status === 'active' && l.teaching_class_id === selectedClassId) ?? null
   }, [config, selectedClassId])
 
-  const selectedClass = classes?.teaching.find((c) => c.class_id === selectedClassId) ?? null
+  const selectedClass = classes?.teaching.find((c) => c.class_id === selectedClassId)
+    ?? managedClasses?.find((c) => c.class_id === selectedClassId)
+    ?? null
 
   async function handleAdd() {
     if (selectedClassId == null || addName.trim() === '') return
@@ -412,7 +460,7 @@ export function TeachingMembersManager() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">班级成员</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">班级信息</h1>
           <p className="mt-1 text-sm text-slate-500">
             教学班当期与历史成员、文本导入、行政班同步{switching ? ' · 正在切换…' : ''}
           </p>
@@ -422,7 +470,9 @@ export function TeachingMembersManager() {
             <Select
               value={selectedClassId != null ? String(selectedClassId) : undefined}
               onValueChange={(v) => {
-                setSelectedClassId(Number(v))
+                const classId = Number(v)
+                setSelectedClassId(classId)
+                setFilter({ teaching_class_id: classId })
                 setTab('list')
               }}
             >
@@ -435,11 +485,25 @@ export function TeachingMembersManager() {
                     {c.label}（{c.subject}）
                   </SelectItem>
                 ))}
+                {selectedClass?.status === 'inactive' ? (
+                  <SelectItem value={String(selectedClass.class_id)}>
+                    {selectedClass.label}（历史）
+                  </SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
           </div>
         ) : null}
       </div>
+
+      <Card className="print:hidden">
+        <CardHeader><CardTitle className="flex items-center gap-2"><Settings2 className="h-4 w-4" />教学班管理</CardTitle><CardDescription>新增、改名、停用或恢复教学班。停用只从日常选择中隐藏，历史成员、成绩和作业均保留。</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          {classManageError ? <p role="alert" className="text-sm text-danger-500">{classManageError}</p> : null}
+          <div className="flex flex-col gap-2 sm:flex-row"><Input value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="新教学班名称" className="sm:max-w-xs" /><Button onClick={() => void handleCreateClass()} disabled={classBusy || !classLabel.trim()}>新增教学班</Button></div>
+          <div className="flex flex-wrap gap-2">{(managedClasses ?? []).map((item) => <div key={item.class_id} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><span className={item.status === 'inactive' ? 'text-slate-400' : 'font-medium text-slate-800'}>{item.label}</span>{item.status === 'inactive' ? <Badge variant="outline">已停用</Badge> : null}{item.status === 'inactive' ? <Button variant="ghost" size="sm" onClick={() => { setSelectedClassId(item.class_id); setFilter({ teaching_class_id: item.class_id }) }} disabled={classBusy}>查看历史</Button> : null}<Button variant="ghost" size="sm" onClick={() => void handleRenameClass(item)} disabled={classBusy}>改名</Button><Button variant="ghost" size="sm" onClick={() => void handleToggleClass(item)} disabled={classBusy}>{item.status === 'inactive' ? '恢复' : '停用'}</Button></div>)}</div>
+        </CardContent>
+      </Card>
 
       {configError ? (
         <Card>
@@ -488,7 +552,7 @@ export function TeachingMembersManager() {
                   <CardTitle className="text-base">从行政班同步成员</CardTitle>
                   <CardDescription>
                     该班为关联班（与行政班 #{String(activeLink.admin_class_id)} 关联）：
-                    成员按配对交集从班主任名册投影（source=link_projection），差异预览后确认。
+                    成员按配对交集从班主任名册投影，差异预览后确认。
                   </CardDescription>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => void handleSyncPreview()} disabled={syncing}>
@@ -609,7 +673,6 @@ export function TeachingMembersManager() {
                               <TableRow>
                                 <TableHead className="text-xs">姓名</TableHead>
                                 <TableHead className="whitespace-nowrap text-xs">学号</TableHead>
-                                <TableHead className="whitespace-nowrap text-xs">来源</TableHead>
                                 <TableHead className="whitespace-nowrap text-xs">入班日期</TableHead>
                                 <TableHead className="w-20 text-right text-xs print:hidden">操作</TableHead>
                               </TableRow>
@@ -622,9 +685,6 @@ export function TeachingMembersManager() {
                                   </TableCell>
                                   <TableCell className="whitespace-nowrap font-mono text-xs text-slate-600">
                                     {m.alias ?? '—'}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-xs text-slate-500">
-                                    {m.source ? (SOURCE_LABEL[m.source] ?? m.source) : '—'}
                                   </TableCell>
                                   <TableCell className="whitespace-nowrap text-xs text-slate-500">
                                     {dateLabel(m.valid_from)}

@@ -13,15 +13,16 @@ import {
   RefreshCw,
   NotebookPen,
   GraduationCap,
+  Contact,
   Pencil,
   Check,
   X,
-  AlertTriangle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useClassScope } from '@/lib/class-scope'
 import { currentScopeLabel } from '@/components/ClassScopePicker'
 import { useWorkspace, workspaceHref, WorkspaceSwitcher } from '@/lib/workspace'
+import type { WorkspaceMode } from '@/lib/api-v1'
 
 export interface TeacherSummary {
   name?: string | null
@@ -32,83 +33,108 @@ interface NavItem {
   label: string
   icon: React.ComponentType<{ className?: string }>
   match: (pathname: string) => boolean
+  modes: WorkspaceMode[]
 }
 
+// 顺序即展示顺序：仪表盘置顶，功能类居中，名册/学年等设置类置底
 const NAV_ITEMS: NavItem[] = [
   {
     href: '/',
     label: '仪表盘',
     icon: LayoutDashboard,
     match: (p) => p === '/',
+    modes: ['homeroom', 'teaching'],
   },
   {
     href: '/upload',
     label: '数据上传',
     icon: Upload,
     match: (p) => p.startsWith('/upload'),
+    modes: ['homeroom', 'teaching'],
   },
   {
     href: '/homeroom/scores',
-    label: '班主任成绩',
+    label: '成绩分析',
     icon: LineChart,
     match: (p) => p.startsWith('/homeroom/scores'),
+    modes: ['homeroom'],
   },
   {
-    href: '/homeroom/students',
-    label: '学生管理',
-    icon: Users,
-    match: (p) => p.startsWith('/homeroom/students'),
-  },
-  {
-    href: '/homeroom/rollover',
-    label: '换届',
-    icon: RefreshCw,
-    match: (p) => p.startsWith('/homeroom/rollover'),
+    href: '/homeroom/compare',
+    label: '班级对比',
+    icon: BarChart3,
+    match: (p) => p.startsWith('/homeroom/compare'),
+    modes: ['homeroom'],
   },
   {
     href: '/teaching/scores',
-    label: '教学成绩',
+    label: '成绩分析',
     icon: LineChart,
     match: (p) => p.startsWith('/teaching/scores'),
-  },
-  {
-    href: '/teaching/members',
-    label: '班级成员',
-    icon: UserPlus,
-    match: (p) => p.startsWith('/teaching/members'),
+    modes: ['teaching'],
   },
   {
     href: '/homeroom/homework',
-    label: '作业跟进（班主任）',
+    label: '作业跟进',
     icon: NotebookPen,
     match: (p) => p.startsWith('/homeroom/homework'),
-  },
-  {
-    href: '/teaching/homework',
-    label: '作业跟进（教学）',
-    icon: NotebookPen,
-    match: (p) => p.startsWith('/teaching/homework'),
-  },
-  {
-    // 深链快捷入口：预警/相关性并入两工作台作业页标签（旧 /homework/warnings
-    // 路由被旧版页面占用，不删不改），默认带工作台落到班主任域预警标签；
-    // match 恒 false，避免与「作业跟进（班主任）」双高亮
-    href: '/homeroom/homework?tab=warnings',
-    label: '缺交预警',
-    icon: AlertTriangle,
-    match: () => false,
+    modes: ['homeroom'],
   },
   {
     href: '/compare',
     label: '班级对比',
     icon: BarChart3,
     match: (p) => p.startsWith('/compare'),
+    modes: ['teaching'],
+  },
+  {
+    href: '/teaching/homework',
+    label: '作业跟进',
+    icon: NotebookPen,
+    match: (p) => p.startsWith('/teaching/homework'),
+    modes: ['teaching'],
+  },
+  {
+    href: '/homeroom/profile',
+    label: '学生档案',
+    icon: Contact,
+    match: (p) => p.startsWith('/homeroom/profile'),
+    modes: ['homeroom'],
   },
   {
     href: '/student',
-    label: '学生检索',
-    icon: Users,
+    label: '学生档案',
+    icon: Contact,
     match: (p) => p.startsWith('/student'),
+    modes: ['teaching'],
+  },
+  {
+    href: '/homeroom/students',
+    label: '学生信息',
+    icon: Users,
+    match: (p) => p.startsWith('/homeroom/students'),
+    modes: ['homeroom'],
+  },
+  {
+    href: '/teaching/members',
+    label: '班级信息',
+    icon: UserPlus,
+    match: (p) => p.startsWith('/teaching/members'),
+    modes: ['teaching'],
+  },
+  {
+    href: '/homeroom/rollover',
+    label: '换届',
+    icon: RefreshCw,
+    match: (p) => p.startsWith('/homeroom/rollover'),
+    modes: ['homeroom'],
+  },
+  {
+    href: '/teaching/rollover',
+    label: '换届',
+    icon: RefreshCw,
+    match: (p) => p.startsWith('/teaching/rollover'),
+    modes: ['teaching'],
   },
 ]
 
@@ -121,7 +147,16 @@ export function SidebarContent({ teacher, onNameChange }: SidebarContentProps) {
   const pathname = usePathname() || '/'
   const { classes, current } = useClassScope()
   // 契约 v2.1 §3（F04）：公共页入口链接统一携带当前工作台（?ws=），工作台前缀页不加
-  const { mode } = useWorkspace()
+  const { mode, scope, scopeLoading } = useWorkspace()
+  const visibleItems = NAV_ITEMS.filter((item) => item.modes.includes(mode))
+
+  function itemHref(item: NavItem): string {
+    return item.href === '/' ? `/${mode}` : workspaceHref(item.href, mode)
+  }
+
+  function itemActive(item: NavItem): boolean {
+    return item.match(pathname)
+  }
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -178,13 +213,13 @@ export function SidebarContent({ teacher, onNameChange }: SidebarContentProps) {
 
       {/* Nav */}
       <nav className="flex-1 space-y-1 px-3 py-4">
-        {NAV_ITEMS.map((item) => {
-          const active = item.match(pathname)
+        {visibleItems.map((item) => {
+          const active = itemActive(item)
           const Icon = item.icon
           return (
             <Link
-              key={item.href}
-              href={item.href === '/' ? `/${mode}` : workspaceHref(item.href, mode)}
+              key={`${mode}:${item.label}:${item.href}`}
+              href={itemHref(item)}
               className={cn(
                 'flex items-center gap-3 rounded-lg border border-transparent px-3 py-2 text-sm font-medium transition-colors',
                 active
@@ -203,7 +238,7 @@ export function SidebarContent({ teacher, onNameChange }: SidebarContentProps) {
       <div className="border-t border-[#cbe2f5]/60 p-3">
         <div className="rounded-[10px] border border-[#cbe2f5] bg-gradient-to-b from-white/90 to-[#eaf5fd]/70 px-3 py-3">
           <div className="flex items-center justify-between">
-            <div className="text-xs text-[#58789b]">班主任</div>
+            <div className="text-xs text-[#58789b]">{mode === 'homeroom' ? '班主任' : '任课教师'}</div>
             {!editing && (
               <button
                 onClick={startEdit}
@@ -241,13 +276,26 @@ export function SidebarContent({ teacher, onNameChange }: SidebarContentProps) {
             </div>
           )}
           <div className="mt-2 flex items-center justify-between">
-            <div className="text-xs text-[#58789b]">当前班级</div>
-            <Link href="/teaching/members" className="text-xs text-[#1f7fd6] hover:text-[#0e5fa8]">
+            <div className="text-xs text-[#58789b]">
+              {mode === 'homeroom' ? '当前行政班' : '当前教学班'}
+            </div>
+            <Link
+              href={mode === 'homeroom' ? '/homeroom/students' : '/teaching/members'}
+              className="text-xs text-[#1f7fd6] hover:text-[#0e5fa8]"
+            >
               管理
             </Link>
           </div>
           <div className="mt-0.5 text-sm font-medium text-[#16324a]">
-            {currentScopeLabel(current, classes)}
+            {mode === 'homeroom'
+              ? scopeLoading && !scope
+                ? '加载中…'
+                : `本班 · ${String(scope?.cohort_size ?? '—')}人${
+                    scope?.carried_from_academic_year_name
+                      ? ` · 延续自 ${scope.carried_from_academic_year_name} 学年`
+                      : ''
+                  }`
+              : currentScopeLabel(current, classes)}
           </div>
         </div>
       </div>

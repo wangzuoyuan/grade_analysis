@@ -159,6 +159,53 @@ def test_h06_current_semester_switch_and_repeat(client, v1_seed):
     flags = {s["name"]: s["is_current"] for s in after["semesters"]}
     assert flags == {"秋季学期": False, "春季学期": True}
 
+    current = client.get("/api/v1/homework/current-semester")
+    assert current.status_code == 200, current.text
+    assert current.json() == {
+        "id": spring_id,
+        "academic_year_id": v1_seed.ay_id,
+        "academic_year_name": "2025-2026",
+        "name": "春季学期",
+        "start_date": "2026-02-08",
+        "end_date": "2026-07-12",
+        "mode": "manual",
+    }
+
+
+def test_h06_current_semester_is_global_across_academic_years(client, v1_seed, db_session):
+    """新学年设为当前后，旧学年不得保留另一个 current。"""
+    new_year = wm.AcademicYear(
+        name="2026-2027", start_date=date(2026, 9, 1), end_date=date(2027, 7, 15)
+    )
+    db_session.add(new_year)
+    db_session.flush()
+    new_semester = wm.WsHomeworkSemester(
+        academic_year_id=new_year.id,
+        name="上学期",
+        start_date=date(2026, 9, 1),
+        end_date=date(2027, 1, 31),
+        is_current=0,
+        mode="manual",
+    )
+    db_session.add(new_semester)
+    db_session.commit()
+
+    switched = client.put(f"/api/v1/homework/semesters/{new_semester.id}/current")
+    assert switched.status_code == 200, switched.text
+    assert (
+        db_session.query(wm.WsHomeworkSemester)
+        .filter(wm.WsHomeworkSemester.is_current == 1)
+        .count()
+        == 1
+    )
+    current = client.get("/api/v1/homework/current-semester").json()
+    assert current["academic_year_id"] == new_year.id
+    assert current["id"] == new_semester.id
+    db_session.query(wm.WsHomeworkSemester).filter(
+        wm.WsHomeworkSemester.id == new_semester.id
+    ).delete(synchronize_session=False)
+    db_session.commit()
+
 
 def test_h06_restore_auto_returns_before_after(client, v1_seed, db_session):
     """restore-auto：删手工行回自动推导（before/after 对比）；

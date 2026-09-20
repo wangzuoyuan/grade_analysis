@@ -41,9 +41,12 @@ class ParsedImportFile:
     exam_name: Optional[str] = None
     exam_date: Optional[date] = None
     subject: Optional[str] = None  # teaching 模式恒为任教学科
+    grade: Optional[int] = None
     class_label: Optional[str] = None  # teaching 模式：文件中出现的班级标签汇总
-    # 规范化行（student_scores 才有）；class_averages 只预览不落 ScoreFact
+    # 学生成绩规范化行；班级均分使用下方独立集合，不落 ScoreFact。
     rows: List[dict] = field(default_factory=list)
+    # 全年级班级均分行；与学生成绩分开存储，确认时落专用表。
+    class_averages: List[dict] = field(default_factory=list)
     # 去重学生清单（按学号聚合；rows 的身份事实源）
     students: List[dict] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -133,7 +136,7 @@ def parse_homeroom_file(
     exam_date: Optional[date | str] = None,
 ) -> ParsedImportFile:
     """homeroom 模式解析：H 解析器全科 + 总分，非本班学生整人忽略。"""
-    result = ParsedImportFile(filename=filename)
+    result = ParsedImportFile(filename=filename, grade=grade)
     result.exam_name, result.exam_date = _resolved_exam(filename, exam_name, exam_date)
 
     if grade == 1:
@@ -152,9 +155,9 @@ def parse_homeroom_file(
     result.parsed_ok = True
 
     if result.kind == "class_averages":
-        # 班级均分表只预览（官方口径 E04 未入库前不提供 official），不写 ScoreFact
         averages = parsed.get("class_averages") or []
-        result.message = f"班级均分表：{len(averages)} 个班级，仅预览不入库"
+        result.class_averages = averages
+        result.message = f"班级均分表：识别到 {len(averages)} 个班级，确认后入库"
         return result
 
     raw_students = parsed.get("students") or []
@@ -225,6 +228,7 @@ def parse_teaching_file(
     grade = parse_filename(filename).get("grade")
     if grade not in (1, 2, 3):
         grade = 1 if t_parser.is_grade1_student_sheet(path) else 2
+    result.grade = grade
     parsed = (
         t_parser.parse_excel_grade1(str(path))
         if grade == 1
@@ -239,7 +243,8 @@ def parse_teaching_file(
 
     if result.kind == "class_averages":
         averages = parsed.get("class_averages") or []
-        result.message = f"班级均分表：{len(averages)} 个班级，仅预览不入库"
+        result.class_averages = averages
+        result.message = f"班级均分表：识别到 {len(averages)} 个班级，确认后入库"
         return result
 
     raw_students = parsed.get("students") or []

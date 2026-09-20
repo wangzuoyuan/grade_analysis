@@ -51,6 +51,21 @@ def hist_base():
     c1 = aclass(y1, 1, 6)
     c2 = aclass(y2, 2, 6)
 
+    for ay, label in ((y1, "历史物理班"), (y2, "当前物理班")):
+        if (
+            db.query(wm.TeachingClass)
+            .filter_by(academic_year_id=ay.id, subject="物理", label=label)
+            .first()
+            is None
+        ):
+            db.add(
+                wm.TeachingClass(
+                    academic_year_id=ay.id,
+                    subject="物理",
+                    label=label,
+                )
+            )
+
     ident = (
         db.query(wm.WsStudentIdentity)
         .filter_by(data_domain="homeroom", display_name="历史回退学生")
@@ -113,6 +128,22 @@ def test_shared_exams_historical_year_200(client, hist_base):
     assert r.json()["exams"] == []
 
 
+def test_shared_classes_historical_year_uses_same_safe_fallback(client, hist_base):
+    r = client.get(
+        f"{API}/shared/classes",
+        params={"academic_year_id": hist_base.y1.id},
+    )
+    assert r.status_code == 200
+    assert r.json()["homeroom"] == {
+        "class_id": hist_base.c1.id,
+        "grade": 1,
+        "class_num": 6,
+        "label": hist_base.c1.label,
+        "carried_from_academic_year_id": None,
+        "carried_from_academic_year_name": None,
+    }
+
+
 def test_homeroom_context_ambiguous_history_still_409(client, hist_base):
     from app.core.context import resolve_workspace_context
     from app.core.errors import WorkspaceNotConfigured
@@ -129,6 +160,27 @@ def test_homeroom_context_ambiguous_history_still_409(client, hist_base):
     try:
         with pytest.raises(WorkspaceNotConfigured):
             resolve_workspace_context(db, 1, "homeroom", {"academic_year_id": hist_base.y1.id})
+    finally:
+        db.delete(extra)
+        db.commit()
+
+
+def test_shared_classes_ambiguous_history_does_not_guess(client, hist_base):
+    from app.db import workspace_models as wm
+
+    db = hist_base.db
+    extra = wm.AdministrativeClass(
+        academic_year_id=hist_base.y1.id, grade=3, class_num=6
+    )
+    db.add(extra)
+    db.commit()
+    try:
+        r = client.get(
+            f"{API}/shared/classes",
+            params={"academic_year_id": hist_base.y1.id},
+        )
+        assert r.status_code == 200
+        assert r.json()["homeroom"] is None
     finally:
         db.delete(extra)
         db.commit()

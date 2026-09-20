@@ -175,3 +175,86 @@ def test_note_crud_and_validation(client, v1_seed):
     # 非法 mode → 422 invalid_scope_param
     r = client.get(f"{API}/magic/students/{yi_h}/notes")
     assert r.status_code == 422 and r.json()["error"] == "invalid_scope_param"
+
+
+def test_system_notes_never_leak_into_student_profile_or_report(client, v1_seed, db_session):
+    """系统内部辅助 note（作业考勤/忘带同步、预警解除、迁移标记）绝不泄漏到学生档案谈话记录与报告。"""
+    from datetime import date
+    from app.db import workspace_models as wm
+
+    jia_h = v1_seed.jia_h_id
+    jia_t = v1_seed.jia_t_id
+
+    # 1. 向数据库直接写入作业考勤同步、预警解除、迁移标记三种系统记录
+    sys_notes = [
+        wm.WsStudentNote(
+            data_domain="homeroom",
+            person_id=jia_h,
+            date=date(2026, 9, 17),
+            category="其他",
+            content="[迟到] 考勤",
+            source="homework:9991",
+        ),
+        wm.WsStudentNote(
+            data_domain="homeroom",
+            person_id=jia_h,
+            date=date(2026, 9, 17),
+            category="谈话",
+            content="[预警解除] quality 预警已跟进处理",
+            source="warning_dismissal:quality:1",
+        ),
+        wm.WsStudentNote(
+            data_domain="homeroom",
+            person_id=jia_h,
+            date=date(2024, 9, 1),
+            category="其他",
+            content="[迟到] ",
+            source="migration:h",
+        ),
+        wm.WsStudentNote(
+            data_domain="teaching",
+            person_id=jia_t,
+            date=date(2026, 9, 17),
+            category="其他",
+            content="[没来] 物理",
+            source="homework:9992",
+        ),
+    ]
+    for n in sys_notes:
+        db_session.add(n)
+    db_session.commit()
+
+    # 2. 班主任工作台读学生档案谈话记录：绝不包含系统记录
+    r_h = client.get(f"{API}/homeroom/students/{jia_h}/notes")
+    assert r_h.status_code == 200
+    h_contents = [n["content"] for n in r_h.json()["notes"]]
+    assert not any(c.startswith("[迟到]") or c.startswith("[预警解除]") for c in h_contents)
+
+    # 3. 班主任工作台读打印报告：notes_summary 同样绝不包含系统记录
+    r_rep = client.get(f"{API}/homeroom/students/{jia_h}/report")
+    assert r_rep.status_code == 200
+    rep_notes = r_rep.json()["notes_summary"]["recent"]
+    rep_contents = [n["content"] for n in rep_notes]
+    assert not any(c.startswith("[迟到]") or c.startswith("[预警解除]") for c in rep_contents)
+
+    # 4. 教学工作台读学生档案谈话记录：同样绝不包含作业考勤记录
+    r_t = client.get(f"{API}/teaching/students/{jia_t}/notes")
+    assert r_t.status_code == 200
+    t_contents = [n["content"] for n in r_t.json()["notes"]]
+    assert not any(c.startswith("[没来]") for c in t_contents)
+
+    # 5. 试图通过档案 API 修改或删除系统记录：返回 404，防止篡改预警事实
+    sys_id = sys_notes[0].id
+    assert client.patch(f"{API}/homeroom/notes/{sys_id}", json={"content": "改动"}).status_code == 404
+    assert client.delete(f"{API}/homeroom/notes/{sys_id}").status_code == 404
+
+    # 6. 正常手动创建一条谈话记录：完全正常展示与修改
+    post_res = client.post(
+        f"{API}/homeroom/students/{jia_h}/notes",
+        json={"date": "2026-09-17", "category": "谈话", "content": "班主任面对面谈话交流"},
+    )
+    assert post_res.status_code == 200
+    real_note_id = post_res.json()["id"]
+
+    r_h2 = client.get(f"{API}/homeroom/students/{jia_h}/notes")
+    assert any(n["id"] == real_note_id for n in r_h2.json()["notes"])

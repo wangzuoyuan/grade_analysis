@@ -68,6 +68,7 @@ from app.db.workspace_models import (
     ScoreFact,
     TeachingClass,
     TeachingClassMember,
+    WorkspaceClassAverage,
     WsStudentAlias,
     WsStudentIdentity,
 )
@@ -516,7 +517,11 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
                 exam_date=parsed.exam_date.isoformat() if parsed.exam_date else None,
                 subject=parsed.subject,
                 class_label=parsed.class_label,
-                row_count=len(parsed.rows),
+                row_count=(
+                    len(parsed.rows)
+                    if parsed.kind == "student_scores"
+                    else len(parsed.class_averages)
+                ),
                 known_students=known,
                 new_students=[ImportNewItem(**stu) for stu in new_students],
                 identity_candidates=[
@@ -532,14 +537,16 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
                 "parsed_ok": parsed.parsed_ok,
                 "exam_name": parsed.exam_name,
                 "exam_date": parsed.exam_date.isoformat() if parsed.exam_date else None,
+                "grade": parsed.grade,
                 "rows": parsed.rows,
+                "class_averages": parsed.class_averages,
                 "students": parsed.students,
             }
         )
 
     # 考试日期一致性（契约 §1.1 v2.1）：批内或与库内同 exam_name 不同
     # exam_date → preview 计 warnings（confirm 时整批 409，不静默合并）。
-    # 只查将入库的 student_scores 文件，与 confirm 的校验口径一致
+    # 只查将入库的成绩明细与班级均分文件，与 confirm 的校验口径一致
     date_conflicts = _exam_date_conflicts(
         db,
         ctx.data_domain,
@@ -547,7 +554,7 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
         [
             (f.get("exam_name"), f.get("exam_date"))
             for f in snapshot_files
-            if f.get("kind") == "student_scores"
+            if f.get("kind") in {"student_scores", "class_averages"}
         ],
     )
     if date_conflicts:
@@ -622,8 +629,22 @@ def _natural_fact(db: Session, domain: str, academic_year_id: int,
     )
 
 
+_FACT_VALUE_FIELDS = (
+    "score",
+    "grade_score",
+    "grade_percentile",
+    "xueji_rank",
+    "grade_rank",
+)
+
+
 def _same_value(fact: ScoreFact, row: dict) -> bool:
-    return fact.score == row.get("score") and fact.grade_score == row.get("grade_score")
+    """幂等比较覆盖重点关注所需的排名/百分位，避免同分数重导时漏更新。"""
+    return all(getattr(fact, field) == row.get(field) for field in _FACT_VALUE_FIELDS)
+
+
+def _same_row_value(left: dict, right: dict) -> bool:
+    return all(left.get(field) == right.get(field) for field in _FACT_VALUE_FIELDS)
 
 
 def _valid_member_row(db: Session, teaching_class_id: int, identity_id: int, as_of: date):
@@ -723,6 +744,10 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
             )
 
     files = [f for f in snapshot.get("files") or [] if f.get("parsed_ok") and f.get("kind") == "student_scores"]
+    average_files = [
+        f for f in snapshot.get("files") or []
+        if f.get("parsed_ok") and f.get("kind") == "class_averages"
+    ]
 
     # 考试日期一致性（契约 §1.2 校验 4 / v2.1 边界裁决）：批内或与库内
     # 同 exam_name 不同 exam_date → 整批 409，不静默合并不当作修订
@@ -730,7 +755,10 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
         db,
         ctx.data_domain,
         ctx.academic_year_id,
-        [(f.get("exam_name"), f.get("exam_date")) for f in files],
+        [
+            (f.get("exam_name"), f.get("exam_date"))
+            for f in [*files, *average_files]
+        ],
     )
     if date_conflicts:
         raise LinkVersionConflict(
@@ -863,9 +891,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
             )
             seen = batch_rows.get(key)
             if seen is not None:
-                if seen["row"].get("score") == row.get("score") and seen["row"].get(
-                    "grade_score"
-                ) == row.get("grade_score"):
+                if _same_row_value(seen["row"], row):
                     continue  # 批内同键同值：只处理一次
                 value_conflicts.append(
                     {
@@ -883,6 +909,76 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                 "exam_name": exam_name,
                 "exam_date": exam_date,
             }
+
+    average_inserts: list = []
+    average_revises: list = []
+    average_skips = 0
+    average_rows: dict = {}
+    for f in average_files:
+        exam_name = f.get("exam_name")
+        exam_date = date.fromisoformat(f["exam_date"]) if f.get("exam_date") else None
+        exams_seen.setdefault(exam_name, exam_date)
+        for row in f.get("class_averages") or []:
+            key = (exam_name, int(row["class_num"]))
+            previous = average_rows.get(key)
+            if previous is not None and previous["row"] != row:
+                value_conflicts.append(
+                    {
+                        "kind": "class_averages",
+                        "person": f"{row['class_num']}班",
+                        "subject": "班级均分表",
+                        "exam_name": exam_name,
+                        "existing_score": None,
+                        "new_score": None,
+                    }
+                )
+                continue
+            average_rows[key] = {
+                "row": row,
+                "filename": f["filename"],
+                "exam_name": exam_name,
+                "exam_date": exam_date,
+                "grade": int(f["grade"]),
+            }
+
+    for plan in average_rows.values():
+        row = plan["row"]
+        existing = (
+            db.query(WorkspaceClassAverage)
+            .filter(
+                WorkspaceClassAverage.data_domain == ctx.data_domain,
+                WorkspaceClassAverage.academic_year_id == ctx.academic_year_id,
+                WorkspaceClassAverage.exam_name == plan["exam_name"],
+                WorkspaceClassAverage.grade == plan["grade"],
+                WorkspaceClassAverage.class_num == int(row["class_num"]),
+            )
+            .one_or_none()
+        )
+        same = existing is not None and all(
+            (
+                existing.class_type == row.get("class_type"),
+                existing.teacher_name == row.get("teacher_name"),
+                (existing.subject_averages or {}) == (row.get("subject_averages") or {}),
+                (existing.total_averages or {}) == (row.get("total_averages") or {}),
+            )
+        )
+        if existing is None:
+            average_inserts.append(plan)
+        elif same:
+            average_skips += 1
+        elif req.revise:
+            average_revises.append((existing, plan))
+        else:
+            value_conflicts.append(
+                {
+                    "kind": "class_averages",
+                    "person": f"{row['class_num']}班",
+                    "subject": "班级均分表",
+                    "exam_name": plan["exam_name"],
+                    "existing_score": None,
+                    "new_score": None,
+                }
+            )
 
     for plan in batch_rows.values():
         row = plan["row"]
@@ -915,7 +1011,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
     if value_conflicts:
         # revise=false：不同值 → 整批 409 + conflicts 列表，零写入
         raise LinkVersionConflict(
-            "同场同键成绩值不同（revise=false 拒绝覆写）",
+            "同场同键导入数据不同（revise=false 拒绝覆写）",
             details={"conflicts": value_conflicts},
         )
 
@@ -1053,6 +1149,9 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                     total_type=row.get("total_type"),
                     score=row.get("score"),  # 缺考 NULL 保真，绝不转 0
                     grade_score=row.get("grade_score"),
+                    grade_percentile=row.get("grade_percentile"),
+                    xueji_rank=row.get("xueji_rank"),
+                    grade_rank=row.get("grade_rank"),
                     source=f"import:{plan['filename']}",
                 )
             )
@@ -1060,6 +1159,36 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
         for existing, row in revises:
             existing.score = row.get("score")
             existing.grade_score = row.get("grade_score")
+            existing.grade_percentile = row.get("grade_percentile")
+            existing.xueji_rank = row.get("xueji_rank")
+            existing.grade_rank = row.get("grade_rank")
+            existing.data_revision = (existing.data_revision or 1) + 1
+
+        for plan in average_inserts:
+            row = plan["row"]
+            db.add(
+                WorkspaceClassAverage(
+                    data_domain=ctx.data_domain,
+                    academic_year_id=ay.id,
+                    exam_name=plan["exam_name"],
+                    exam_date=plan["exam_date"],
+                    grade=plan["grade"],
+                    class_type=row.get("class_type"),
+                    class_num=int(row["class_num"]),
+                    teacher_name=row.get("teacher_name"),
+                    subject_averages=row.get("subject_averages") or {},
+                    total_averages=row.get("total_averages") or {},
+                    source=f"import:{plan['filename']}",
+                )
+            )
+        for existing, plan in average_revises:
+            row = plan["row"]
+            existing.exam_date = plan["exam_date"]
+            existing.class_type = row.get("class_type")
+            existing.teacher_name = row.get("teacher_name")
+            existing.subject_averages = row.get("subject_averages") or {}
+            existing.total_averages = row.get("total_averages") or {}
+            existing.source = f"import:{plan['filename']}"
             existing.data_revision = (existing.data_revision or 1) + 1
 
         # teaching 成员同步：文件里 known 学生（含确认接续的既有人）当前
@@ -1108,9 +1237,9 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
         raise
 
     return ImportsConfirmResponse(
-        imported=len(inserts),
-        skipped=skips,
-        revised=len(revises),
+        imported=len(inserts) + len(average_inserts),
+        skipped=skips + average_skips,
+        revised=len(revises) + len(average_revises),
         exams=[
             ImportConfirmExam(exam_name=name, exam_date=d.isoformat() if d else None)
             for name, d in exams_seen.items()

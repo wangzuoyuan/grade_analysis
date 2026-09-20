@@ -2,10 +2,12 @@
 
 /**
  * 换届向导（契约 docs/contracts/p4-students.md §2.2/§6，I01）。
+ * 双域共用：domain='homeroom' 行政班换届；domain='teaching' 教学班换届
+ * （预览逐人带 class_label，确认一次升入多个教学班）。
  *
  * 流程：选来源学年 → rollover/preview（token，R4 语义：pending/未过期/成员无漂移）
  * → 逐人确认新学年学号（默认取后端建议，可改）→ rollover/confirm（单事务建新学年班级 +
- * 每生 Enrollment + 新学段 alias）→ 成功摘要；撤销入口按 token 快照回滚，
+ * 每生学籍/成员 + 新学段 alias）→ 成功摘要；撤销入口按 token 快照回滚，
  * conflicted 学生（换届后已有新写入）单独列出「保留现状」，绝不静默覆盖。
  * token 过期/成员漂移 409 → 中文错误 + 重新预览。确认成功的 token 暂存为页面草稿，
  * 撤销成功后清除。
@@ -19,6 +21,9 @@ import {
   rolloverConfirm,
   rolloverPreview,
   rolloverUndo,
+  teachingRolloverConfirm,
+  teachingRolloverPreview,
+  teachingRolloverUndo,
   type AcademicYear,
   type RolloverPreview,
   type RolloverUndoConflict,
@@ -46,8 +51,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
-const DRAFT_ROUTE = '/homeroom/rollover'
 const DRAFT_KEY = 'token'
+
+export type RolloverDomain = 'homeroom' | 'teaching'
 
 /** 换届确认成功后的本地摘要（主要来自请求数据，不依赖未冻结的响应字段）。 */
 interface RolloverSuccess {
@@ -72,8 +78,12 @@ function isTokenDraft(v: unknown): v is string {
   return typeof v === 'string'
 }
 
-export function RolloverWizard() {
+export function RolloverWizard({ domain = 'homeroom' }: { domain?: RolloverDomain } = {}) {
   const { filter, generation, switching } = useWorkspace()
+  const draftRoute = domain === 'teaching' ? '/teaching/rollover' : '/homeroom/rollover'
+  const previewFn = domain === 'teaching' ? teachingRolloverPreview : rolloverPreview
+  const confirmFn = domain === 'teaching' ? teachingRolloverConfirm : rolloverConfirm
+  const undoFn = domain === 'teaching' ? teachingRolloverUndo : rolloverUndo
 
   // 学年清单：换届来源候选（GET /shared/academic-years，start_date 降序）
   const [years, setYears] = useState<AcademicYear[] | null>(null)
@@ -100,9 +110,9 @@ export function RolloverWizard() {
 
   // 确认成功的 token 暂存草稿：中途切走再回来仍可撤销（提交撤销成功后清除）
   useEffect(() => {
-    const saved = loadPageDraft<string>(DRAFT_ROUTE, DRAFT_KEY, isTokenDraft)
+    const saved = loadPageDraft<string>(draftRoute, DRAFT_KEY, isTokenDraft)
     if (saved != null) setUndoToken(saved)
-  }, [])
+  }, [draftRoute])
 
   const loadYears = useCallback(() => {
     const req = ++yearsReqRef.current
@@ -141,7 +151,7 @@ export function RolloverWizard() {
     setConfirmError(null)
     setSuccess(null)
     try {
-      const p = await rolloverPreview(selectedYear)
+      const p = await previewFn(selectedYear)
       setPreview(p)
       // 逐人初始化新学年学号输入：后端建议（next_alias）优先，缺省回退当前学号
       const drafts: Record<string, string> = {}
@@ -152,7 +162,7 @@ export function RolloverWizard() {
     } catch (err) {
       setPreview(null)
       setPreviewError(
-        isApiErrorCode(err, 'workspace_not_configured')
+        domain !== 'teaching' && isApiErrorCode(err, 'workspace_not_configured')
           ? '还没有可升入的新学年：请先创建下一学年（学年管理）后再预览换届。'
           : apiErrorMessage(err),
       )
@@ -179,7 +189,7 @@ export function RolloverWizard() {
         const v = (aliasDrafts[String(s.person_id)] ?? '').trim()
         if (v !== '') aliases[String(s.person_id)] = v
       }
-      await rolloverConfirm({ token: preview.token, aliases })
+      await confirmFn({ token: preview.token, aliases })
       const outcome: RolloverSuccess = {
         token: preview.token,
         toYearName: preview.to_year?.name ?? '新学年',
@@ -190,7 +200,7 @@ export function RolloverWizard() {
       setAliasDrafts({})
       setUndoToken(outcome.token)
       setUndoOutcome(null)
-      savePageDraft<string>(DRAFT_ROUTE, DRAFT_KEY, outcome.token)
+      savePageDraft<string>(draftRoute, DRAFT_KEY, outcome.token)
     } catch (err) {
       // token 过期/成员漂移/重复确认统一 409：提示重新预览，不静默重发
       setConfirmError(
@@ -213,9 +223,9 @@ export function RolloverWizard() {
     setUndoError(null)
     setUndoOutcome(null)
     try {
-      const r = await rolloverUndo(token)
+      const r = await undoFn(token)
       setUndoOutcome({ conflicted: readConflicted(r) })
-      clearPageDraft(DRAFT_ROUTE, DRAFT_KEY)
+      clearPageDraft(draftRoute, DRAFT_KEY)
       setSuccess(null)
     } catch (err) {
       setUndoError(apiErrorMessage(err))
@@ -231,12 +241,24 @@ export function RolloverWizard() {
     [preview, aliasDrafts],
   )
 
+  const classCount = useMemo(
+    () =>
+      new Set(
+        (preview?.students ?? [])
+          .map((s) => s.class_label)
+          .filter((label): label is string => typeof label === 'string' && label !== ''),
+      ).size,
+    [preview],
+  )
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900">换届</h1>
         <p className="mt-1 text-sm text-slate-500">
-          旧学年名册整批升入新学年：建新班、转学籍、换新学号，历史接续到同一人{switching ? ' · 正在切换…' : ''}
+          {domain === 'teaching'
+            ? `旧学年教学班整批升入新学年：建新班、转成员、换新学号，历史接续到同一人${switching ? ' · 正在切换…' : ''}`
+            : `旧学年名册整批升入新学年：建新班、转学籍、换新学号，历史接续到同一人${switching ? ' · 正在切换…' : ''}`}
         </p>
       </div>
 
@@ -322,7 +344,8 @@ export function RolloverWizard() {
               Step 2 · 确认升入 {preview.to_year?.name ?? '新学年'}
             </CardTitle>
             <CardDescription>
-              来源 {preview.from_year?.name ?? '—'} 学年 {String(preview.students.length)} 人；
+              来源 {preview.from_year?.name ?? '—'} 学年{' '}
+              {domain === 'teaching' ? `${String(classCount)} 个教学班共 ${String(preview.students.length)} 人；` : `${String(preview.students.length)} 人；`}
               新学年学号默认取建议值（可逐人修改）。预览令牌过期或名册变化后需重新预览。
             </CardDescription>
           </CardHeader>
@@ -332,6 +355,9 @@ export function RolloverWizard() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="whitespace-nowrap text-xs">姓名</TableHead>
+                    {domain === 'teaching' ? (
+                      <TableHead className="whitespace-nowrap text-xs">教学班</TableHead>
+                    ) : null}
                     <TableHead className="whitespace-nowrap text-xs">当前学号</TableHead>
                     <TableHead className="whitespace-nowrap text-xs">新学年学号</TableHead>
                     <TableHead className="text-xs">备注</TableHead>
@@ -341,10 +367,15 @@ export function RolloverWizard() {
                   {preview.students.map((s) => {
                     const key = String(s.person_id)
                     return (
-                      <TableRow key={key}>
+                      <TableRow key={`${key}:${s.class_label ?? ''}`}>
                         <TableCell className="whitespace-nowrap text-sm font-medium text-slate-900">
                           {s.name ?? '（未命名）'}
                         </TableCell>
+                        {domain === 'teaching' ? (
+                          <TableCell className="whitespace-nowrap text-xs text-slate-600">
+                            {s.class_label ?? '—'}
+                          </TableCell>
+                        ) : null}
                         <TableCell className="whitespace-nowrap font-mono text-xs text-slate-600">
                           {s.current_alias ?? '—'}
                         </TableCell>
@@ -386,7 +417,9 @@ export function RolloverWizard() {
               <p className="text-xs text-slate-400">
                 {emptyAliasRows > 0
                   ? `${String(emptyAliasRows)} 人学号为空，确认时将跳过该部分学号写入。`
-                  : '确认后单事务写入：新学年班级 + 每生学籍与新学号。'}
+                  : domain === 'teaching'
+                    ? '确认后单事务写入：新学年教学班 + 每成员有效期与新学号。'
+                    : '确认后单事务写入：新学年班级 + 每生学籍与新学号。'}
               </p>
               <Button onClick={() => void handleConfirm()} disabled={confirming || preview.students.length === 0}>
                 {confirming ? (

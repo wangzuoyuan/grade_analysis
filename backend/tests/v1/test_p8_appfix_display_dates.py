@@ -102,7 +102,14 @@ def test_month_precision_reaches_profile_and_trends(client, v1_seed):
         if row["exam_name"] == exam_name
     ]
     assert points == [
-        {"exam_name": exam_name, "exam_date": "2025-10", "score": 77.0, "grade_score": None}
+        {
+            "exam_name": exam_name,
+            "exam_date": "2025-10",
+            "score": 77.0,
+            "grade_score": None,
+            "rank": None,
+            "rank_basis": None,
+        }
     ]
 
 

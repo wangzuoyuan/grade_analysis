@@ -49,9 +49,8 @@ def test_h03_missing_only_batch_rate_unavailable(client, v1_seed):
     c = _confirm(client, p.json()["token"])
     assert c.status_code == 200, c.text
     counts = c.json()
-    assert (counts["submitted"], counts["missing"], counts["excused"], counts["unknown"]) == (
-        0, 0, 0, 0,
-    )
+    assert (counts["submitted"], counts["missing"], counts["excused"]) == (0, 0, 0)
+    assert "unknown" not in counts
     aid = counts["assignment_id"]
 
     listing = client.get(
@@ -108,9 +107,8 @@ def test_h03_member_drift_after_preview_confirms_409(client, v1_seed, db_session
     assert listing["total"] == 0  # 漂移拒绝零写入
 
 
-def test_h03_unknown_breaks_current_streak(client, v1_seed):
-    """missing-unknown-missing：current 置 null 且 basis='unknown'，
-    longest 只计两段真实的连续缺交（各 1），不跨 unknown 冒充连续。"""
+def test_legacy_unknown_is_read_as_submitted(client, v1_seed):
+    """旧 unknown 按默认已交兼容读取，并中断连续缺交。"""
     rows = [
         ("2025-09-01", "missing"),
         ("2025-09-02", "unknown"),
@@ -134,10 +132,10 @@ def test_h03_unknown_breaks_current_streak(client, v1_seed):
     assert [e["assigned_date"] for e in body["events"]] == [
         "2025-09-01", "2025-09-02", "2025-09-03",
     ]
-    assert [e["status"] for e in body["events"]] == ["missing", "unknown", "missing"]
+    assert [e["status"] for e in body["events"]] == ["missing", "submitted", "missing"]
     streaks = body["streaks"]
-    assert streaks["current_missing_streak"] is None
-    assert streaks["streak_basis"] == "unknown"
+    assert streaks["current_missing_streak"] == 1
+    assert streaks["streak_basis"] == "events"
     assert streaks["longest_missing_streak"] == 1
 
 
@@ -165,8 +163,8 @@ def test_h03_submitted_breaks_and_counts_streak(client, v1_seed):
     assert body["streaks"]["longest_missing_streak"] == 2
 
 
-def test_dashboard_groups_week_and_month(client, v1_seed):
-    """看板按月（月首）/按周（ISO 周一）聚合，rate 按批次聚合分母。"""
+def test_dashboard_groups_day_week_and_month(client, v1_seed):
+    """看板按日/按月（月首）/按周（ISO 周一）聚合，rate 按批次聚合分母。"""
     for day, homework_type in (("2025-09-10", "试卷订正"), ("2025-10-10", "试卷订正")):
         p = _preview(client, v1_seed, assigned_date=day, homework_type=homework_type)
         assert _confirm(client, p.json()["token"]).status_code == 200
@@ -181,6 +179,13 @@ def test_dashboard_groups_week_and_month(client, v1_seed):
     assert all(g["assignments"] == 1 for g in month["groups"])
     assert all(g["submission_rate"] == 1.0 for g in month["groups"])
     assert all(g["rate_unavailable"] is False for g in month["groups"])
+
+    day = client.get(
+        "/api/v1/homework/dashboard",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id,
+                "group_by": "day", "homework_type": "试卷订正"},
+    ).json()
+    assert [g["label"] for g in day["groups"]] == ["2025-09-10", "2025-10-10"]
 
     week = client.get(
         "/api/v1/homework/dashboard",
@@ -271,3 +276,99 @@ def test_revoke_conflict_lists_edited_submissions(client, v1_seed):
     assert len(conflicts) == 1
     assert conflicts[0]["person_id"] == v1_seed.jia_h_id
     assert conflicts[0]["name"] == "秦甲"
+
+
+def test_dashboard_negative_count(client, v1_seed):
+    """按期汇总 dashboard 必须统计负面评价人次 negative_count。"""
+    p = _preview(
+        client,
+        v1_seed,
+        assigned_date="2025-09-22",
+        homework_type="随堂测验",
+        input={
+            "kind": "detailed",
+            "rows": [
+                {"name_or_alias": "秦甲", "status": "submitted", "evaluation": "差劲"},
+                {"name_or_alias": "秦乙", "status": "submitted", "evaluation": "良好"},
+            ],
+        },
+    )
+    assert p.status_code == 200, p.text
+    assert _confirm(client, p.json()["token"]).status_code == 200
+
+    dash = client.get(
+        "/api/v1/homework/dashboard",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id, "group_by": "day"},
+    ).json()
+    g_0922 = next(g for g in dash["groups"] if g["label"] == "2025-09-22")
+    assert g_0922["negative_count"] == 1
+
+
+def test_patch_assignment_metadata(client, v1_seed):
+    """PATCH 支持修改批次元信息（homework_type、assigned_date 等）。"""
+    p = _preview(client, v1_seed, assigned_date="2025-09-23", homework_type="没带")
+    aid = _confirm(client, p.json()["token"]).json()["assignment_id"]
+    params = {"mode": "homeroom", "class_id": v1_seed.h6_id}
+
+    # 1. 尝试清空 homework_type -> 422
+    err = client.patch(
+        f"/api/v1/homework/assignments/{aid}",
+        params=params,
+        json={"revision": 1, "homework_type": "   "},
+    )
+    assert err.status_code == 422
+
+    # 2. 正常修改 homework_type 与 assigned_date
+    ok = client.patch(
+        f"/api/v1/homework/assignments/{aid}",
+        params=params,
+        json={
+            "revision": 1,
+            "homework_type": "日常作业",
+            "assigned_date": "2025-09-24",
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["revision"] == 2
+
+    # 3. 读取详情验证已生效
+    detail = client.get(f"/api/v1/homework/assignments/{aid}", params=params).json()
+    assert detail["homework_type"] == "日常作业"
+    assert detail["assigned_date"] == "2025-09-24"
+
+
+
+
+def test_assignment_list_forgot_ids_and_missing_still_counts_forgot(client, v1_seed):
+    """列表项补 forgot_ids：忘带学生入名单；忘带是缺交子集，missing 计数口径不变。"""
+    p = _preview(
+        client,
+        v1_seed,
+        assigned_date="2025-09-25",
+        homework_type="练习册",
+        input={
+            "kind": "detailed",
+            "rows": [
+                {"name_or_alias": "秦甲", "status": "missing", "evaluation": "忘带"},
+                {"name_or_alias": "秦乙", "status": "submitted"},
+            ],
+        },
+    )
+    assert p.status_code == 200, p.text
+    assert _confirm(client, p.json()["token"]).status_code == 200
+
+    listing = client.get(
+        "/api/v1/homework/assignments",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id,
+                "from_date": "2025-09-25", "to_date": "2025-09-25"},
+    ).json()
+    assert listing["total"] == 1
+    item = listing["items"][0]
+    # 忘带学生进入 forgot_ids（与既有 4 类例外 ID 同一套 reader id 口径）
+    assert item["forgot_ids"] == [v1_seed.jia_h_id]
+    # 忘带仍计入缺交：missing_ids 与 missing 计数都包含他，绝不因新字段改变统计口径
+    assert v1_seed.jia_h_id in item["missing_ids"]
+    assert item["missing"] == 1
+    # 忘带不是质量负面；例外登记口径下 submitted = 应交 − 缺交（忘带绝不计入已交）
+    assert item["negative_ids"] == []
+    assert item["submitted"] == item["expected_count"] - 1

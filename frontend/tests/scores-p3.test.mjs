@@ -25,7 +25,13 @@ test('api-v1 导出 P3 导入/考试/分析封装与类型（契约 §1/§2）',
     'normalizeSharedConflicts',
     'listExams',
     'fetchHomeroomStats',
+    'fetchHomeroomClassAverages',
     'fetchHomeroomStudents',
+    'fetchHomeroomFocus',
+    'fetchHomeroomRankMetrics',
+    'fetchHomeroomRankFrequency',
+    'fetchHomeroomRankRange',
+    'fetchHomeroomRankDistribution',
     'fetchHomeroomBands',
     'fetchHomeroomTrends',
     'fetchTeachingStats',
@@ -46,6 +52,11 @@ test('api-v1 导出 P3 导入/考试/分析封装与类型（契约 §1/§2）',
     'HomeroomStatsResponse',
     'HomeroomStudentRow',
     'HomeroomStudentsResponse',
+    'HomeroomFocusResponse',
+    'HomeroomRankMetric',
+    'HomeroomRankFrequencyResponse',
+    'HomeroomRankRangeResponse',
+    'HomeroomRankDistributionResponse',
     'HomeroomBandsQuery',
     'HomeroomBandsResponse',
     'HomeroomTrendPoint',
@@ -123,6 +134,42 @@ test('趋势按学年分段展示，不跨年连算（E03）', () => {
   assert.match(homeroomScores, /fetchHomeroomTrends/, '行展开须调用趋势端点')
   assert.match(homeroomScores, /academic_year_name/, '趋势必须按学年名分节')
   assert.match(homeroomScores, /跨学年成绩分段展示/, '须声明跨学年不直接比较')
+})
+
+test('班主任成绩页恢复旧版重点关注名单', () => {
+  assert.match(homeroomScores, /fetchHomeroomFocus/, '须读取重点关注端点')
+  assert.match(homeroomScores, /重点关注名单/, '须展示重点关注名单')
+  assert.match(homeroomScores, /临界段、薄弱段/, '须说明名次段口径')
+  assert.match(homeroomScores, /严重偏科/, '须展示单科百分位偏科标注')
+  assert.match(homeroomScores, /明显进退步、波动/, '须展示旧版进退步与波动维度')
+  assert.match(homeroomScores, /稳定优秀/, '须保留正向关注维度')
+  assert.match(homeroomScores, /排名极差/, '须展示趋势标注的计算依据')
+  assert.match(homeroomScores, /学籍排名/, '须展示旧版学籍排名')
+})
+
+test('班主任考试详情恢复旧版六板块与顶部排名分段图', () => {
+  for (const label of [
+    '班级均分表',
+    '学生成绩明细表',
+    '班级名次段位表',
+    '排名频次统计',
+    '排名区间筛选',
+    '重点关注',
+  ]) {
+    assert.match(homeroomScores, new RegExp(label), `应恢复${label}`)
+  }
+  assert.match(homeroomScores, /<BarChart/, '顶部应使用柱状图展示排名分段')
+  assert.match(homeroomScores, /rankDistribution\.series\.map/, '柱状图应按后端返回的总分口径生成图例')
+  assert.match(homeroomScores, /高一展示主三门、五门、九门/, '高一须展示三个总分口径')
+  assert.match(homeroomScores, /高二、高三展示主三门与 3\+3/, '高二高三须展示两个总分口径')
+  assert.match(homeroomScores, /frequencyExamNames/, '排名频次须支持多选考试')
+  assert.match(homeroomScores, /rangeMin/, '排名区间须支持起止名次')
+  assert.match(apiV1, /fetchHomeroomClassAverages/, '班级均分表须读取专用端点')
+  assert.match(homeroomScores, /全年级班级均分表/, '须展示全年级各班均分宽表')
+  assert.match(homeroomScores, /total_ranks/, '须展示各总分口径班级排名')
+  assert.match(homeroomScores, /平行班|groupName/, '须按班级类型分组')
+  assert.match(homeroomScores, /平均.*最高.*最低/s, '每个班型须有平均最高最低汇总')
+  assert.match(uploadPage, /学生成绩明细表和班级均分表/, '上传页须明确支持同场两个 Excel')
 })
 
 test('small_sample 与 estimated 标注存在（E04）', () => {

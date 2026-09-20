@@ -3,7 +3,7 @@
 /**
  * 新建学生弹窗（契约 docs/contracts/p4-students.md §2.1）。
  *
- * POST /api/v1/homeroom/students {name, alias?, seat_no?}：后端单事务新建身份 +
+ * POST /api/v1/homeroom/students {name, alias?}：后端单事务新建身份 +
  * 本学年别名 + 在班 Enrollment。alias 同学年同域已属他人 → 422（列出冲突人），
  * 前端只展示冲突明细，绝不自动改名/合并（契约：P4 不提供删除/合并）。
  * 未提交内容经 lib/page-draft 落 sessionStorage，提交成功后清除（简化版 link-draft）。
@@ -33,13 +33,12 @@ const DRAFT_KEY = 'new-student'
 interface NewStudentDraft {
   name: string
   alias: string
-  seatNo: string
 }
 
 function isNewStudentDraft(v: unknown): v is NewStudentDraft {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
-  return typeof o.name === 'string' && typeof o.alias === 'string' && typeof o.seatNo === 'string'
+  return typeof o.name === 'string' && typeof o.alias === 'string'
 }
 
 export function StudentFormDialog({
@@ -53,7 +52,6 @@ export function StudentFormDialog({
 }) {
   const [name, setName] = useState('')
   const [alias, setAlias] = useState('')
-  const [seatNo, setSeatNo] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [conflicts, setConflicts] = useState<AliasConflictEntry[] | null>(null)
@@ -64,7 +62,6 @@ export function StudentFormDialog({
     const d = loadPageDraft<NewStudentDraft>(DRAFT_ROUTE, DRAFT_KEY, isNewStudentDraft)
     setName(d?.name ?? '')
     setAlias(d?.alias ?? '')
-    setSeatNo(d?.seatNo ?? '')
     setError(null)
     setConflicts(null)
   }, [open])
@@ -72,14 +69,13 @@ export function StudentFormDialog({
   // 有内容即暂存草稿（S07 同思路：中途切走不丢）
   useEffect(() => {
     if (!open) return
-    if (name === '' && alias === '' && seatNo === '') return
-    savePageDraft<NewStudentDraft>(DRAFT_ROUTE, DRAFT_KEY, { name, alias, seatNo })
-  }, [open, name, alias, seatNo])
+    if (name === '' && alias === '') return
+    savePageDraft<NewStudentDraft>(DRAFT_ROUTE, DRAFT_KEY, { name, alias })
+  }, [open, name, alias])
 
   function reset() {
     setName('')
     setAlias('')
-    setSeatNo('')
     setError(null)
     setConflicts(null)
     clearPageDraft(DRAFT_ROUTE, DRAFT_KEY)
@@ -97,7 +93,6 @@ export function StudentFormDialog({
       await createHomeroomStudent({
         name: name.trim(),
         ...(alias.trim() !== '' ? { alias: alias.trim() } : {}),
-        ...(seatNo.trim() !== '' ? { seat_no: seatNo.trim() } : {}),
       })
       reset()
       onCreated()
@@ -121,7 +116,7 @@ export function StudentFormDialog({
         <DialogHeader>
           <DialogTitle>新建学生</DialogTitle>
           <DialogDescription>
-            新建身份并加入本学年行政班名册；学号（别名）同年内全局唯一，撞号会被拒绝。
+            新建身份并加入本学年行政班名册；学号同年内全局唯一，撞号会被拒绝。
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
@@ -139,25 +134,13 @@ export function StudentFormDialog({
           </div>
           <div className="space-y-1">
             <label htmlFor="new-student-alias" className="text-xs font-medium text-slate-500">
-              学号（别名，可选）
+              学号（可选）
             </label>
             <Input
               id="new-student-alias"
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               maxLength={40}
-              disabled={busy}
-            />
-          </div>
-          <div className="space-y-1">
-            <label htmlFor="new-student-seat" className="text-xs font-medium text-slate-500">
-              座号（可选）
-            </label>
-            <Input
-              id="new-student-seat"
-              value={seatNo}
-              onChange={(e) => setSeatNo(e.target.value)}
-              maxLength={20}
               disabled={busy}
             />
           </div>

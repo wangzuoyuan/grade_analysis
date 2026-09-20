@@ -175,6 +175,8 @@ class RolloverPreviewStudent(BaseModel):
     current_alias: Optional[str] = None
     next_alias: Optional[str] = None
     note: Optional[str] = None
+    # 教学班换届：该成员所属来源教学班标签（班主任换届恒为 None）。
+    class_label: Optional[str] = None
 
 
 class RolloverPreviewResponse(BaseModel):
@@ -211,6 +213,20 @@ class RolloverUndoResponse(BaseModel):
     undone: int
     conflicted: List[RolloverConflictedStudent] = Field(default_factory=list)
     class_removed: bool
+
+
+class TeachingRolloverClassResult(BaseModel):
+    class_id: int
+    label: str
+    class_created: bool
+
+
+class TeachingRolloverConfirmResponse(BaseModel):
+    """教学班换届确认：一次可升入多个教学班（同学科同标签逐班建新学年行）。"""
+
+    rolled_over: int
+    academic_year_id: int
+    classes: List[TeachingRolloverClassResult] = Field(default_factory=list)
 
 
 # ────────────────────────────── §2.3 学生报告 ──────────────────────────────

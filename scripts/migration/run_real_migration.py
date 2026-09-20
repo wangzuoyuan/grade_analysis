@@ -29,15 +29,14 @@ H_LEGACY_ORDER = ("teacher", "analysis_config", "homework_setting", "homework_se
 # 口径承接 run_rehearsal.py NOT_MIGRATED_REASONS，改写为真实迁移语境；
 # 完全投影的表 reason 为 null。homework_collection 的语义已对照旧应用
 # 源码（src-homeroom HomeworkCollection docstring + 连续缺交预警用法）确认：
-# 它是「某班某天某科收过作业（全交日）」的收交台账，只用于补全旧预警的
-# 时间轴，不含逐人事实；目标 homework_assignment 需要应交成员分母快照，
-# 源库没有该事实，重建批次会伪造提交，故整表归档不投影。
+# 它是「某班某天某科收过作业（全交日）」的收交台账。UX-HW02 将其
+# 投影为无逐人提交行的 legacy collection 批次，只作时间轴证据；读写时的
+# 成员集仅由原班级在事件日的有效学籍投影，不伪造逐人已交事实。
 PROJECTION_REASONS = {
     ("h", "teacher"): "教师配置行：合并版教师绑定是目标应用自身配置，不迁移源行（归档可追溯）",
     ("h", "class_average"): "班均为派生统计：目标按需由 score_fact 重算，不迁移原行（归档可追溯）",
     ("h", "analysis_config"): "段位阈值配置：目标应用自身配置，不迁移（归档可追溯）",
     ("h", "homework_setting"): "作业键值配置：active_grade/学期锚点已消费用于学年推导，目标等价物由应用自管",
-    ("h", "homework_collection"): "旧收交台账（某班某天某科收过作业/全交日）：仅用于旧连续缺交预警补全时间轴，无逐人事实；目标 homework_assignment 需应交成员分母快照，源无该事实，重建会伪造提交，不投影（归档可追溯）",
     ("h", "imported_history"): "手工历史成绩：目标等价模型本批次未建，不混入全年级排名（归档可追溯）",
     ("h", "student_note"): "班主任私密档案：档案隐私边界，不自动迁移（归档可追溯）",
     ("h", "student_change_log"): "学生名册变更过程日志：仅服务旧应用审计流，无目标等价（归档可追溯）",
@@ -483,6 +482,22 @@ def project_workspace_facts(
                     eid = ensure_enrollment(cid, ident, r["seat_no"], r["status"])
                     map_to(domain, fp, "class_roster", r, "administrative_class", cid, "roster_class", src)
                     map_to(domain, fp, "class_roster", r, "enrollment", eid, "roster_enrollment", src); counts["h_roster"] += 1
+                # H 全交收交台账：只投影批次时间轴，不生成逐人已交行。
+                # 这使“缺-交-缺”能正确中断；旧批次后续补录时，API 仅从
+                # 同学年、同行政班、事件日有效学籍解析可写成员，不扩大班域。
+                if "homework_collection" in tables(src):
+                    for r in src.execute("SELECT * FROM homework_collection ORDER BY id"):
+                        ay_name = homework_year_name(r["date"])
+                        if not ay_name:
+                            ensure_pending(domain, fp, "homework_collection", r, "收交日期无法推导学年", src)
+                            counts["h_collection_pending"] += 1
+                            continue
+                        year_id = shifted_year(anchor_year, int(ay_name[:4]) - int(anchor_year[:4]))
+                        cid = admin_class(year_id, int(r["grade"]), int(r["class_num"]))
+                        token = f"migration:h:collection:{r['id']}:{r['date']}:{cid}"
+                        aid = ensure_assignment(domain, cid, year_id, r["subject"], "legacy", r["date"], token)
+                        map_to(domain, fp, "homework_collection", r, "homework_assignment", aid, "collection_timeline", src)
+                        counts["h_collection"] += 1
                 # subject_score 先于 total_score 迭代：同考生同场考试的科目行 class_num
                 # 是总分行班级的最直接证据（1e 回填分支一）。
                 subject_class_by_exam_sid = {}
@@ -515,7 +530,7 @@ def project_workspace_facts(
                         if table == "subject_score" and r["class_num"] is not None:
                             subject_class_by_exam_sid[(r["exam_id"], r["student_id"])] = r["class_num"]
                         subject = r[subjectcol] if table == "subject_score" else None; total = r[subjectcol] if table == "total_score" else None
-                        dst.execute("INSERT OR IGNORE INTO score_fact(data_domain,academic_year_id,exam_name,exam_date,source_exam_date,exam_date_precision,class_ref_id,identity_id,subject,total_type,subject_key,total_key,score,grade_score,source,data_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (domain, ay, ex["name"], exact, ex["exam_date"], precision, cid, ident, subject, total, subject or "", total or "", r[valcol], r["grade_score"] if table == "subject_score" else None, "migration:h", 1))
+                        dst.execute("INSERT OR IGNORE INTO score_fact(data_domain,academic_year_id,exam_name,exam_date,source_exam_date,exam_date_precision,class_ref_id,identity_id,subject,total_type,subject_key,total_key,score,grade_score,grade_percentile,xueji_rank,grade_rank,source,data_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (domain, ay, ex["name"], exact, ex["exam_date"], precision, cid, ident, subject, total, subject or "", total or "", r[valcol], r["grade_score"] if table == "subject_score" and "grade_score" in r.keys() else None, r["grade_percentile"] if "grade_percentile" in r.keys() else None, r["xueji_rank"] if table == "total_score" and "xueji_rank" in r.keys() else None, r["grade_rank"] if table == "total_score" and "grade_rank" in r.keys() else None, "migration:h", 1))
                         fact = one("SELECT id FROM score_fact WHERE data_domain=? AND academic_year_id=? AND exam_name=? AND identity_id=? AND subject_key=? AND total_key=?", (domain, ay, ex["name"], ident, subject or "", total or ""))[0]
                         map_to(domain, fp, table, r, "score_fact", fact, "score", src); counts["h_score"] += 1
                 # H HomeworkRecord：每行=某生某天某科欠交一次；remark 非空≈请假。
@@ -611,7 +626,7 @@ def project_workspace_facts(
                     else:
                         cid = classes[src_tc]; mid = ensure_member(cid, ident, "legacy_score")
                         map_to(domain, fp, "subject_score", r, "teaching_class", cid, "score_class", src); map_to(domain, fp, "subject_score", r, "teaching_class_member", mid, "score_member", src)
-                    dst.execute("INSERT OR IGNORE INTO score_fact(data_domain,academic_year_id,exam_name,exam_date,source_exam_date,exam_date_precision,class_ref_id,identity_id,subject,total_type,subject_key,total_key,score,grade_score,source,data_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("teaching", ay, ex["name"], exact, ex["exam_date"], precision, cid, ident, current, None, current, "", r["raw_score"], r["grade_score"], "migration:t", 1))
+                    dst.execute("INSERT OR IGNORE INTO score_fact(data_domain,academic_year_id,exam_name,exam_date,source_exam_date,exam_date_precision,class_ref_id,identity_id,subject,total_type,subject_key,total_key,score,grade_score,grade_percentile,xueji_rank,grade_rank,source,data_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("teaching", ay, ex["name"], exact, ex["exam_date"], precision, cid, ident, current, None, current, "", r["raw_score"], r["grade_score"] if "grade_score" in r.keys() else None, r["grade_percentile"] if "grade_percentile" in r.keys() else None, None, None, "migration:t", 1))
                     fact = one("SELECT id FROM score_fact WHERE data_domain='teaching' AND academic_year_id=? AND exam_name=? AND identity_id=? AND subject_key=? AND total_key=''", (ay, ex["name"], ident, current))[0]
                     map_to(domain, fp, "subject_score", r, "score_fact", fact, "score", src); counts["t_score"] += 1
                 # T HomeworkRecord：Q08 语义——assignment.subject=教师任教学科，

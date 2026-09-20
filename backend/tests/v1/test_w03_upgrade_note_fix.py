@@ -54,6 +54,31 @@ def test_w03_0008_library_upgrades_and_note_fix_becomes_available():
             "INSERT INTO ws_student_note (data_domain, person_id, date, category, content, follow_up_done) "
             "VALUES ('homeroom', 1, '2025-10-01', '谈话', '旧库时期档案', 0)"
         )
+        con.execute(
+            "INSERT INTO teaching_class (academic_year_id,subject,label,sort_order) "
+            "VALUES (1,'物理','已有成员班',1)"
+        )
+        con.execute(
+            "INSERT INTO teaching_class_member "
+            "(teaching_class_id,identity_id,valid_from,source) VALUES (1,1,'2025-09-01','fixture')"
+        )
+        con.commit()
+        con.close()
+
+        # 先停在 0012，模拟“早期已完成真实迁移、但尚未投影 H 全交台账”的日常库。
+        _run([sys.executable, "-m", "alembic", "upgrade", "0012"], env)
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "INSERT INTO administrative_class (academic_year_id,grade,class_num,label) "
+            "VALUES (1,2,11,'高二11班')"
+        )
+        con.execute(
+            "INSERT INTO source_archive_record "
+            "(source_fingerprint,source_table,source_pk,data_domain,archive_reason,payload_json) "
+            "VALUES (?,?,?,?,?,?)",
+            ("h:test-backfill", "homework_collection", "77", "homeroom", "legacy_archive",
+             json.dumps({"id": 77, "date": "2025-10-03", "subject": "化学", "grade": 2, "class_num": 11}, ensure_ascii=False)),
+        )
         con.commit()
         con.close()
 
@@ -64,8 +89,15 @@ def test_w03_0008_library_upgrades_and_note_fix_becomes_available():
         )
         con = sqlite3.connect(str(db))
         version = con.execute("SELECT version_num FROM alembic_version").fetchone()[0]
-        assert version == "0011", f"应升至 0011（含 0011 source_projection_map），实际 {version}"
+        from app.db.schema import ALEMBIC_HEAD
+        assert version == ALEMBIC_HEAD, f"应升至当前 head {ALEMBIC_HEAD}，实际 {version}"
         assert con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='source_projection_map'").fetchone()
+        projected = con.execute(
+            "SELECT a.subject,a.assigned_date,a.expected_members_json FROM homework_assignment a "
+            "JOIN source_projection_map m ON m.target_id=a.id AND m.target_table='homework_assignment' "
+            "WHERE m.source_fingerprint='h:test-backfill' AND m.source_table='homework_collection'"
+        ).fetchone()
+        assert projected == ("化学", "2025-10-03", "[]")
         row = con.execute("SELECT id, content, updated_at FROM ws_student_note").fetchone()
         assert row is not None and row[1] == "旧库时期档案"
         assert row[2] is None  # 历史行不伪造时间

@@ -40,8 +40,8 @@ const SHARE_CATEGORY_OPTIONS: Array<{ value: string; label: string; hint: string
   { value: 'current_subject_homework', label: '任教学科作业', hint: '作业提交情况' },
 ]
 
-/** 契约默认值：roster,current_subject_score。 */
-const DEFAULT_SHARE_CATEGORIES: string[] = ['roster', 'current_subject_score']
+/** 默认共享范围：名册、任教学科成绩、任教学科作业。 */
+const DEFAULT_SHARE_CATEGORIES: string[] = ['roster', 'current_subject_score', 'current_subject_homework']
 
 function sameCategories(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false

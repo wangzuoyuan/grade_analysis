@@ -48,6 +48,8 @@ class HomeroomTotalStat(BaseModel):
     max: Optional[float] = None
     min: Optional[float] = None
     valid_count: int = 0
+    rank_min: Optional[int] = None
+    rank_max: Optional[int] = None
 
 
 class HomeroomExamStatsResponse(BaseModel):
@@ -57,6 +59,26 @@ class HomeroomExamStatsResponse(BaseModel):
     cohort_size: int
     # §2.3：任一 subject/total 行 valid_count < 5 即 true（两域统一红线）
     small_sample: bool = False
+
+
+class HomeroomClassAverageRow(BaseModel):
+    class_type: Optional[str] = None
+    class_num: int
+    teacher_name: Optional[str] = None
+    subjects: Dict[str, Optional[float]] = Field(default_factory=dict)
+    totals: Dict[str, Optional[float]] = Field(default_factory=dict)
+    total_ranks: Dict[str, Optional[int]] = Field(default_factory=dict)
+
+
+class HomeroomClassAveragesResponse(BaseModel):
+    metadata: AnalysisMetadata
+    exam_name: str
+    grade: int
+    subjects: List[str] = Field(default_factory=list)
+    total_types: List[str] = Field(default_factory=list)
+    # 当前班主任绑定行政班班号（前端用于高亮本班；作用域解析失败无绑定班时为 None）
+    current_class_num: Optional[int] = None
+    rows: List[HomeroomClassAverageRow] = Field(default_factory=list)
 
 
 class HomeroomAnalysisStudent(BaseModel):
@@ -78,6 +100,116 @@ class HomeroomExamStudentsResponse(BaseModel):
     students: List[HomeroomAnalysisStudent] = Field(default_factory=list)
 
 
+class FocusBandConfig(BaseModel):
+    high_score_max: int
+    critical_min: int
+    critical_max: int
+    weak_min: int
+    subject_weakness_diff: float
+    progress_rank_threshold: int
+    volatility_rank_threshold: int
+
+
+class HomeroomFocusStudent(BaseModel):
+    person_id: int
+    name: Optional[str] = None
+    alias: Optional[str] = None
+    total_score: Optional[float] = None
+    xueji_rank: Optional[int] = None
+    issues: List[str] = Field(default_factory=list)
+    weak_subjects: List[str] = Field(default_factory=list)
+    previous_rank: Optional[int] = None
+    rank_change: Optional[int] = None
+    rank_range: Optional[int] = None
+    exam_count: int = 1
+
+
+class HomeroomFocusResponse(BaseModel):
+    metadata: AnalysisMetadata
+    exam_name: str
+    total_type: str = "主三门"
+    basis: str = "school_rank_and_grade_percentile"
+    config: FocusBandConfig
+    students: List[HomeroomFocusStudent] = Field(default_factory=list)
+
+
+class HomeroomRankMetric(BaseModel):
+    value: str
+    label: str
+    kind: str
+
+
+class HomeroomRankMetricsResponse(BaseModel):
+    metadata: AnalysisMetadata
+    grade: int
+    metrics: List[HomeroomRankMetric] = Field(default_factory=list)
+
+
+class HomeroomRankFrequencyExam(BaseModel):
+    exam_name: str
+    exam_date: Optional[str] = None
+
+
+class HomeroomRankFrequencyBin(BaseModel):
+    key: str
+    label: str
+    separator_after: bool = False
+
+
+class HomeroomRankFrequencyStudent(BaseModel):
+    person_id: int
+    name: Optional[str] = None
+    alias: Optional[str] = None
+    counts: Dict[str, int] = Field(default_factory=dict)
+    total_count: int = 0
+
+
+class HomeroomRankFrequencyResponse(BaseModel):
+    metadata: AnalysisMetadata
+    metric: str
+    metric_label: str
+    metric_kind: str
+    exams: List[HomeroomRankFrequencyExam] = Field(default_factory=list)
+    bins: List[HomeroomRankFrequencyBin] = Field(default_factory=list)
+    students: List[HomeroomRankFrequencyStudent] = Field(default_factory=list)
+    metric_note: str
+
+
+class HomeroomRankRangeStudent(BaseModel):
+    person_id: int
+    name: Optional[str] = None
+    alias: Optional[str] = None
+    score: Optional[float] = None
+    class_rank: Optional[int] = None
+    year_rank: Optional[int] = None
+
+
+class HomeroomRankRangeResponse(BaseModel):
+    metadata: AnalysisMetadata
+    exam_name: str
+    metric: str
+    metric_label: str
+    metric_kind: str
+    rank_min: int
+    rank_max: int
+    students: List[HomeroomRankRangeStudent] = Field(default_factory=list)
+    metric_note: str
+
+
+class HomeroomRankDistributionSeries(BaseModel):
+    total_type: str
+    counts: Dict[str, int] = Field(default_factory=dict)
+
+
+class HomeroomRankDistributionResponse(BaseModel):
+    metadata: AnalysisMetadata
+    exam_name: str
+    grade: int
+    bins: List[HomeroomRankFrequencyBin] = Field(default_factory=list)
+    series: List[HomeroomRankDistributionSeries] = Field(default_factory=list)
+    metric_note: str
+
+
 class TrendExamPoint(BaseModel):
     """趋势上的一次考试点（E03：只按学年分组陈列，无跨年同比字段）。"""
 
@@ -86,6 +218,10 @@ class TrendExamPoint(BaseModel):
     score: Optional[float] = None
     # 契约 §1.3 增列（迁移 0004）：列未就绪时缺省 null，不编造
     grade_score: Optional[float] = None
+    # 趋势图专用排名口径：单科使用来源 grade_percentile（输出 0–100），
+    # 总分使用来源保存的学籍/年级名次。缺失时保持 null，不用分数推算。
+    rank: Optional[float] = None
+    rank_basis: Optional[str] = None
 
 
 class TrendYearGroup(BaseModel):
@@ -177,3 +313,19 @@ class ClassCompareResponse(BaseModel):
     # （任一班 valid_count < 5 即 true）
     classes: List[ClassCompareEntry] = Field(default_factory=list)
     small_sample: bool = False
+
+
+class WeeklyFocusStudent(BaseModel):
+    student_id: str
+    name: str
+    score: int
+    reasons: List[str] = Field(default_factory=list)
+
+
+class HomeroomWeeklyFocusResponse(BaseModel):
+    metadata: AnalysisMetadata
+    class_id: int
+    week: Dict[str, str] = Field(default_factory=dict)
+    students: List[WeeklyFocusStudent] = Field(default_factory=list)
+    total_count: int = 0
+    note: str = ""

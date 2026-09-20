@@ -13,6 +13,8 @@ const reportPage = readFileSync(
   new URL('../src/app/homeroom/students/[id]/report/page.tsx', import.meta.url),
   'utf8',
 )
+const profilePage = readFileSync(new URL('../src/app/homeroom/profile/page.tsx', import.meta.url), 'utf8')
+const profileView = readFileSync(new URL('../src/components/students/HomeroomProfileView.tsx', import.meta.url), 'utf8')
 const rosterTable = readFileSync(new URL('../src/components/students/RosterTable.tsx', import.meta.url), 'utf8')
 const studentDialog = readFileSync(new URL('../src/components/students/StudentFormDialog.tsx', import.meta.url), 'utf8')
 const aliasPanel = readFileSync(new URL('../src/components/students/AliasHistoryPanel.tsx', import.meta.url), 'utf8')
@@ -139,6 +141,18 @@ test('名册页：新建/行内编辑/离班/追加学号齐全，且无删除�
   assert.match(aliasPanel, /不自动合并/, '追加学号撞号文案须声明不自动合并')
 })
 
+test('名册页：等待工作台范围成功，并按所选学年解析行政班后请求学生（历史学年不串班）', () => {
+  assert.match(rosterTable, /const \{ filter, scope, scopeError, generation, switching \} = useWorkspace\(\)/, '名册请求须读取已解析的工作台范围')
+  assert.match(rosterTable, /if \(scopeError != null\)/, '工作台范围失败时须停止名册请求并显示错误')
+  assert.match(rosterTable, /if \(scope == null\) return/, 'scope 尚未解析完成时不得提前请求学生')
+  assert.match(rosterTable, /scopeQ\.academic_year_id/, '须优先使用用户所选学年')
+  assert.match(rosterTable, /current_academic_year\?\.id/, '未选学年时才可回落当前学年')
+  assert.match(rosterTable, /fetchClasses\(academicYearId\)/, '须按目标学年重新解析行政班目录')
+  assert.match(rosterTable, /class_id: catalog\.homeroom\.class_id/, '学生请求须携带该学年行政班 ID')
+  assert.match(rosterTable, /fetchStudents\('homeroom', \{\s*\.\.\.scopeQ,\s*academic_year_id: academicYearId,\s*class_id:/s, '学生请求须同时携带学年、学期与行政班范围')
+  assert.match(rosterTable, /if \(req !== reqRef\.current\) return/, '切换学年后的迟到响应仍须丢弃')
+})
+
 test('换届向导：预览逐人改号 → 确认 → 撤销 + 冲突保留现状（契约 §2.2，I01）', () => {
   assert.match(rolloverWizard, /listAcademicYears/, '来源学年须走学年清单端点')
   assert.match(rolloverWizard, /rolloverPreview/, '预览须走 rollover/preview')
@@ -181,13 +195,17 @@ test('表单未提交内容走 page-draft 草稿，提交成功清除（简化�
   assert.match(rolloverWizard, /savePageDraft/, '换届确认 token 须暂存草稿（撤销入口用）')
 })
 
-test('Topbar 面包屑补齐工作台/子路径中文标签；Sidebar 补三个导航入口（P3 遗留）', () => {
-  for (const seg of ['homeroom', 'teaching', 'scores', 'students', 'rollover', 'members']) {
+test('Topbar 面包屑补齐工作台/子路径中文标签；Sidebar 补导航入口（P3/P4 完善）', () => {
+  for (const seg of ['homeroom', 'teaching', 'scores', 'students', 'rollover', 'members', 'profile']) {
     assert.match(topbar, new RegExp(`^\\s*${seg}:`, 'm'), `Topbar SEGMENT_LABELS 须包含 ${seg}`)
   }
-  assert.match(sidebar, /\/homeroom\/students/, '侧栏须有学生管理入口')
+  assert.match(sidebar, /\/homeroom\/profile/, '侧栏须有班主任学生档案入口')
+  assert.match(sidebar, /\/homeroom\/students/, '侧栏须有学生信息入口')
   assert.match(sidebar, /\/homeroom\/rollover/, '侧栏须有换届入口')
-  assert.match(sidebar, /\/teaching\/members/, '侧栏须有班级成员入口')
+  assert.match(sidebar, /\/teaching\/members/, '侧栏须有班级信息入口')
+  assert.match(profilePage, /HomeroomProfileView/, '学生档案页应渲染 HomeroomProfileView')
+  assert.match(profileView, /useWorkspace\(\)/, '学生档案视图必须读工作台上下文')
+  assert.match(rosterTable, /\/homeroom\/profile\?person_id=/, '学生信息名册姓名须链接至学生档案')
 })
 
 test('上传页 P3 遗留：考试名/日期覆盖输入；row_count 标签改「成绩条目」', () => {

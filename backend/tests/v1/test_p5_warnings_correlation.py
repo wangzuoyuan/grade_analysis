@@ -72,7 +72,8 @@ def test_warnings_min_missing_threshold_and_streaks(client, v1_seed):
     assert [s["person_id"] for s in body["students"]] == [v1_seed.jia_h_id]
     jia = body["students"][0]
     assert jia["missing_count"] == 3
-    assert jia["current_streak"] == 3
+    # 其间其他独立批次没有登记秦甲缺交，按默认已交中断。
+    assert jia["current_streak"] == 1
     assert jia["streak_basis"] == "events"
 
     relaxed = client.get(
@@ -104,9 +105,124 @@ def test_warnings_subject_filter_separate_domains(client, v1_seed):
     jia_math = next(s for s in math["students"] if s["person_id"] == v1_seed.jia_h_id)
     assert jia_math["missing_count"] == 1
 
+    # 不同学科不得串成连续段；同科其他批次未登记缺交时按已交中断。
+    grouped = client.get(
+        "/api/v1/homework/warnings",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id,
+                "min_missing": 1, "min_streak": 1},
+    )
+    assert grouped.status_code == 200, grouped.text
+    grouped_jia = next(
+        s for s in grouped.json()["students"] if s["person_id"] == v1_seed.jia_h_id
+    )
+    assert grouped_jia["current_streak"] == 1
+    assert grouped_jia["streak_subject"] == "数学"
+    assert grouped_jia["streak_homework_type"] is None
+    assert grouped.json()["min_streak"] == 1
 
-def test_warnings_unknown_sets_basis_unknown(client, v1_seed):
-    """unknown 事件：current_streak 置 null、basis='unknown'（不冒充连续）。"""
+    too_high = client.get(
+        "/api/v1/homework/warnings",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id,
+                "min_missing": 1, "min_streak": 4},
+    ).json()
+    assert v1_seed.jia_h_id not in {s["person_id"] for s in too_high["students"]}
+
+
+def test_legacy_missing_only_uses_disclosed_preserved_timeline(
+    client, v1_seed, db_session
+):
+    """迁移的 empty expected 快照按旧版日期轴给出连续值，但 basis 必须
+    标成 legacy_events，不能冒充完整的新批次事件链。"""
+    for i, day in enumerate(("2025-10-01", "2025-10-02"), start=1):
+        assignment = wm.HomeworkAssignment(
+            data_domain="homeroom",
+            class_ref_id=v1_seed.h6_id,
+            academic_year_id=v1_seed.ay_id,
+            subject="化学",
+            homework_type="legacy",
+            assigned_date=date.fromisoformat(day),
+            batch_token=f"p5-legacy-streak-{i}",
+            expected_members_json="[]",
+        )
+        db_session.add(assignment)
+        db_session.flush()
+        db_session.add(
+            wm.HomeworkSubmission(
+                assignment_id=assignment.id,
+                person_id=v1_seed.jia_h_id,
+                submission_status="missing",
+            )
+        )
+    db_session.commit()
+
+    body = client.get(
+        "/api/v1/homework/warnings",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id,
+                "subject": "化学", "min_missing": 1, "min_streak": 2},
+    ).json()
+    jia = next(s for s in body["students"] if s["person_id"] == v1_seed.jia_h_id)
+    assert jia["current_streak"] == 2
+    assert jia["streak_basis"] == "legacy_events"
+    assert jia["streak_subject"] == "化学"
+
+
+def test_legacy_streak_keeps_trailing_run_when_interrupted_by_submitted(
+    client, v1_seed, db_session
+):
+    """legacy 轴回溯遇「该生日已交」只结束连续段、保留已数的尾部连缺值：
+    学生在最新新批次缺交、更早新批次默认已交 → current=1（曾误清零成 0，
+    配合 min_streak 过滤会令整卡连续缺交预警显示为空）。"""
+    # 日期取学期最前（09-01~03）：晚于他案的批次会在同模块后续用例的
+    # 「最优连缺维度」平手裁决中胜出，把别人的 basis 顶成 legacy_events。
+    legacy = wm.HomeworkAssignment(
+        data_domain="homeroom",
+        class_ref_id=v1_seed.h6_id,
+        academic_year_id=v1_seed.ay_id,
+        subject="生物",
+        homework_type="legacy",
+        assigned_date=date.fromisoformat("2025-09-01"),
+        batch_token="p5-legacy-keep-1",
+        expected_members_json="[]",
+    )
+    db_session.add(legacy)
+    db_session.flush()
+    db_session.add(
+        wm.HomeworkSubmission(
+            assignment_id=legacy.id,
+            person_id=v1_seed.jia_h_id,
+            submission_status="missing",
+        )
+    )
+    db_session.commit()
+
+    # 更早的新批次：全班全交（秦甲无行 = 默认已交，构成打断日）
+    p_full = _preview(
+        client, v1_seed, assigned_date="2025-09-02", subject="生物",
+        homework_type="课堂练习",
+        input={"kind": "full", "exceptions": []},
+    )
+    assert _confirm(client, p_full.json()["token"]).status_code == 200
+    # 最新的新批次：秦甲缺交（尾部连缺起点）
+    p_miss = _preview(
+        client, v1_seed, assigned_date="2025-09-03", subject="生物",
+        homework_type="课后订正",
+        input={"kind": "detailed",
+               "rows": [{"name_or_alias": "秦甲", "status": "missing"}]},
+    )
+    assert _confirm(client, p_miss.json()["token"]).status_code == 200
+
+    body = client.get(
+        "/api/v1/homework/warnings",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id,
+                "subject": "生物", "min_missing": 1},
+    ).json()
+    jia = next(s for s in body["students"] if s["person_id"] == v1_seed.jia_h_id)
+    assert jia["current_streak"] == 1
+    assert jia["streak_basis"] == "legacy_events"
+
+
+def test_warnings_legacy_unknown_is_submitted(client, v1_seed):
+    """旧 unknown 输入兼容归一为已交。"""
     p = _preview(
         client, v1_seed, assigned_date="2025-09-08", homework_type="默写",
         input={"kind": "detailed",
@@ -119,9 +235,8 @@ def test_warnings_unknown_sets_basis_unknown(client, v1_seed):
         params={"mode": "homeroom", "class_id": v1_seed.h6_id, "min_missing": 1},
     ).json()
     yi = next(s for s in body["students"] if s["person_id"] == v1_seed.yi_h_id)
-    # 乙的事件：missing(09-01) → submitted(09-02) → unknown(09-08)
-    assert yi["current_streak"] is None
-    assert yi["streak_basis"] == "unknown"
+    assert yi["current_streak"] == 0
+    assert yi["streak_basis"] == "events"
     assert yi["missing_count"] == 1
 
 

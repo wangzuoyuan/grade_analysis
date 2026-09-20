@@ -98,12 +98,15 @@ export function CorrelationCard({
   scopeQ,
   scopeSubject,
   generation,
+  preferredExamName,
 }: {
   mode: WorkspaceMode
   scopeQ: HomeworkScopeQuery
   /** 教学工作台的任教学科（固定，只读）；班主任工作台可自由输入。 */
   scopeSubject: string | null
   generation: number
+  /** 挂载页（成绩分析）当前选中考试：在清单里则默认选中并跟随；缺省/不在清单回退旧行为。 */
+  preferredExamName?: string | null
 }) {
   const teaching = mode === 'teaching'
   const [subjectDraft, setSubjectDraft] = useState('')
@@ -137,7 +140,14 @@ export function CorrelationCard({
         if (req !== examsReqRef.current) return
         const list = r.exams ?? []
         setExams(list)
-        if (list.length > 0) setExamName(list[0].exam_name)
+        if (list.length > 0) {
+          // 挂载页（成绩分析）当前考试在清单里则优先选中，否则维持选第一场的旧行为
+          const preferred =
+            preferredExamName != null && list.some((e) => e.exam_name === preferredExamName)
+              ? preferredExamName
+              : list[0].exam_name
+          setExamName(preferred)
+        }
       })
       .catch((err: unknown) => {
         if (req !== examsReqRef.current) return
@@ -145,6 +155,14 @@ export function CorrelationCard({
         setExamsError(apiErrorMessage(err))
       })
   }, [mode, scopeQ, generation])
+
+  // 挂载页顶部切换考试时跟随：清单已加载且包含该名字才切，不在清单则不动（保持用户自选）
+  useEffect(() => {
+    if (preferredExamName == null) return
+    if ((exams ?? []).some((e) => e.exam_name === preferredExamName)) {
+      setExamName(preferredExamName)
+    }
+  }, [preferredExamName, exams])
 
   // 相关性：班主任 Y=总分名次（默认主三门口径由后端决定），教学 Y=单科本班名次；
   // 请求序号只比对 corrReqRef，绝不作废考试清单回包
@@ -157,7 +175,8 @@ export function CorrelationCard({
       ...scopeQ,
       subject: effectiveSubject,
       exam_name: examName,
-      homework_type: applied.homeworkType !== '' ? applied.homeworkType : undefined,
+      // 班主任工作台无作业种类概念（UI 不采集也不筛选），只传教学侧的筛选值
+      homework_type: teaching && applied.homeworkType !== '' ? applied.homeworkType : undefined,
     })
       .then((r) => {
         if (req === corrReqRef.current) setCorr(r)
@@ -228,18 +247,20 @@ export function CorrelationCard({
               ))}
             </select>
           </div>
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-500" htmlFor="hw-corr-type">
-              作业种类（可选）
-            </label>
-            <Input
-              id="hw-corr-type"
-              value={homeworkType}
-              onChange={(e) => setHomeworkType(e.target.value)}
-              placeholder="全部种类"
-              className="lg:w-36"
-            />
-          </div>
+          {teaching ? (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-slate-500" htmlFor="hw-corr-type">
+                作业种类（可选）
+              </label>
+              <Input
+                id="hw-corr-type"
+                value={homeworkType}
+                onChange={(e) => setHomeworkType(e.target.value)}
+                placeholder="全部种类"
+                className="lg:w-36"
+              />
+            </div>
+          ) : null}
           <Button
             type="button"
             size="sm"

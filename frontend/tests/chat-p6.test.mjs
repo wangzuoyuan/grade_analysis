@@ -151,6 +151,20 @@ test('流中 type=error 范围失效帧：本流终止 + 冲突态重建入口�
   assert.match(drawer, /setScopeConflict\(true\)\s*\n\s*setStreamError\('会话范围已变化，本流已终止'\)/, '范围帧须置冲突态并给重建入口')
 })
 
+test('error 帧优先认机器码 code，旧文字匹配保留为无 code 时的兜底', () => {
+  // 新后端帧带可选机器码：优先按 code 判定错误类型
+  assert.match(drawer, /const code = typeof frame\.code === 'string' \? frame\.code : ''/, 'error 帧须读取机器码字段 frame.code')
+  assert.match(drawer, /code === 'scope_drift'/, 'scope_drift 机器码判定')
+  assert.match(drawer, /code === 'key_not_configured'/, 'key_not_configured 机器码判定')
+  // 旧后端/未重启进程的帧没有 code：文字匹配降级为兜底，兼容不回退
+  assert.match(drawer, /\(!code && \/范围\/\.test\(msg\)\)/, '无 code 时保留 /范围/ 文字兜底（旧帧兼容）')
+  assert.match(drawer, /\(!code && \/未配置\/\.test\(msg\)\)/, '无 code 时保留 /未配置/ 文字兜底（旧帧兼容）')
+  // scope_drift（机器码或兜底命中）路径仍置冲突态 + 重建入口
+  assert.match(drawer, /code === 'scope_drift' \|\| \(!code && \/范围\/\.test\(msg\)\)\)[\s\S]{0,200}setScopeConflict\(true\)/, 'scope_drift 路径须置冲突态')
+  // 有 code 无 message 的帧回落到按 code 给中文文案
+  assert.match(drawer, /'模型 Key 未配置'/, 'key_not_configured 无文案帧回落中文文案')
+})
+
 test('中止逻辑：关闭抽屉/切换 mode/重建会话均 abort 在途流', () => {
   assert.match(drawer, /AbortController/, '须用 AbortController 中止')
   assert.match(drawer, /abortStream/, '须有统一中止入口')

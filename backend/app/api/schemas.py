@@ -215,12 +215,17 @@ class LinkListResponse(BaseModel):
 
 
 class HomeroomClassInfo(BaseModel):
-    """教师在该学年绑定的行政班（/shared/classes）。"""
+    """教师在该学年绑定的行政班（/shared/classes）。
+
+    carried_from_* 非空 = 该学年尚未建立本班，目录延续自更早学年（未换届
+    自动延续，零写入）；界面据此提示「延续自 X 学年」。"""
 
     class_id: int
     grade: int
     class_num: int
     label: Optional[str] = None
+    carried_from_academic_year_id: Optional[int] = None
+    carried_from_academic_year_name: Optional[str] = None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -233,6 +238,24 @@ class TeachingClassInfo(BaseModel):
     class_id: int
     label: str
     subject: str
+    status: str = "active"
+    carried_from_academic_year_id: Optional[int] = None
+    carried_from_academic_year_name: Optional[str] = None
+
+
+class TeachingClassManageRequest(BaseModel):
+    academic_year_id: Optional[int] = None
+    label: str
+    subject: Optional[str] = None
+
+
+class TeachingClassUpdateRequest(BaseModel):
+    label: Optional[str] = None
+    status: Optional[str] = None
+
+
+class TeachingClassManageResponse(BaseModel):
+    classes: List[TeachingClassInfo] = Field(default_factory=list)
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -278,6 +301,8 @@ class ScopeResponse(BaseModel):
     link_id: Optional[int] = None
     link_version: Optional[int] = None
     as_of: str
+    carried_from_academic_year_id: Optional[int] = None
+    carried_from_academic_year_name: Optional[str] = None
 
     model_config = ConfigDict(
         json_schema_extra={

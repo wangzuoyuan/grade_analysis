@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, or_
+from sqlalchemy import func, not_, or_
 from sqlalchemy.orm import Session
 
 from app.api import _queries as q
@@ -59,6 +59,8 @@ from app.api.students_mgmt_schemas import (
     TeachingMemberImportRequest,
     TeachingMemberItem,
     TeachingMembersResponse,
+    TeachingRolloverClassResult,
+    TeachingRolloverConfirmResponse,
     TeachingSyncRequest,
 )
 from app.core.context import WorkspaceContext, resolve_workspace_context
@@ -91,6 +93,18 @@ router = APIRouter(tags=["students-mgmt"])
 # 离班状态枚举（契约 §2.1）：active 表示恢复在班
 ARCHIVE_STATUSES = ("transferred", "graduated", "active")
 _GRADE_LABELS = {1: "高一", 2: "高二", 3: "高三"}
+
+
+def _human_notes_filter():
+    """只查询教师手动填写的成长/谈话档案，排除系统预警及历史特殊记录等内部辅助标记。"""
+    return or_(
+        WsStudentNote.source.is_(None),
+        not_(
+            WsStudentNote.source.like("homework:%")
+            | WsStudentNote.source.like("warning_dismissal:%")
+            | WsStudentNote.source.like("migration:%")
+        ),
+    )
 
 
 # ────────────────────────────── 通用助手 ──────────────────────────────
@@ -1382,6 +1396,7 @@ def rollover_undo(token: str, db: Session = Depends(get_db)):
                 .filter(
                     WsStudentNote.person_id == pid,
                     WsStudentNote.created_at >= confirmed_at,
+                    _human_notes_filter(),
                 )
                 .first()
                 is not None
@@ -1459,6 +1474,524 @@ def rollover_undo(token: str, db: Session = Depends(get_db)):
         )
         if leftover is None:
             cls = db.get(AdministrativeClass, new_class_id)
+            if cls is not None:
+                db.delete(cls)
+                class_removed = True
+
+    batch.status = "confirmed_undo"
+    db.commit()
+    return RolloverUndoResponse(
+        success=True, undone=undone, conflicted=conflicted, class_removed=class_removed
+    )
+
+
+# ────────────────────────────── §2.2 教学班换届 ──────────────────────────────
+# 与班主任换届同语义（R4 token 生命周期 + G04 快照回滚），作用对象换成
+# 教学班：来源学年任教学科的全部 active 教学班整批升入新学年（同标签建
+# 新学年教学班 + 成员有效期 + 教学域新学段 alias）。换届不是每学年必须
+# 操作——未换届时读侧按学年延续旧班（_queries.carryover_*），本组端点只
+# 在教师显式确认时写入。
+
+
+def _teaching_source_classes(db: Session, from_year: AcademicYear):
+    """来源学年任教学科口径下的 active 教学班（目录序）。
+    无班 → 409 无可换届名册；多学科 → 422 要求先明确学科（首版一师一科）。"""
+    active = {
+        row[0]
+        for row in db.query(TeachingClass.subject)
+        .filter(
+            TeachingClass.academic_year_id == from_year.id,
+            TeachingClass.status == "active",
+        )
+        .distinct()
+        .all()
+    }
+    if not active:
+        raise WorkspaceNotConfigured(
+            "来源学年没有教学班，无可换届名册",
+            details={"from_academic_year_id": from_year.id},
+        )
+    if len(active) != 1:
+        raise InvalidScopeParam(
+            "来源学年有多个任教学科，请逐学科换届",
+            details={"param": "subject", "subjects": sorted(active)},
+        )
+    subject = next(iter(active))
+    classes = (
+        db.query(TeachingClass)
+        .filter(
+            TeachingClass.academic_year_id == from_year.id,
+            TeachingClass.subject == subject,
+            TeachingClass.status == "active",
+        )
+        .order_by(TeachingClass.sort_order.asc(), TeachingClass.id.asc())
+        .all()
+    )
+    return subject, classes
+
+
+def _next_year_of(db: Session, from_year: AcademicYear) -> AcademicYear:
+    """新学年 = start_date 年份 +1 的学年（最早者）；无 → 409 提示先建学年。"""
+    to_year = (
+        db.query(AcademicYear)
+        .filter(
+            func.strftime("%Y", AcademicYear.start_date)
+            == str(from_year.start_date.year + 1)
+        )
+        .order_by(AcademicYear.start_date.asc(), AcademicYear.id.asc())
+        .first()
+    )
+    if to_year is None:
+        raise WorkspaceNotConfigured(
+            "未找到下一学年，请先在学年管理中创建新学年",
+            details={"from_academic_year_id": from_year.id},
+        )
+    return to_year
+
+
+def _member_current(member: TeachingClassMember) -> Dict[str, Optional[str]]:
+    """教学班成员快照口径（G04 同语义：后续编辑即漂移）。"""
+    return {
+        "valid_from": _iso_or_none(member.valid_from),
+        "valid_to": _iso_or_none(member.valid_to),
+        "updated_at": _iso_or_none(member.updated_at),
+    }
+
+
+@router.get("/teaching/rollover/preview", response_model=RolloverPreviewResponse)
+@domain_endpoint
+def teaching_rollover_preview(
+    from_academic_year_id: Optional[int] = None, db: Session = Depends(get_db)
+):
+    """教学班换届预览：零业务写入（仅 import_batch 台账）。逐班列出成员，
+    next_alias 保守建议沿用旧学号；students 带 class_label 供前端分班展示。"""
+    current_teacher_id(db)
+    if from_academic_year_id is None:
+        raise InvalidScopeParam(
+            "from_academic_year_id is required",
+            details={"param": "from_academic_year_id"},
+        )
+    from_year = db.get(AcademicYear, from_academic_year_id)
+    if from_year is None:
+        raise ResourceOutOfScope(
+            "academic year not found", details={"academic_year_id": from_academic_year_id}
+        )
+    subject, from_classes = _teaching_source_classes(db, from_year)
+    to_year = _next_year_of(db, from_year)
+
+    pairs: List[dict] = []
+    students: List[RolloverPreviewStudent] = []
+    for tc in from_classes:
+        for item in q.teaching_roster(db, [tc.id], date.today(), from_year.id):
+            pairs.append({"class_id": tc.id, "person_id": item["person_id"]})
+            students.append(
+                RolloverPreviewStudent(
+                    person_id=item["person_id"],
+                    name=item["name"],
+                    current_alias=item["alias"],
+                    next_alias=item["alias"],
+                    class_label=tc.label,
+                    note=None if item["alias"] else "暂无学号，可在确认时补填",
+                )
+            )
+    snapshot = {
+        "kind": "teaching_rollover_preview",
+        "from_academic_year_id": from_year.id,
+        "to_academic_year_id": to_year.id,
+        "subject": subject,
+        "classes": [
+            {"class_id": tc.id, "label": tc.label, "sort_order": tc.sort_order}
+            for tc in from_classes
+        ],
+        "pairs": pairs,
+        "member_aliases": {str(s.person_id): s.current_alias for s in students},
+    }
+    token = secrets.token_hex(16)
+    expires_at = datetime.utcnow() + timedelta(minutes=q.PREVIEW_TTL_MINUTES)
+    db.add(
+        ImportBatch(
+            token=token,
+            data_domain="teaching",
+            scope_json=json.dumps(snapshot, ensure_ascii=False),
+            status="pending",
+            expires_at=expires_at,
+        )
+    )
+    db.commit()
+    return RolloverPreviewResponse(
+        token=token,
+        expires_at=expires_at.isoformat(),
+        from_year=RolloverYearInfo(id=from_year.id, name=from_year.name),
+        to_year=RolloverYearInfo(id=to_year.id, name=to_year.name),
+        students=students,
+    )
+
+
+@router.post("/teaching/rollover", response_model=TeachingRolloverConfirmResponse)
+@domain_endpoint
+def teaching_rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends(get_db)):
+    """教学班换届确认（R4 全套校验 + 单事务写入）：token/范围/成员无漂移 →
+    新学号撞他人整批 409 零写入 → 新学年教学班（同标签）+ 每成员有效期行 +
+    教学域新学段 alias + 旧 alias 收尾。新学年已有同标签班 → 复用并入。"""
+    current_teacher_id(db)
+    batch = _load_preview_batch(db, req.token)
+    snapshot = json.loads(batch.scope_json or "{}")
+    if snapshot.get("kind") != "teaching_rollover_preview":
+        raise LinkVersionConflict(
+            "token is not a teaching rollover preview", details={"token": req.token}
+        )
+
+    from_year = db.get(AcademicYear, snapshot.get("from_academic_year_id"))
+    to_year = db.get(AcademicYear, snapshot.get("to_academic_year_id"))
+    if from_year is None or to_year is None:
+        raise LinkVersionConflict("来源/目标学年已不存在，请重新预览")
+    subject = snapshot.get("subject")
+    from_classes: List[TeachingClass] = []
+    for item in snapshot.get("classes") or []:
+        tc = db.get(TeachingClass, item.get("class_id"))
+        if (
+            tc is None
+            or tc.academic_year_id != from_year.id
+            or tc.label != item.get("label")
+            or tc.status != "active"
+        ):
+            raise LinkVersionConflict("来源教学班已变化，请重新预览")
+        from_classes.append(tc)
+
+    # 成员漂移校验（R4 校验 3）：逐班重算与快照 pairs 全等才放行
+    current_pairs: List[dict] = []
+    for tc in from_classes:
+        for item in q.teaching_roster(db, [tc.id], date.today(), from_year.id):
+            current_pairs.append({"class_id": tc.id, "person_id": item["person_id"]})
+    if current_pairs != (snapshot.get("pairs") or []):
+        raise LinkVersionConflict("来源学年教学班成员已变化，请重新预览")
+
+    member_person_ids = sorted({p["person_id"] for p in current_pairs})
+    suggested: Dict[str, Optional[str]] = snapshot.get("member_aliases") or {}
+    aliases: Dict[int, Optional[str]] = {}
+    for key, value in (req.aliases or {}).items():
+        try:
+            pid = int(key)
+        except (TypeError, ValueError) as exc:
+            raise InvalidScopeParam(
+                "aliases keys must be person_id strings", details={"param": "aliases"}
+            ) from exc
+        if pid not in member_person_ids:
+            raise InvalidScopeParam(
+                "aliases 覆盖了非本次换届成员", details={"param": "aliases", "person_id": pid}
+            )
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise InvalidScopeParam(
+                "alias must be a non-empty string", details={"param": "aliases", "person_id": pid}
+            )
+        aliases[pid] = cleaned
+    for pid in member_person_ids:
+        aliases.setdefault(pid, suggested.get(str(pid)))
+
+    # 新 alias 撞他人（教学域目标学年或历史）→ 整批 409 零写入
+    conflicts: List = []
+    for pid in member_person_ids:
+        value = aliases.get(pid)
+        if value:
+            conflicts.extend(_alias_conflicts(db, "teaching", value, pid, to_year))
+    if conflicts:
+        raise LinkVersionConflict(
+            "新学号已属于其他学生，整批拒绝（零写入）",
+            details={"conflicts": _conflict_details(db, conflicts)},
+        )
+
+    valid_from = to_year.start_date
+    close_to = valid_from - timedelta(days=1)
+    created_class_ids: List[int] = []
+    target_class_ids: List[int] = []
+    created_member_ids: List[int] = []
+    created_alias_ids: List[int] = []
+    closed_alias_ids: List[int] = []
+    member_snapshots: Dict[str, dict] = {}
+    created_alias_snapshots: Dict[str, dict] = {}
+    closed_alias_snapshots: Dict[str, dict] = {}
+    class_results: List[TeachingRolloverClassResult] = []
+
+    for tc in from_classes:
+        existing = (
+            db.query(TeachingClass)
+            .filter(
+                TeachingClass.academic_year_id == to_year.id,
+                TeachingClass.subject == subject,
+                TeachingClass.label == tc.label,
+            )
+            .one_or_none()
+        )
+        if existing is None:
+            new_tc = TeachingClass(
+                academic_year_id=to_year.id,
+                subject=subject,
+                label=tc.label,
+                sort_order=tc.sort_order,
+                status="active",
+            )
+            db.add(new_tc)
+            db.flush()
+            created_class_ids.append(new_tc.id)
+            class_created = True
+        else:
+            new_tc = existing
+            class_created = False
+        target_class_ids.append(new_tc.id)
+        class_results.append(
+            TeachingRolloverClassResult(
+                class_id=new_tc.id, label=new_tc.label, class_created=class_created
+            )
+        )
+        # 幂等守卫（redo 场景）：完全相同的成员行已存在则跳过，绝不重复插入
+        for pid in [p["person_id"] for p in current_pairs if p["class_id"] == tc.id]:
+            member = (
+                db.query(TeachingClassMember)
+                .filter(
+                    TeachingClassMember.teaching_class_id == new_tc.id,
+                    TeachingClassMember.identity_id == pid,
+                    TeachingClassMember.valid_from == valid_from,
+                )
+                .one_or_none()
+            )
+            if member is None:
+                member = TeachingClassMember(
+                    teaching_class_id=new_tc.id,
+                    identity_id=pid,
+                    valid_from=valid_from,
+                    source="rollover",
+                )
+                db.add(member)
+                db.flush()
+                created_member_ids.append(member.id)
+                member_snapshots[str(member.id)] = {
+                    **_member_current(member),
+                    "identity_id": pid,
+                }
+
+    # 学号：逐人先收尾旧教学段 alias，再插入新学年行（顺序防自收尾）
+    for pid in member_person_ids:
+        for old in (
+            db.query(WsStudentAlias)
+            .filter(
+                WsStudentAlias.identity_id == pid,
+                WsStudentAlias.data_domain == "teaching",
+                WsStudentAlias.valid_to.is_(None),
+                or_(
+                    WsStudentAlias.academic_year_id.is_(None),
+                    WsStudentAlias.academic_year_id != to_year.id,
+                ),
+            )
+            .all()
+        ):
+            old.valid_to = close_to
+            closed_alias_ids.append(old.id)
+            closed_alias_snapshots[str(old.id)] = {
+                "identity_id": pid,
+                "valid_to": close_to.isoformat(),
+            }
+        value = aliases.get(pid)
+        if value:
+            dup_alias = (
+                db.query(WsStudentAlias)
+                .filter(
+                    WsStudentAlias.identity_id == pid,
+                    WsStudentAlias.data_domain == "teaching",
+                    WsStudentAlias.alias_value == value,
+                    WsStudentAlias.academic_year_id == to_year.id,
+                )
+                .first()
+            )
+            if dup_alias is None:
+                row = WsStudentAlias(
+                    identity_id=pid,
+                    alias_value=value,
+                    data_domain="teaching",
+                    academic_year_id=to_year.id,
+                    alias_scope=str(to_year.id),
+                    source="rollover",
+                    valid_from=valid_from,
+                )
+                db.add(row)
+                db.flush()
+                created_alias_ids.append(row.id)
+                created_alias_snapshots[str(row.id)] = {
+                    **_alias_current(row),
+                    "identity_id": pid,
+                }
+
+    # confirm 快照落台账：undo 按此精确回滚（created_* 只含本次新建行）
+    snapshot["confirmed_at"] = datetime.utcnow().isoformat()
+    snapshot["created_class_ids"] = created_class_ids
+    snapshot["target_class_ids"] = target_class_ids
+    snapshot["created_member_ids"] = created_member_ids
+    snapshot["created_alias_ids"] = created_alias_ids
+    snapshot["closed_alias_ids"] = closed_alias_ids
+    snapshot["member_snapshots"] = member_snapshots
+    snapshot["created_alias_snapshots"] = created_alias_snapshots
+    snapshot["closed_alias_snapshots"] = closed_alias_snapshots
+    batch.scope_json = json.dumps(snapshot, ensure_ascii=False)
+    batch.status = "confirmed"
+    db.commit()
+    return TeachingRolloverConfirmResponse(
+        rolled_over=len(member_person_ids),
+        academic_year_id=to_year.id,
+        classes=class_results,
+    )
+
+
+@router.post("/teaching/rollover/{token}/undo", response_model=RolloverUndoResponse)
+@domain_endpoint
+def teaching_rollover_undo(token: str, db: Session = Depends(get_db)):
+    """撤销本次教学班换届（按 confirm 快照回滚）：删本次新建成员/alias、
+    恢复被收尾 alias 的 valid_to、本次新建且已无其他数据的教学班删行。
+    换届后已有新写入（成绩/作业/档案）或成员/学号被后续编辑的学生列入
+    conflicted 跳过撤销；token 单次消费，重复撤销 409。"""
+    current_teacher_id(db)
+    batch = db.query(ImportBatch).filter(ImportBatch.token == token).first()
+    if batch is None:
+        raise ResourceOutOfScope("token not found", details={"token": token})
+    snapshot = json.loads(batch.scope_json or "{}")
+    if snapshot.get("kind") != "teaching_rollover_preview":
+        raise LinkVersionConflict("token is not a teaching rollover token", details={"token": token})
+    if batch.status == "confirmed_undo":
+        raise LinkVersionConflict(
+            "换届已撤销，token 已消费", details={"token": token, "status": batch.status}
+        )
+    if batch.status != "confirmed":
+        raise LinkVersionConflict(
+            "仅已确认的换届可撤销", details={"token": token, "status": batch.status}
+        )
+
+    confirmed_at = (
+        datetime.fromisoformat(snapshot["confirmed_at"])
+        if snapshot.get("confirmed_at")
+        else None
+    )
+    to_year_id = snapshot.get("to_academic_year_id")
+    pairs = snapshot.get("pairs") or []
+    member_person_ids = sorted({p["person_id"] for p in pairs})
+    names = q.names_for(db, member_person_ids)
+    member_snaps: Dict[str, dict] = snapshot.get("member_snapshots") or {}
+    created_alias_snaps: Dict[str, dict] = snapshot.get("created_alias_snapshots") or {}
+    closed_alias_snaps: Dict[str, dict] = snapshot.get("closed_alias_snapshots") or {}
+
+    conflicted: List[RolloverConflictedStudent] = []
+    undone = 0
+    for pid in member_person_ids:
+        reasons: List[str] = []
+        if confirmed_at is not None:
+            if (
+                db.query(ScoreFact)
+                .filter(
+                    ScoreFact.data_domain == "teaching",
+                    ScoreFact.identity_id == pid,
+                    ScoreFact.academic_year_id == to_year_id,
+                    ScoreFact.created_at >= confirmed_at,
+                )
+                .first()
+                is not None
+            ):
+                reasons.append("成绩")
+            if (
+                db.query(HomeworkSubmission)
+                .filter(
+                    HomeworkSubmission.person_id == pid,
+                    HomeworkSubmission.created_at >= confirmed_at,
+                )
+                .first()
+                is not None
+            ):
+                reasons.append("作业")
+            if (
+                db.query(WsStudentNote)
+                .filter(
+                    WsStudentNote.data_domain == "teaching",
+                    WsStudentNote.person_id == pid,
+                    WsStudentNote.created_at >= confirmed_at,
+                    _human_notes_filter(),
+                )
+                .first()
+                is not None
+            ):
+                reasons.append("档案")
+        # G04 快照核验：confirm 创建/收尾的每一行与当前行逐字段比对
+        for mid, snap in member_snaps.items():
+            if snap.get("identity_id") != pid:
+                continue
+            member = db.get(TeachingClassMember, int(mid))
+            if member is not None and _row_drifted(_member_current(member), snap):
+                reasons.append("成员")
+        for aid, snap in created_alias_snaps.items():
+            if snap.get("identity_id") != pid:
+                continue
+            row = db.get(WsStudentAlias, int(aid))
+            if row is not None and _row_drifted(_alias_current(row), snap):
+                reasons.append("学号")
+        for aid, snap in closed_alias_snaps.items():
+            if snap.get("identity_id") != pid:
+                continue
+            row = db.get(WsStudentAlias, int(aid))
+            if row is not None and _row_drifted(_alias_current(row), snap):
+                reasons.append("学号")
+        if reasons:
+            conflicted.append(
+                RolloverConflictedStudent(
+                    person_id=pid,
+                    name=names.get(pid),
+                    reason="换届后已有新写入或成员/学号被后续编辑（"
+                    + "、".join(reasons)
+                    + "），跳过撤销保留现状",
+                )
+            )
+            continue
+        for mid in snapshot.get("created_member_ids") or []:
+            member = db.get(TeachingClassMember, mid)
+            if member is not None and member.identity_id == pid:
+                db.delete(member)
+        for aid in snapshot.get("created_alias_ids") or []:
+            row = db.get(WsStudentAlias, aid)
+            if row is not None and row.identity_id == pid:
+                db.delete(row)
+        for aid in snapshot.get("closed_alias_ids") or []:
+            row = db.get(WsStudentAlias, aid)
+            if row is not None and row.identity_id == pid:
+                row.valid_to = None
+        undone += 1
+
+    # 本次 touching 的新学年教学班（新建或复用同标签班）：撤销后无任何
+    # 其他数据（残留成员/成绩/关联/作业）才删行——完整撤销后不留空壳班，
+    # 学年延续视图得以恢复；有残留（含他人成员）一律保留。
+    class_removed = False
+    touched_class_ids = list(
+        dict.fromkeys(
+            [*(snapshot.get("created_class_ids") or []), *(snapshot.get("target_class_ids") or [])]
+        )
+    )
+    for cid in touched_class_ids:
+        leftover = (
+            db.query(TeachingClassMember.id)
+            .filter(TeachingClassMember.teaching_class_id == cid)
+            .first()
+            or db.query(ScoreFact.id)
+            .filter(
+                ScoreFact.data_domain == "teaching",
+                ScoreFact.class_ref_id == cid,
+            )
+            .first()
+            or db.query(HomeroomTeachingLink.id)
+            .filter(HomeroomTeachingLink.teaching_class_id == cid)
+            .first()
+            or db.query(HomeworkAssignment.id)
+            .filter(
+                HomeworkAssignment.data_domain == "teaching",
+                HomeworkAssignment.class_ref_id == cid,
+            )
+            .first()
+        )
+        if leftover is None:
+            cls = db.get(TeachingClass, cid)
             if cls is not None:
                 db.delete(cls)
                 class_removed = True
@@ -1566,12 +2099,13 @@ def student_report(
         academic_year_name=bound_year.name if bound_year else None,
     )
 
-    # 档案摘要：只统计 homeroom 域（N01 红线，teaching 档案绝不出现）
+    # 档案摘要：只统计 homeroom 域（N01 红线，teaching 档案绝不出现；排除系统自动记录）
     note_rows = (
         db.query(WsStudentNote)
         .filter(
             WsStudentNote.data_domain == "homeroom",
             WsStudentNote.person_id == person_id,
+            _human_notes_filter(),
         )
         .order_by(WsStudentNote.date.desc(), WsStudentNote.id.desc())
         .all()
@@ -1623,7 +2157,8 @@ def _require_mode_person(
 def _note_or_404(
     db: Session, mode: str, note_id: int, ctx: WorkspaceContext
 ) -> WsStudentNote:
-    """note 域不符或归属人越界 → 404（绝不向其他 mode 泄露存在性）。"""
+    """note 域不符或归属人越界 → 404（绝不向其他 mode 泄露存在性）。
+    系统内部辅助 note（作业出勤/忘带同步、预警解除、迁移标记）禁止通过档案 API 篡改。"""
     note = db.get(WsStudentNote, note_id)
     if note is None or note.data_domain != mode:
         raise ResourceOutOfScope(
@@ -1632,6 +2167,14 @@ def _note_or_404(
     if note.person_id not in ctx.member_person_ids:
         raise ResourceOutOfScope(
             "person not in current scope", details={"note_id": note_id}
+        )
+    if note.source and (
+        note.source.startswith("homework:")
+        or note.source.startswith("warning_dismissal:")
+        or note.source.startswith("migration:")
+    ):
+        raise ResourceOutOfScope(
+            "system note cannot be accessed via student notes API", details={"note_id": note_id}
         )
     return note
 
@@ -1648,8 +2191,8 @@ def list_notes(
     subject: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """按 person 聚合其本域全部档案（ws 域 person 即身份，无学号聚合问题），
-    按 date 降序。只返回 data_domain=该域 的行。"""
+    """按 person 聚合其本域全部教师手动填写的档案，按 date 降序。
+    只返回 data_domain=该域 且排除系统内部辅助标记（作业考勤/预警解除/迁移）的行。"""
     ctx = _require_mode_person(
         db,
         mode,
@@ -1662,7 +2205,11 @@ def list_notes(
     )
     rows = (
         db.query(WsStudentNote)
-        .filter(WsStudentNote.data_domain == mode, WsStudentNote.person_id == person_id)
+        .filter(
+            WsStudentNote.data_domain == mode,
+            WsStudentNote.person_id == person_id,
+            _human_notes_filter(),
+        )
         .order_by(WsStudentNote.date.desc(), WsStudentNote.id.desc())
         .all()
     )

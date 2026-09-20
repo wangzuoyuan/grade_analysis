@@ -21,6 +21,7 @@ import {
   homeworkSemesters,
   homeworkSetCurrentSemester,
   homeworkUpdateSemester,
+  createAcademicYear,
   listAcademicYears,
   type AcademicYear,
   type HomeworkSemestersResponse,
@@ -47,10 +48,10 @@ function semesterActionError(err: unknown): string {
   return apiErrorMessage(err)
 }
 
-export function SemesterSettingsCard({ academicYearId }: { academicYearId?: number }) {
-  // 学年下拉：默认取工作台筛选学年，未选时用最新学年
+export function SemesterSettingsCard() {
+  // 学期设置独立于工作台筛选，班主任和教学始终使用同一份学年清单。
   const [years, setYears] = useState<AcademicYear[] | null>(null)
-  const [ayId, setAyId] = useState<number | null>(academicYearId ?? null)
+  const [ayId, setAyId] = useState<number | null>(null)
 
   const [data, setData] = useState<HomeworkSemestersResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -67,27 +68,26 @@ export function SemesterSettingsCard({ academicYearId }: { academicYearId?: numb
 
   // 新增手工学期
   const [createForm, setCreateForm] = useState({ name: '', start: '', end: '' })
-
-  // 工作台筛选变化时同步学年选择（用户未显式选过才跟随）
-  const [touchedAy, setTouchedAy] = useState(false)
-  useEffect(() => {
-    if (!touchedAy && typeof academicYearId === 'number') setAyId(academicYearId)
-  }, [academicYearId, touchedAy])
+  const [yearForm, setYearForm] = useState({ name: '', start: '', end: '' })
 
   // 学年清单
-  useEffect(() => {
+  const reloadYears = useCallback((selectId?: number) => {
     const req = ++yearsReqRef.current
     listAcademicYears()
       .then((r) => {
         if (req !== yearsReqRef.current) return
         const list = r.years ?? []
         setYears(list)
-        setAyId((cur) => cur ?? list[0]?.id ?? null)
+        setAyId((cur) => selectId ?? cur ?? list[0]?.id ?? null)
       })
       .catch(() => {
         if (req === yearsReqRef.current) setYears([])
       })
   }, [])
+
+  useEffect(() => {
+    reloadYears()
+  }, [reloadYears])
 
   // 学期列表
   const reload = useCallback(() => setNonce((v) => v + 1), [])
@@ -156,11 +156,33 @@ export function SemesterSettingsCard({ academicYearId }: { academicYearId?: numb
     setCreateForm({ name: '', start: '', end: '' })
   }
 
+  async function createYear() {
+    if (yearForm.name.trim() === '' || yearForm.start === '' || yearForm.end === '') {
+      setActionError('请填写学年名称与起止日期')
+      return
+    }
+    setBusy(true)
+    setActionError(null)
+    try {
+      const created = await createAcademicYear({
+        name: yearForm.name.trim(),
+        start_date: yearForm.start,
+        end_date: yearForm.end,
+      })
+      setYearForm({ name: '', start: '', end: '' })
+      reloadYears(created.id)
+    } catch (err) {
+      setActionError(semesterActionError(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Card>
       <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <CardTitle>作业学期设置</CardTitle>
+          <CardTitle>学期安排</CardTitle>
           <CardDescription>
             {data?.auto
               ? '当前为自动推导模式（按学年日期二分）：上/下学期边界自动计算，可新增手工学期或编辑后转手工。'
@@ -174,7 +196,6 @@ export function SemesterSettingsCard({ academicYearId }: { academicYearId?: numb
             aria-label="学年"
             value={ayId ?? ''}
             onChange={(e) => {
-              setTouchedAy(true)
               setAyId(e.target.value === '' ? null : Number(e.target.value))
             }}
             className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -192,6 +213,16 @@ export function SemesterSettingsCard({ academicYearId }: { academicYearId?: numb
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="rounded-lg border border-dashed border-slate-200 px-3 py-3 print:hidden">
+          <p className="text-xs font-medium text-slate-500">新增学年</p>
+          <div className="mt-2 flex flex-col gap-2 lg:flex-row lg:items-end">
+            <Input className="h-9 lg:w-40" placeholder="如 2027-2028" value={yearForm.name} onChange={(e) => setYearForm({ ...yearForm, name: e.target.value })} aria-label="新学年名称" />
+            <Input type="date" className="h-9" value={yearForm.start} onChange={(e) => setYearForm({ ...yearForm, start: e.target.value })} aria-label="新学年开始日期" />
+            <Input type="date" className="h-9" value={yearForm.end} onChange={(e) => setYearForm({ ...yearForm, end: e.target.value })} aria-label="新学年结束日期" />
+            <Button type="button" size="sm" onClick={createYear} disabled={busy}>创建学年</Button>
+          </div>
+          <p className="mt-1 text-[10px] text-slate-400">先创建学年，再在下方为它新增学期并设为当前。</p>
+        </div>
         {error ? (
           <div className="flex flex-col items-center gap-3 py-6 text-center">
             <AlertCircle className="h-8 w-8 text-amber-400" />

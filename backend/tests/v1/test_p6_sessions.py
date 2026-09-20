@@ -71,14 +71,14 @@ def fake_model(monkeypatch):
         stop_reason = "end_turn"
 
     class _Messages:
-        def create(self, **kwargs):
+        async def create(self, **kwargs):
             return _Response()
 
     class _Client:
         messages = _Messages()
 
     monkeypatch.setattr(
-        "app.api.chat.create_anthropic_client", lambda config: _Client()
+        "app.api.chat.create_async_anthropic_client", lambda config: _Client()
     )
 
 
@@ -86,7 +86,8 @@ def fake_model(monkeypatch):
 def scripted_model(monkeypatch):
     """可编排替身模型（ new-repro 手法）：按 create 次序返回脚本化
     响应，捕获每次请求的 messages 入参（Q03），并支持 on_call(index) 钩子
-    在第 N 轮 create 时机注入库层副作用（Q02 多轮中途失效）。"""
+    在第 N 轮 create 时机注入库层副作用（Q02 多轮中途失效）。
+    文本项可带 stop_reason（如 "max_tokens"）验证截断提示分支。"""
     from app.chat.config import ChatConfig
 
     monkeypatch.setattr(
@@ -95,34 +96,39 @@ def scripted_model(monkeypatch):
     )
     holder: dict = {"responses": [], "calls": [], "on_call": None}
 
-    def _text(text):
-        return {"kind": "text", "text": text}
+    def _text(text, stop_reason=None):
+        item = {"kind": "text", "text": text}
+        if stop_reason:
+            item["stop_reason"] = stop_reason
+        return item
 
     def _tool(call_id, name, args):
         return {"kind": "tool", "id": call_id, "name": name, "input": args}
 
     class _Messages:
-        def create(self, **kwargs):
+        async def create(self, **kwargs):
             index = len(holder["calls"])
             if holder["on_call"] is not None:
                 holder["on_call"](index)
             holder["calls"].append(kwargs)
             blocks = []
+            stop_reason = "end_turn"
             for item in holder["responses"][index]:
                 block = SimpleNamespace()
                 if item["kind"] == "text":
                     block.type, block.text = "text", item["text"]
+                    stop_reason = item.get("stop_reason", "end_turn")
                 else:
                     block.type = "tool_use"
                     block.id, block.name, block.input = item["id"], item["name"], item["input"]
                 blocks.append(block)
-            return SimpleNamespace(content=blocks, stop_reason="end_turn")
+            return SimpleNamespace(content=blocks, stop_reason=stop_reason)
 
     class _Client:
         messages = _Messages()
 
     monkeypatch.setattr(
-        "app.api.chat.create_anthropic_client", lambda config: _Client()
+        "app.api.chat.create_async_anthropic_client", lambda config: _Client()
     )
     return SimpleNamespace(holder=holder, text=_text, tool=_tool)
 
@@ -131,7 +137,8 @@ def scripted_model(monkeypatch):
 def scripted_openai_model(monkeypatch):
     """OpenAI 形状的可编排替身（V02：两 provider 分支各覆盖一例，注入点
     为 chat.completions.create）：捕获 create 入参，支持 on_call 在第 N 轮
-    create 时机注入库层副作用。responses 存最终文本字符串。"""
+    create 时机注入库层副作用。responses 存最终文本字符串，或含
+    content/finish_reason 的 dict（验证 finish_reason="length" 截断提示）。"""
     from app.chat.config import ChatConfig
 
     monkeypatch.setattr(
@@ -141,21 +148,27 @@ def scripted_openai_model(monkeypatch):
     holder: dict = {"responses": [], "calls": [], "on_call": None}
 
     class _Completions:
-        def create(self, **kwargs):
+        async def create(self, **kwargs):
             index = len(holder["calls"])
             if holder["on_call"] is not None:
                 holder["on_call"](index)
             holder["calls"].append(kwargs)
-            message = SimpleNamespace(
-                content=holder["responses"][index], tool_calls=None
+            item = holder["responses"][index]
+            if isinstance(item, dict):
+                content = item.get("content", "")
+                finish_reason = item.get("finish_reason", "stop")
+            else:
+                content, finish_reason = item, "stop"
+            message = SimpleNamespace(content=content, tool_calls=None)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=message, finish_reason=finish_reason)]
             )
-            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     class _Client:
         chat = SimpleNamespace(completions=_Completions())
 
     monkeypatch.setattr(
-        "app.api.chat.create_openai_client", lambda config: _Client()
+        "app.api.chat.create_async_openai_client", lambda config: _Client()
     )
     return SimpleNamespace(holder=holder)
 
@@ -612,6 +625,7 @@ def test_q02_drift_during_tool_rounds_aborts_stream(v1_seed, client, scripted_mo
     assert all(f["name"] != "get_exam_list" for f in tool_results + tool_errors)
     assert errors, "必须有范围失效帧"
     assert "范围已变化" in errors[-1]["message"]
+    assert errors[-1]["code"] == "scope_drift"
     assert frames[-1]["type"] == "done"
     assert not any(f["type"] == "text" for f in frames), "不得再用旧上下文作答"
 
@@ -650,6 +664,7 @@ def test_q02_final_round_drift_anthropic_no_publish(v1_seed, client, scripted_mo
     errors = [f for f in frames if f["type"] == "error"]
     assert errors, "必须有范围失效帧"
     assert "范围已变化" in errors[-1]["message"]
+    assert errors[-1]["code"] == "scope_drift"
     assert not any(
         f["type"] == "text" for f in frames
     ), "撤销后的旧范围答复不得发布"
@@ -682,6 +697,7 @@ def test_q02_final_round_drift_openai_no_publish(v1_seed, client, scripted_opena
     errors = [f for f in frames if f["type"] == "error"]
     assert errors, "必须有范围失效帧"
     assert "范围已变化" in errors[-1]["message"]
+    assert errors[-1]["code"] == "scope_drift"
     assert not any(
         f["type"] == "text" for f in frames
     ), "撤销后的旧范围答复不得发布"
@@ -814,3 +830,294 @@ def test_q03_drifted_session_history_readonly(v1_seed, client, fake_model):
         link.cancelled_at = original_cancelled_at
         db.commit()
         db.close()
+
+
+# ────────────────────── 回归：空回答不落库 / 毒化自愈 / 上限参数 / 截断提示 ──────────────────────
+
+
+def test_empty_final_text_not_persisted_and_session_survives(
+    v1_seed, client, scripted_model
+):
+    """模型最终轮返回空文本：流正常 done、无 error 帧；本轮（含 user 消息）
+    不落历史；下一轮仍正常作答（会话未被空 content 毒化）。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    model = scripted_model
+    model.holder["responses"] = [
+        [model.text("")],
+        [model.text("第二轮正常回答")],
+    ]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "总结一下"}
+    )
+    assert r.status_code == 200, r.text
+    frames = _frames(r.text)
+    assert frames[-1]["type"] == "done"
+    assert not any(f["type"] == "error" for f in frames)
+    assert not any(f["type"] == "text" for f in frames)
+
+    history = client.get(f"/api/v1/chat/sessions/{sid}/messages")
+    assert history.status_code == 200, history.text
+    assert history.json()["messages"] == [], "空回答轮（含 user 消息）不得落库"
+
+    r2 = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "再总结一次"}
+    )
+    assert r2.status_code == 200, r2.text
+    frames2 = _frames(r2.text)
+    assert frames2[-1]["type"] == "done"
+    assert any(
+        f["type"] == "text" and "第二轮正常回答" in f.get("delta", "") for f in frames2
+    ), "后续轮次必须仍正常作答"
+    history2 = client.get(f"/api/v1/chat/sessions/{sid}/messages")
+    messages = history2.json()["messages"]
+    assert [m["role"] for m in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "再总结一次"
+
+
+def test_history_blank_content_rows_filtered_from_model_messages(
+    v1_seed, client, scripted_model
+):
+    """历史毒化自愈：库里已有空 content 行（旧缺陷落库）时组装给模型的
+    messages 不含空 content 条目，正常轮次照常成功。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+
+    from app.db.models import SessionLocal
+    from app.db.workspace_models import ChatMessage
+
+    db = SessionLocal()
+    try:
+        db.add(ChatMessage(session_id=sid, role="assistant", content=""))
+        db.add(ChatMessage(session_id=sid, role="user", content="上一轮的问题"))
+        db.commit()
+    finally:
+        db.close()
+
+    model = scripted_model
+    model.holder["responses"] = [[model.text("本轮回答")]]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "本轮问题"}
+    )
+    assert r.status_code == 200, r.text
+    frames = _frames(r.text)
+    assert frames[-1]["type"] == "done"
+    assert not any(f["type"] == "error" for f in frames)
+
+    call = model.holder["calls"][0]
+    sent = call["messages"]
+    assert all(
+        (m.get("content") or "").strip() for m in sent
+    ), "发给模型的 messages 不得含空 content 条目"
+    assert {"role": "user", "content": "上一轮的问题"} in sent
+    assert {"role": "user", "content": "本轮问题"} in sent
+    assert not any(
+        m["role"] == "assistant" and not (m["content"] or "").strip() for m in sent
+    )
+
+
+def test_anthropic_uses_config_max_tokens_default_16384(
+    v1_seed, client, scripted_model
+):
+    """Anthropic 分支 max_tokens 取 ChatConfig.max_tokens（缺省 16384，
+    不再是旧的硬编码 4096）。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    model = scripted_model
+    model.holder["responses"] = [[model.text("回答")]]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "总结一下"}
+    )
+    assert r.status_code == 200, r.text
+    assert model.holder["calls"][0]["max_tokens"] == 16384
+
+
+def test_openai_omits_max_tokens_param(v1_seed, client, scripted_openai_model):
+    """OpenAI 分支完全不传 max_tokens（用户要求 OpenAI 通道不设上限）。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    model = scripted_openai_model
+    model.holder["responses"] = ["回答"]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "总结一下"}
+    )
+    assert r.status_code == 200, r.text
+    assert "max_tokens" not in model.holder["calls"][0]
+
+
+def test_anthropic_max_tokens_stop_reason_appends_truncation_notice(
+    v1_seed, client, scripted_model
+):
+    """stop_reason == "max_tokens" → text 帧末尾追加截断提示，不再无声截尾。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    model = scripted_model
+    model.holder["responses"] = [
+        [model.text("一段很长很长的回答", stop_reason="max_tokens")]
+    ]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "长篇分析"}
+    )
+    assert r.status_code == 200, r.text
+    frames = _frames(r.text)
+    text_frames = [f for f in frames if f["type"] == "text"]
+    assert text_frames, "必须有文本帧"
+    assert any("被截断" in f["delta"] for f in text_frames), "必须有截断提示"
+    assert frames[-1]["type"] == "done"
+    assert not any(f["type"] == "error" for f in frames)
+
+
+def test_openai_length_finish_reason_appends_truncation_notice(
+    v1_seed, client, scripted_openai_model
+):
+    """finish_reason == "length" → 同款截断提示（OpenAI 分支）。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    model = scripted_openai_model
+    model.holder["responses"] = [
+        {"content": "一段很长很长的回答", "finish_reason": "length"}
+    ]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "长篇分析"}
+    )
+    assert r.status_code == 200, r.text
+    frames = _frames(r.text)
+    text_frames = [f for f in frames if f["type"] == "text"]
+    assert text_frames, "必须有文本帧"
+    assert any("被截断" in f["delta"] for f in text_frames), "必须有截断提示"
+    assert frames[-1]["type"] == "done"
+    assert not any(f["type"] == "error" for f in frames)
+
+
+# ────────────────────── 系统提示：时间锚点与相对时间翻译规则 ──────────────────────
+
+
+def test_system_prompt_carries_time_anchor_and_translation_rule(
+    v1_seed, client, scripted_model
+):
+    """系统提示含当前日期/当前学年锚点（流内 db 现查），以及
+    「上学年/year_offset」相对时间翻译规则（时间语义批次新增第 6 条）。"""
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    model = scripted_model
+    model.holder["responses"] = [[model.text("回答")]]
+    r = client.post(
+        f"/api/v1/chat/sessions/{sid}/messages", json={"content": "上学年成绩如何"}
+    )
+    assert r.status_code == 200
+
+    system = model.holder["calls"][0]["system"]
+    assert "时间锚点" in system
+    assert "今天是" in system  # 当前日期（快照 as_of）
+    assert "2025-2026" in system  # 当前学年名称（v1_seed 唯一学年）
+    assert "当前学期：未分学期" in system  # 种子未建学期
+    # 第 6 条翻译规则
+    assert "上学年" in system
+    assert "year_offset" in system
+    assert "term_offset" in system
+    assert "get_academic_years" in system
+
+
+def test_build_system_prompt_without_anchor_backward_compatible(v1_seed):
+    """无锚点参数时函数保持可用（既有调用/测试不破坏）；规则文本不变。"""
+    from app.api.chat import build_system_prompt
+
+    prompt = build_system_prompt({"mode": "homeroom", "cohort_size": 3})
+    assert "时间锚点" not in prompt
+    assert "year_offset" in prompt  # 第 6 条规则恒在
+    assert "get_homework_correlation" in prompt  # 既有第 5 条不变
+
+    anchored = build_system_prompt(
+        {
+            "mode": "homeroom",
+            "cohort_size": 3,
+            "as_of": "2026-09-19",
+        },
+        {
+            "current_date": "2026-09-19",
+            "academic_year_name": "2025-2026",
+            "term_name": None,
+        },
+    )
+    assert "今天是 2026-09-19" in anchored
+    assert "当前学年：2025-2026" in anchored
+    assert "当前学期：未分学期" in anchored
+
+
+def test_system_prompt_rule7_autonomous_analysis(v1_seed):
+    """第 7 条「自主分析」恒定注入（不依赖 time_anchor，教学会话同样生效）：
+    拿表自算不以"没有对应工具"拒绝、缺考 null 不当 0、考试名模糊匹配提示。"""
+    from app.api.chat import build_system_prompt
+
+    plain = build_system_prompt({"mode": "homeroom", "cohort_size": 3})
+    anchored = build_system_prompt(
+        {
+            "mode": "homeroom",
+            "cohort_size": 3,
+            "as_of": "2026-09-19",
+        },
+        {
+            "current_date": "2026-09-19",
+            "academic_year_name": "2025-2026",
+            "term_name": None,
+        },
+    )
+    teaching = build_system_prompt(
+        {"mode": "teaching", "cohort_size": 5, "subject": "物理"}
+    )
+    for prompt in (plain, anchored, teaching):
+        assert "7. 自主分析" in prompt
+        assert "绝不以“没有对应工具”为由拒绝回答" in prompt
+        assert "null 不当 0" in prompt
+        assert "get_scores_table" in prompt
+        assert "get_exam_list" in prompt
+        assert "部分名称模糊匹配" in prompt
+    # 规则顺序衔接：第 7 条在第 6 条时间语义之后（不重号）
+    assert plain.index("6. 时间语义") < plain.index("7. 自主分析")
+
+
+def test_time_anchor_reads_homework_semester_and_grade(v1_seed):
+    """时间锚点学期名读 ws_homework_semester（is_current=1 优先，学期设置页
+    同一事实源）；班主任会话系统提示带「当前年级」锚点与学年命名约定/年级
+    换算规则，教学会话（无行政班）无年级锚点但学期名仍注入。"""
+    from app.api.chat import _time_anchor_of, build_system_prompt
+    from app.api.chat_tools import resolve_scope_snapshot
+    from app.db import workspace_models as wm
+    from app.db.models import SessionLocal
+
+    db = SessionLocal()
+    try:
+        db.add(
+            wm.WsHomeworkSemester(
+                academic_year_id=v1_seed.ay_id,
+                name="2025学年第一学期",
+                start_date=date(2025, 9, 1),
+                end_date=date(2026, 1, 31),
+                is_current=1,
+                mode="manual",
+            )
+        )
+        db.commit()
+        homeroom_snap = resolve_scope_snapshot(db, 1, "homeroom")
+        teaching_snap = resolve_scope_snapshot(
+            db, 1, "teaching", teaching_class_id=v1_seed.t6_id, subject="物理"
+        )
+        homeroom_prompt = build_system_prompt(
+            homeroom_snap, _time_anchor_of(db, homeroom_snap)
+        )
+        teaching_prompt = build_system_prompt(
+            teaching_snap, _time_anchor_of(db, teaching_snap)
+        )
+        db.query(wm.WsHomeworkSemester).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+    # 学期名来自作业学期表（is_current 优先），不再读 P1 Term 表
+    assert "当前学期：2025学年第一学期" in homeroom_prompt
+    # 年级锚点：快照行政班 grade=2 → 高二（仅班主任会话）
+    assert "当前年级：高二" in homeroom_prompt
+    # 规则第 6 条：命名约定 + 年级换算（当前是高二 → 高一=year_offset -1）
+    assert "2026学年 = 2026 年 9 月开学" in homeroom_prompt
+    assert "当前是高二，则高一=year_offset -1" in homeroom_prompt
+    assert "学期名形如“2025学年第一学期”" in homeroom_prompt or (
+        "学期名形如“2026学年第一学期”" in homeroom_prompt
+    )
+    # 教学会话：无行政班 → 无年级锚点（年级换算规则整条省略），学期名保留
+    assert "当前年级" not in teaching_prompt
+    assert "当前是高二" not in teaching_prompt
+    assert "当前学期：2025学年第一学期" in teaching_prompt
+    assert "2026学年 = 2026 年 9 月开学" in teaching_prompt

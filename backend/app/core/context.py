@@ -52,6 +52,9 @@ class WorkspaceContext:
     subject: str | None = None
     member_person_ids: tuple[int, ...] = field(default_factory=tuple)
     as_of: date = field(default_factory=date.today)
+    # 未换届自动延续：class_ids 实际来自更早学年（目标学年尚无本班）时记录
+    # 来源学年 id；供 /shared/scope 与界面提示「延续自 X 学年」。
+    carried_from_academic_year_id: int | None = None
 
 
 def _as_int(value: Any, name: str) -> int:
@@ -162,6 +165,7 @@ def _resolve_homeroom(db, teacher_id: int, params: dict[str, Any], as_of: date) 
         )
 
     ay = _resolve_academic_year(db, params)
+    carried_from: int | None = None
     admin_class = (
         db.query(AdministrativeClass)
         .filter(
@@ -191,6 +195,16 @@ def _resolve_homeroom(db, teacher_id: int, params: dict[str, Any], as_of: date) 
         if len(alt_rows) == 1 and alt_rows[0].grade in _HOMEROOM_BINDING_FIELDS:
             admin_class = alt_rows[0]
             grade = alt_rows[0].grade
+        if admin_class is None:
+            # 未换届自动延续：目标学年还没有建立本班时，沿教师绑定对取最近
+            # 一个更早学年的班级继续使用（零写入）；无候选仍按未建立处理。
+            from app.api import _queries as q
+
+            carried_class = q.carryover_homeroom_class(db, teacher, ay.id)
+            if carried_class is not None:
+                admin_class = carried_class
+                grade = carried_class.grade
+                carried_from = carried_class.academic_year_id
         if admin_class is None:
             raise WorkspaceNotConfigured(
                 "administrative class not established for this academic year",
@@ -235,6 +249,7 @@ def _resolve_homeroom(db, teacher_id: int, params: dict[str, Any], as_of: date) 
         subject=link.subject if link else None,
         member_person_ids=member_ids,
         as_of=as_of,
+        carried_from_academic_year_id=carried_from,
     )
 
 
@@ -263,9 +278,20 @@ def _resolve_teaching(db, teacher_id: int, params: dict[str, Any], as_of: date) 
         if cid not in seen:
             seen.add(cid)
             ordered_ids.append(cid)
+    carried_from: int | None = None
     for cid in ordered_ids:
         tc = db.get(TeachingClass, cid)
-        if tc is None or tc.academic_year_id != ay.id:
+        if tc is not None and tc.academic_year_id != ay.id:
+            # 未换届自动延续：目标学年该学科还没有教学班时，接受最近一个
+            # 更早学年的班（零写入）；其余跨年提交仍按越界拒绝。
+            from app.api import _queries as q
+
+            cy = q.carryover_teaching_year(db, tc.subject, ay.id)
+            if cy is None or tc.academic_year_id != cy.id:
+                tc = None
+            else:
+                carried_from = cy.id
+        if tc is None:
             raise ResourceOutOfScope(
                 "teaching class not found in this academic year",
                 details={"teaching_class_id": cid, "academic_year_id": ay.id},
@@ -296,6 +322,7 @@ def _resolve_teaching(db, teacher_id: int, params: dict[str, Any], as_of: date) 
         subject=subject.strip(),
         member_person_ids=member_ids,
         as_of=as_of,
+        carried_from_academic_year_id=carried_from,
     )
 
 

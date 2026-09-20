@@ -461,8 +461,8 @@ def test_projection_audit_classifies_tables_with_reasons(seeded_sources):
     assert (t_hw["rows"], t_hw["projected"], t_hw["archive_only"]) == (7, 6, 1)
     assert t_hw["reason"] is not None and "待核实" in t_hw["reason"]
     h_coll = audit["h"]["homework_collection"]
-    assert (h_coll["rows"], h_coll["projected"], h_coll["archive_only"]) == (1, 0, 1)
-    assert "收交台账" in h_coll["reason"]
+    assert (h_coll["rows"], h_coll["projected"], h_coll["archive_only"]) == (1, 1, 0)
+    assert h_coll["reason"] is None
     h_hw = audit["h"]["homework_record"]
     assert (h_hw["rows"], h_hw["projected"], h_hw["archive_only"]) == (6, 5, 1)
     h_roster = audit["h"]["class_roster"]
@@ -491,7 +491,8 @@ def test_cli_end_to_end_audit_report_and_resume_zero_add(seeded_sources, tmp_pat
     assert audit_path.is_file()
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["t"]["homework_record"]["projected"] == 6
-    assert "收交台账" in audit["h"]["homework_collection"]["reason"]
+    assert audit["h"]["homework_collection"]["projected"] == 1
+    assert audit["h"]["homework_collection"]["reason"] is None
     db = sqlite3.connect(target / "data" / "db.sqlite")
     assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert db.execute("SELECT COUNT(*) FROM pragma_foreign_key_check").fetchone()[0] == 0

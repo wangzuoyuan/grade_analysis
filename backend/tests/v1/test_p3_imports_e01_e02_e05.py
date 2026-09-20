@@ -86,6 +86,22 @@ def _write_grade23_xlsx(path: Path, rows, teaching_col: bool = False) -> Path:
     return path
 
 
+def _write_grade23_class_averages(path: Path) -> Path:
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append([
+        "班型", "班级", "班主任", "语文", "数学", "英语",
+        "物理", None, "加3同均分", "主三门", "3+3总分",
+    ])
+    ws.append([None, None, None, None, None, None, "原始", "等级", None, None, None])
+    ws.append(["平行班", "06", "周老师", 101.2, 108.3, 110.4, 55.1, 61.2, 180.5, 319.9, 500.4])
+    ws.append([None, "07", "吴老师", 102.2, 109.3, 111.4, 56.1, 62.2, 181.5, 322.9, 504.4])
+    wb.save(path)
+    return path
+
+
 def _upload(client, path: Path, mode: str, extra: dict | None = None):
     """multipart preview：openpyxl 文件 + 表单作用域/考试覆盖参数。"""
     data = {"mode": mode}
@@ -116,6 +132,61 @@ def _db():
 
 # 模块内共享：E01 的导入产物供 E02（同模块按定义顺序执行）复用
 STATE: dict = {}
+
+
+def test_homeroom_two_workbooks_persist_class_averages(client, v1_seed, tmp_path):
+    """同一批次的成绩明细与班级均分表都入库，均分端点返回真实班级排名。"""
+    from tests.v1.conftest import ALIAS_JIA_H
+
+    detail = _write_grade23_xlsx(
+        tmp_path / "高二第一学期期中考试学生成绩明细表.xlsx",
+        [_student_row(ALIAS_JIA_H, "秦甲", chinese=88, math=92, english=95, main3=275)],
+    )
+    averages = _write_grade23_class_averages(
+        tmp_path / "高二第一学期期中考试班级均分表.xlsx"
+    )
+    files = []
+    for path in (detail, averages):
+        files.append((
+            "files",
+            (path.name, path.read_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ))
+    preview = client.post(
+        f"{API}/imports/preview",
+        data={
+            "mode": "homeroom",
+            "class_id": str(v1_seed.h6_id),
+            "exam_name": "双文件考试",
+            "exam_date": "2025-12-20",
+        },
+        files=files,
+    )
+    assert preview.status_code == 200, preview.text
+    items = preview.json()["items"]
+    assert [item["kind"] for item in items] == ["student_scores", "class_averages"]
+    assert items[1]["row_count"] == 2
+    assert "确认后入库" in items[1]["message"]
+
+    confirmed = client.post(
+        f"{API}/imports/confirm", json={"token": preview.json()["token"]}
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["imported"] >= 2
+
+    response = client.get(
+        f"{API}/homeroom/analysis/exams/双文件考试/class-averages",
+        params={"academic_year_id": v1_seed.ay_id, "class_id": v1_seed.h6_id},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["subjects"][:3] == ["语文", "数学", "英语"]
+    assert body["total_types"] == ["主三门", "+3", "3+3"]
+    # 班级对比页高亮本班：current_class_num 为当前班主任绑定行政班班号（高二6班）
+    assert body["current_class_num"] == 6
+    by_class = {row["class_num"]: row for row in body["rows"]}
+    assert by_class[6]["teacher_name"] == "周老师"
+    assert by_class[6]["total_ranks"]["3+3"] == 2
+    assert by_class[7]["total_ranks"]["3+3"] == 1
 
 
 @pytest.fixture()

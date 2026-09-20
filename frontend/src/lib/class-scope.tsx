@@ -15,6 +15,8 @@ export interface TeachingClass {
   sort_order: number
   member_count: number
   created_at?: string | null
+  /** 未换届自动延续：本学年尚无教学班时，目录延续自该名称的更早学年。 */
+  carried_from_academic_year_name?: string | null
 }
 
 type ScopeValue = number | 'all'
@@ -64,6 +66,7 @@ export function ClassScopeProvider({ children }: { children: ReactNode }) {
             kind: '教学',
             sort_order: index,
             member_count: 0,
+            carried_from_academic_year_name: item.carried_from_academic_year_name ?? null,
           })))
         }
       } catch {
@@ -133,4 +136,10 @@ export function formatTeachingClass(tc: { grade: number; label: string } | null 
 export function formatClassChip(label: string | null | undefined): string | null {
   if (!label) return null
   return label
+}
+
+/** 延续展示后缀：如「· 延续自 2025-2026 学年」；无延续返回空串。 */
+export function carriedSuffix(tc: { carried_from_academic_year_name?: string | null } | null | undefined): string {
+  const name = tc?.carried_from_academic_year_name
+  return name ? ` · 延续自 ${name} 学年` : ''
 }

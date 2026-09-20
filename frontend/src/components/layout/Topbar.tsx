@@ -2,7 +2,7 @@
 
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
-import { Menu, MessageSquare, ChevronRight } from 'lucide-react'
+import { Menu, MessageSquare, ChevronRight, Settings } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
@@ -15,15 +15,16 @@ const SEGMENT_LABELS: Record<string, string> = {
   homeroom: '班主任工作台',
   teaching: '教学工作台',
   scores: '成绩分析',
-  students: '学生管理',
+  profile: '学生档案',
+  students: '学生信息',
   rollover: '换届',
-  members: '班级成员',
+  members: '班级信息',
   upload: '数据上传',
   compare: '班级对比',
   exam: '考试列表',
-  student: '学生检索',
-  homework: '作业跟踪',
-  settings: '设置',
+  student: '学生档案',
+  homework: '作业跟进',
+  settings: '学期设置',
   classes: '班级配置',
   manage: '记录管理',
   warnings: '缺交预警',
@@ -75,6 +76,7 @@ export function Topbar({ teacher }: { teacher: TeacherSummary | null }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [dynamicLabels, setDynamicLabels] = useState<Record<string, string>>({})
   const crumbs = buildCrumbs(pathname, dynamicLabels)
+  const settingsActive = pathname === '/settings' || pathname.startsWith('/settings/')
 
   useEffect(() => {
     const match = pathname.match(/^\/exam\/(\d+)/)
@@ -108,7 +110,7 @@ export function Topbar({ teacher }: { teacher: TeacherSummary | null }) {
 
   return (
     <header className="topbar-deco sticky top-0 z-20 flex h-14 items-center justify-between border-b border-[#cbe2f5] bg-white/75 px-4 backdrop-blur md:px-6 print:hidden">
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         {/* Mobile hamburger */}
         <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
           <SheetTrigger asChild>
@@ -127,7 +129,7 @@ export function Topbar({ teacher }: { teacher: TeacherSummary | null }) {
         </Sheet>
 
         {/* Breadcrumbs */}
-        <nav className="flex items-center gap-1 text-sm">
+        <nav className="hidden min-w-0 items-center gap-1 text-sm sm:flex">
           {crumbs.map((c, i) => (
             <span key={i} className="flex items-center gap-1">
               {i > 0 && <ChevronRight className="h-3.5 w-3.5 text-slate-400" />}
@@ -145,7 +147,7 @@ export function Topbar({ teacher }: { teacher: TeacherSummary | null }) {
         </nav>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-1 sm:gap-2">
         {/* 双工作台切换器：班主任 / 教学（键盘 tab + enter 可操作） */}
         <WorkspaceSwitcher />
         {/* 旧教学班选择器只服务旧教学页面；新工作台路由有自己的范围栏 */}
@@ -154,6 +156,21 @@ export function Topbar({ teacher }: { teacher: TeacherSummary | null }) {
             <ClassScopePicker compact />
           </div>
         )}
+        <Button
+          asChild
+          variant={settingsActive ? 'secondary' : 'ghost'}
+          size="sm"
+          className="px-2 sm:px-3"
+        >
+          <Link
+            href={workspaceHref('/settings', mode)}
+            aria-label="学期设置"
+            title="学期设置"
+          >
+            <Settings className="h-5 w-5" />
+            <span className="hidden sm:inline">学期设置</span>
+          </Link>
+        </Button>
         <Button
           variant="ghost"
           size="icon"

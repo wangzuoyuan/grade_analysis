@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { AlertCircle, BarChart3, BookOpen, Users } from 'lucide-react'
 
 import {
@@ -43,6 +44,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
+import { CorrelationCard } from '@/components/homework/CorrelationCard'
+import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, scoreBasisLabel, sortExamsDesc } from './shared'
@@ -97,7 +100,9 @@ function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse 
 }
 
 export function TeachingScores() {
-  const { filter, generation, switching } = useWorkspace()
+  const { filter, generation, switching, scope } = useWorkspace()
+  const searchParams = useSearchParams()
+  const requestedExam = searchParams.get('exam')
 
   // 考试清单
   const [exams, setExams] = useState<ExamSummary[] | null>(null)
@@ -118,6 +123,10 @@ export function TeachingScores() {
 
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
 
+  // 相关性卡走作业域作用域（homeworkScopeQuery，不带 term_id），考试跟随页面顶部选择
+  const hwScopeQ = useMemo(() => homeworkScopeQuery(filter), [filter])
+  const scopeSubject = scope?.subject ?? null
+
   // 考试清单：跟随工作台筛选/世代变化整体重置（仅考试列表自身状态；
   // stats/students/对比由数据 effect 的 scopeQ/考试依赖负责重置）
   useEffect(() => {
@@ -130,14 +139,16 @@ export function TeachingScores() {
         if (req !== examsReqRef.current) return
         const sorted = sortExamsDesc(r.exams ?? [])
         setExams(sorted)
-        if (sorted.length > 0) setSelectedExam(sorted[0].exam_name)
+        if (sorted.length > 0) {
+          setSelectedExam(sorted.some((exam) => exam.exam_name === requestedExam) ? requestedExam : sorted[0].exam_name)
+        }
       })
       .catch((err: unknown) => {
         if (req !== examsReqRef.current) return
         setExams([])
         setExamsError(apiErrorMessage(err))
       })
-  }, [scopeQ, generation, examNonce])
+  }, [scopeQ, generation, examNonce, requestedExam])
 
   // 当前考试的 stats + 学生表 + 班级对比（并行；任一失败进统一错误态；只比对 dataReqRef）
   useEffect(() => {
@@ -421,6 +432,9 @@ export function TeachingScores() {
           </CardContent>
         </Card>
       )}
+
+      {/* 契约 p5 §7 相关性散点卡（r 不可计算态）；挂两域成绩分析页底部，考试跟随顶部选择 */}
+      <CorrelationCard mode="teaching" scopeQ={hwScopeQ} scopeSubject={scopeSubject} generation={generation} preferredExamName={selectedExam} />
     </div>
   )
 }

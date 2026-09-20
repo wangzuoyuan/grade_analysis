@@ -4,11 +4,17 @@
  * 约束（契约 p5-homework.md §0）：
  * - 提交率分母 = 应交快照（确认时冻结）− excused；快照为空 → 一律显示
  *   「无法计算（无可靠分母）」，绝不推断其余全交、绝不显示百分比或 0%；
- * - 状态四值白名单；unknown 只保留原样（附中文注记），不翻译成已交/缺交。
+ * - 默认已交，只登记缺交和请假例外；旧 unknown 兼容显示为已交。
  */
 
 import type { HomeworkScopeQuery, HomeworkStatus, WorkspaceMode } from '@/lib/api-v1'
 import type { WorkspaceFilter } from '@/lib/workspace'
+
+/**
+ * 班主任工作台不采集作业种类（UI 不出现该概念），但后端契约仍要求非空：
+ * 录入时统一代填此值。历史迁移批次（homework_type='legacy'）在班主任侧同样不展示。
+ */
+export const HOMEROOM_HOMEWORK_TYPE = '日常作业'
 
 /** 把工作台筛选映射为作业端点的作用域查询参数（'all'/缺省不传，由后端按绑定解析）。 */
 export function homeworkScopeQuery(filter: WorkspaceFilter): HomeworkScopeQuery {
@@ -30,19 +36,17 @@ export const HOMEWORK_STATUS_OPTIONS: Array<{ value: HomeworkStatus; label: stri
   { value: 'submitted', label: '已交' },
   { value: 'missing', label: '缺交' },
   { value: 'excused', label: '请假免交' },
-  { value: 'unknown', label: '未记录（unknown）' },
 ]
 
 const STATUS_LABELS: Record<string, string> = {
   submitted: '已交',
   missing: '缺交',
   excused: '请假免交',
-  unknown: '未记录（unknown）',
 }
 
-/** 状态中文标签；unknown 保留语义注记，绝不推断成已交/缺交。 */
+/** 状态中文标签；旧 unknown 统一按新的默认已交口径展示。 */
 export function homeworkStatusLabel(status: string): string {
-  return STATUS_LABELS[status] ?? status
+  return STATUS_LABELS[status] ?? '已交'
 }
 
 /** 批次状态标签（active/revoked）。 */

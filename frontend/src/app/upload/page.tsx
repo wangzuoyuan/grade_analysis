@@ -281,7 +281,7 @@ export default function UploadPage() {
 
   const modeHint =
     mode === 'homeroom'
-      ? '当前工作台：班主任。将按行政班导入全科成绩与总分（全科+总分入班主任域）。'
+      ? '当前工作台：班主任。每场考试可同时选择学生成绩明细表和班级均分表；前者导入本班成绩（全科+总分入班主任域），后者导入全年级各班均分与班级排名。'
       : '当前工作台：教学。仅导入任教学科，其他学科列将被过滤（计入文件警告）。'
 
   const teachingAllClasses = mode === 'teaching' && typeof filter.teaching_class_id !== 'number'

@@ -48,6 +48,9 @@ from app.api.schemas import (
     SharedConfigResponse,
     StudentBrief,
     TeachingClassInfo,
+    TeachingClassManageRequest,
+    TeachingClassManageResponse,
+    TeachingClassUpdateRequest,
     TeachingConfig,
     TeacherInfo,
     HomeroomConfig,
@@ -184,7 +187,7 @@ def get_shared_classes(
             "academic year not found", details={"academic_year_id": academic_year_id}
         )
 
-    _, grade, class_num = _homeroom_binding(db)
+    teacher, grade, class_num = _homeroom_binding(db)
     homeroom_info = None
     if class_num is not None:
         admin_class = (
@@ -196,32 +199,214 @@ def get_shared_classes(
             )
             .one_or_none()
         )
+        if admin_class is None and teacher is not None:
+            # 与 core.context._resolve_homeroom 保持同一历史学年规则：换届后
+            # 当前 grade 不再等于历史班级的 grade，只有教师各年级绑定班号在
+            # 目标学年恰好命中一个行政班时才回退；无结果或多结果都不猜测。
+            binding_fields = (
+                "target_class_high1",
+                "target_class_high2",
+                "target_class_high3",
+            )
+            bound_nums = {
+                getattr(teacher, field)
+                for field in binding_fields
+                if getattr(teacher, field) is not None
+            }
+            alt_rows = (
+                db.query(AdministrativeClass)
+                .filter(
+                    AdministrativeClass.academic_year_id == ay.id,
+                    AdministrativeClass.class_num.in_(bound_nums),
+                )
+                .all()
+            )
+            if len(alt_rows) == 1 and alt_rows[0].grade in (1, 2, 3):
+                admin_class = alt_rows[0]
+        homeroom_carried = None
+        if admin_class is None and teacher is not None:
+            # 未换届自动延续：该学年尚无本班时目录沿用最近旧学年的班。
+            carried_class = q.carryover_homeroom_class(db, teacher, ay.id)
+            if carried_class is not None:
+                admin_class = carried_class
+                homeroom_carried = db.get(AcademicYear, carried_class.academic_year_id)
         if admin_class is not None:
             homeroom_info = HomeroomClassInfo(
                 class_id=admin_class.id,
                 grade=admin_class.grade,
                 class_num=admin_class.class_num,
                 label=admin_class.label,
+                carried_from_academic_year_id=(
+                    homeroom_carried.id if homeroom_carried is not None else None
+                ),
+                carried_from_academic_year_name=(
+                    homeroom_carried.name if homeroom_carried is not None else None
+                ),
             )
 
+    try:
+        catalog_subject = q.teaching_subject_for_year(db, ay.id, None)
+    except DomainError:
+        catalog_subject = None
+    # 未换届自动延续：学科口径解析成功后，若本学年该学科尚无班，目录沿用
+    # 最近旧学年的班（teaching_subject_for_year 的延续回退保证学科可得）。
+    carried_year = (
+        q.carryover_teaching_year(db, catalog_subject, ay.id)
+        if catalog_subject is not None
+        else None
+    )
+    list_year_id = carried_year.id if carried_year is not None else ay.id
     teaching_list = [
-        TeachingClassInfo(class_id=tc.id, label=tc.label, subject=tc.subject)
+        TeachingClassInfo(
+            class_id=tc.id,
+            label=tc.label,
+            subject=tc.subject,
+            status=tc.status,
+            carried_from_academic_year_id=(
+                carried_year.id if carried_year is not None else None
+            ),
+            carried_from_academic_year_name=(
+                carried_year.name if carried_year is not None else None
+            ),
+        )
         for tc in (
             db.query(TeachingClass)
             .filter(
-                TeachingClass.academic_year_id == ay.id,
-                TeachingClass.subject == q.teaching_subject_for_year(db, ay.id, None),
+                TeachingClass.academic_year_id == list_year_id,
+                TeachingClass.subject == catalog_subject,
+                TeachingClass.status == "active",
             )
             .order_by(TeachingClass.sort_order.asc(), TeachingClass.id.asc())
             .all()
         )
-    ]
+    ] if catalog_subject is not None else []
     return SharedClassesResponse(
         academic_year_id=ay.id,
         academic_year_name=ay.name,
         homeroom=homeroom_info,
         teaching=teaching_list,
     )
+
+
+def _management_subject(db: Session, academic_year_id: int, explicit: Optional[str] = None) -> str:
+    active = db.query(TeachingClass.subject).filter(
+        TeachingClass.academic_year_id == academic_year_id,
+        TeachingClass.status == "active",
+    ).distinct().all()
+    subjects = {row[0] for row in active}
+    if not subjects:
+        subjects = {row[0] for row in db.query(TeachingClass.subject).filter(
+            TeachingClass.academic_year_id == academic_year_id
+        ).distinct().all()}
+    if not subjects:
+        # 未换届自动延续：本学年无任何教学班时，沿用最近旧学年的学科口径。
+        subjects = q.carryover_subjects(db, academic_year_id)
+    if explicit is not None and explicit.strip():
+        if subjects and explicit.strip() not in subjects:
+            raise ResourceOutOfScope("学科不属于当前教学工作台", details={"subject": explicit.strip()})
+        return explicit.strip()
+    if len(subjects) != 1:
+        raise InvalidScopeParam("无法唯一确定当前任教学科", details={"subjects": sorted(subjects)})
+    return next(iter(subjects))
+
+
+def _managed_teaching_classes(
+    db: Session,
+    academic_year_id: int,
+    subject: str,
+    carried_from=None,
+) -> TeachingClassManageResponse:
+    rows = db.query(TeachingClass).filter(
+        TeachingClass.academic_year_id == academic_year_id,
+        TeachingClass.subject == subject,
+    ).order_by(TeachingClass.sort_order.asc(), TeachingClass.id.asc()).all()
+    return TeachingClassManageResponse(classes=[
+        TeachingClassInfo(
+            class_id=row.id,
+            label=row.label,
+            subject=row.subject,
+            status=row.status,
+            carried_from_academic_year_id=carried_from.id if carried_from else None,
+            carried_from_academic_year_name=carried_from.name if carried_from else None,
+        )
+        for row in rows
+    ])
+
+
+@router.get("/teaching/classes", response_model=TeachingClassManageResponse)
+@domain_endpoint
+def list_teaching_classes(
+    academic_year_id: Optional[int] = None,
+    subject: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    ay = q.resolve_year(db, academic_year_id)
+    managed_subject = _management_subject(db, ay.id, subject)
+    # 未换届自动延续：该学年本学科尚无教学班时，目录展示最近旧学年的班。
+    carried = q.carryover_teaching_year(db, managed_subject, ay.id)
+    if carried is not None:
+        return _managed_teaching_classes(db, carried.id, managed_subject, carried)
+    return _managed_teaching_classes(db, ay.id, managed_subject)
+
+
+@router.post("/teaching/classes", response_model=TeachingClassManageResponse)
+@domain_endpoint
+def create_teaching_class(req: TeachingClassManageRequest, db: Session = Depends(get_db)):
+    ay = q.resolve_year(db, req.academic_year_id)
+    label = (req.label or "").strip()
+    if not label:
+        raise InvalidScopeParam("班级名称不能为空", details={"param": "label"})
+    subject = _management_subject(db, ay.id, req.subject)
+    duplicate = db.query(TeachingClass.id).filter(
+        TeachingClass.academic_year_id == ay.id,
+        TeachingClass.subject == subject,
+        TeachingClass.label == label,
+    ).first()
+    if duplicate:
+        raise InvalidScopeParam("同学年同学科已有同名教学班", details={"label": label})
+    max_order = db.query(TeachingClass.sort_order).filter(
+        TeachingClass.academic_year_id == ay.id,
+        TeachingClass.subject == subject,
+    ).order_by(TeachingClass.sort_order.desc()).first()
+    db.add(TeachingClass(
+        academic_year_id=ay.id,
+        subject=subject,
+        label=label,
+        sort_order=(max_order[0] + 1 if max_order else 0),
+        status="active",
+    ))
+    db.commit()
+    return _managed_teaching_classes(db, ay.id, subject)
+
+
+@router.patch("/teaching/classes/{teaching_class_id}", response_model=TeachingClassManageResponse)
+@domain_endpoint
+def update_teaching_class(
+    teaching_class_id: int, req: TeachingClassUpdateRequest, db: Session = Depends(get_db)
+):
+    row = db.get(TeachingClass, teaching_class_id)
+    if row is None:
+        raise ResourceOutOfScope("教学班不存在", details={"teaching_class_id": teaching_class_id})
+    if req.label is not None:
+        label = req.label.strip()
+        if not label:
+            raise InvalidScopeParam("班级名称不能为空", details={"param": "label"})
+        duplicate = db.query(TeachingClass.id).filter(
+            TeachingClass.id != row.id,
+            TeachingClass.academic_year_id == row.academic_year_id,
+            TeachingClass.subject == row.subject,
+            TeachingClass.label == label,
+        ).first()
+        if duplicate:
+            raise InvalidScopeParam("同学年同学科已有同名教学班", details={"label": label})
+        row.label = label
+    if req.status is not None:
+        if req.status not in ("active", "inactive"):
+            raise InvalidScopeParam("status must be active or inactive", details={"status": req.status})
+        row.status = req.status
+    db.commit()
+    managed_subject = _management_subject(db, row.academic_year_id, row.subject)
+    return _managed_teaching_classes(db, row.academic_year_id, managed_subject)
 
 
 @router.get("/shared/scope", response_model=ScopeResponse)
@@ -257,6 +442,11 @@ def get_shared_scope(
             db, academic_year_id, teaching_class_id, subject, term_id
         )
     ctx = resolve_workspace_context(db, teacher_id, mode, params)
+    carried_year = (
+        db.get(AcademicYear, ctx.carried_from_academic_year_id)
+        if ctx.carried_from_academic_year_id is not None
+        else None
+    )
     return ScopeResponse(
         mode=ctx.mode,
         data_domain=ctx.data_domain,
@@ -266,6 +456,12 @@ def get_shared_scope(
         link_id=ctx.link_id,
         link_version=ctx.link_version,
         as_of=ctx.as_of.isoformat(),
+        carried_from_academic_year_id=(
+            carried_year.id if carried_year is not None else None
+        ),
+        carried_from_academic_year_name=(
+            carried_year.name if carried_year is not None else None
+        ),
     )
 
 

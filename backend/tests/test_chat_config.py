@@ -63,6 +63,56 @@ def test_chat_config_placeholder_key_is_not_configured(tmp_path: Path, monkeypat
     assert config.model == DEFAULT_MODEL
 
 
+def test_chat_config_strips_inline_comment_after_value(tmp_path: Path, monkeypatch):
+    # 线上事故复刻：值后带「 # 注释」曾把 base_url 整串污染（网关 404 NOT_FOUND）
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "ANTHROPIC_API_KEY=test-key",
+                "ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic # 留空使用官方地址",
+                "ANTHROPIC_MODEL=glm-5.3-flash",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = get_chat_config(env_file)
+
+    assert config.base_url == "https://open.bigmodel.cn/api/anthropic"
+    assert config.model == "glm-5.3-flash"
+
+
+def test_chat_config_normalizes_paste_artifacts(tmp_path: Path, monkeypatch):
+    # 网页复制的不间断连字符（U+2011）与零宽字符自动纠成 ASCII（智谱 1211 模型不存在）
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "ANTHROPIC_API_KEY=test\u200bkey\n"
+        "ANTHROPIC_MODEL=GLM\u20115.3\u2011Flash\n",
+        encoding="utf-8",
+    )
+
+    config = get_chat_config(env_file)
+
+    assert config.api_key == "testkey"
+    assert config.model == "GLM-5.3-Flash"
+
+
+def test_chat_config_keeps_hash_inside_quoted_value(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text('ANTHROPIC_API_KEY="abc # 123"\n', encoding="utf-8")
+
+    config = get_chat_config(env_file)
+
+    assert config.api_key == "abc # 123"
+
+
 def test_chat_ignores_non_display_content_blocks():
     class Block:
         type = "thinking"

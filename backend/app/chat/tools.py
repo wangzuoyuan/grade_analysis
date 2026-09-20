@@ -28,6 +28,27 @@ def create_openai_client(config: ChatConfig | None = None):
     return OpenAI(**kwargs)
 
 
+def create_async_anthropic_client(config: ChatConfig | None = None):
+    """异步版 Anthropic 客户端：/api/v1/chat 流式端点专用——事件循环内
+    直接 await 模型调用，慢生成期间不再阻塞整个 uvicorn。"""
+    config = config or get_chat_config()
+    kwargs = {"api_key": config.api_key}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    return anthropic.AsyncAnthropic(**kwargs)
+
+
+def create_async_openai_client(config: ChatConfig | None = None):
+    """异步版 OpenAI 客户端（同上，供 /api/v1/chat 流式端点 await）。"""
+    from openai import AsyncOpenAI
+
+    config = config or get_chat_config()
+    kwargs: dict[str, Any] = {"api_key": config.api_key}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    return AsyncOpenAI(**kwargs)
+
+
 def get_client():
     config = get_chat_config()
     if not config.is_configured:

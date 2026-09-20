@@ -5,12 +5,14 @@
  *
  * 数据来自 /api/v1：shared/exams（考试清单）、teaching/analysis/class-compare
  * （各教学班样本均分，恒 estimated）、teaching/analysis/exams/{exam}/stats
- * （学科/口径/总体均分）。与教学成绩页同源同口径；行政班全科对比不在此页
- * （班主任工作台显示指引卡）。迟到回包按资源分离的序号丢弃（F11）。
+ * （学科/口径/总体均分）。与教学成绩页同源同口径；行政班全科对比在班主任
+ * 工作台 /homeroom/compare（官方班级均分表口径），homeroom 模式进入本页时
+ * 直接跳转过去。迟到回包按资源分离的序号丢弃（F11）。
  * 名次为各班样本均分的排序名次（同分同名次），不可算为「—」。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   BarChart,
   Bar,
@@ -44,7 +46,7 @@ import {
   type TeachingStatsResponse,
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
-import { useWorkspace, WorkspaceSwitcher } from '@/lib/workspace'
+import { useWorkspace } from '@/lib/workspace'
 import { ScoreYearPicker } from '@/components/scores/ScoreYearPicker'
 import { ExamSelect } from '@/components/scores/ExamSelect'
 import { analysisScopeQuery, scoreBasisLabel, sortExamsDesc } from '@/components/scores/shared'
@@ -105,6 +107,7 @@ function deriveRanks(classes: TeachingClassCompareItem[]): Array<TeachingClassCo
 
 export default function ComparePage() {
   const { filter, generation, switching, mode } = useWorkspace()
+  const router = useRouter()
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
 
   const [exams, setExams] = useState<ExamSummary[] | null>(null)
@@ -229,21 +232,24 @@ export default function ComparePage() {
   const isLoading = compare == null || stats == null
   const loadingExams = exams == null && examsError == null
 
-  // 班主任工作台：此页为任教学科教学班对比，不混域读行政班全科数据
+  // 班主任工作台：此页的教学班样本对比属教学工作台；homeroom 模式直达
+  // 班主任「班级对比」页（同年级各行政班均分，官方班级均分表口径）
+  useEffect(() => {
+    if (mode === 'homeroom') router.replace('/homeroom/compare')
+  }, [mode, router])
+
+  // 跳转期间渲染极简加载态（不发起任何教学域数据请求）
   if (mode === 'homeroom') {
     return (
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">班级对比</h1>
-          <p className="mt-1 text-sm text-slate-500">任教学科教学班横向对比，属教学工作台</p>
+          <p className="mt-1 text-sm text-slate-500">正在前往班主任「班级对比」…</p>
         </div>
         <Card>
-          <CardContent className="flex flex-col items-center justify-center gap-3 py-10 text-center">
-            <AlertTriangle className="h-8 w-8 text-slate-300" />
-            <p className="text-sm text-slate-600">
-              班级对比按任教学科教学班统计（样本均分口径）。请切换到教学工作台查看。
-            </p>
-            <WorkspaceSwitcher />
+          <CardContent className="space-y-2 py-6">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-40 w-full" />
           </CardContent>
         </Card>
       </div>

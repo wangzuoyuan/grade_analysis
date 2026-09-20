@@ -1,6 +1,6 @@
 'use client'
 
-import { useClassScope, type TeachingClass, formatTeachingClass } from '@/lib/class-scope'
+import { useClassScope, carriedSuffix, type TeachingClass, formatTeachingClass } from '@/lib/class-scope'
 import {
   Select,
   SelectContent,
@@ -57,6 +57,7 @@ export function ClassScopePicker({ grade, className, compact }: Props) {
               <SelectItem key={c.id} value={String(c.id)}>
                 {c.label}
                 {c.member_count ? `（${c.member_count}人）` : ''}
+                {carriedSuffix(c)}
                 {c.kind === '行政' ? '' : ''}
               </SelectItem>
             ))}
@@ -69,7 +70,11 @@ export function ClassScopePicker({ grade, className, compact }: Props) {
 
 /** 当前教学班的展示串（供侧栏/顶栏静态展示），如「高二·物A1」。 */
 export function currentScopeLabel(current: number | 'all', classes: TeachingClass[]): string {
-  if (current === 'all') return `全部（${classes.length}个班）`
+  if (current === 'all') {
+    const names = new Set(classes.map((c) => c.carried_from_academic_year_name ?? null))
+    const carried = names.size === 1 ? Array.from(names)[0] : null
+    return `全部（${classes.length}个班）${carried ? ` · 延续自 ${carried} 学年` : ''}`
+  }
   const tc = classes.find((c) => c.id === current)
-  return formatTeachingClass(tc) ?? '—'
+  return `${formatTeachingClass(tc) ?? '—'}${carriedSuffix(tc)}`
 }

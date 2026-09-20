@@ -28,6 +28,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -212,10 +213,12 @@ class TeachingClass(Base):
     subject = Column(String(32), nullable=False)
     label = Column(String(64), nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
+    status = Column(String(16), nullable=False, default="active", server_default="active")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_teaching_class_status"),
         UniqueConstraint("academic_year_id", "subject", "label", name="uq_teaching_class"),
         Index("idx_teaching_class_year", "academic_year_id"),
     )
@@ -381,6 +384,11 @@ class ScoreFact(Base):
     score = Column(Float, nullable=True)
     # P3 §1.3：等级分/赋分（原始分仍在 score；缺考两者皆 NULL）
     grade_score = Column(Float, nullable=True)
+    # 旧班主任版重点关注口径：总分行保留学籍/年级名次与年级百分位，
+    # 单科行保留年级百分位。缺值保持 NULL，绝不按班内分数伪造年级口径。
+    grade_percentile = Column(Float, nullable=True)
+    xueji_rank = Column(Integer, nullable=True)
+    grade_rank = Column(Integer, nullable=True)
     source = Column(String(32), nullable=False, default="p1_seed")
     data_revision = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -406,6 +414,47 @@ class ScoreFact(Base):
         key_col = "subject_key" if key == "subject" else "total_key"
         setattr(self, key_col, value or "")
         return value
+
+
+class WorkspaceClassAverage(Base):
+    """导入的全年级班级均分表。
+
+    这类数据不是某个学生的成绩事实，也不能从当前行政班的 ScoreFact
+    反推。按工作台、学年、考试和班号独立保存，供班主任考试详情展示
+    各班真实均分及班级排名。JSON 字段保留不同年级各自的学科与总分口径。
+    """
+
+    __tablename__ = "workspace_class_average"
+    id = Column(Integer, primary_key=True)
+    data_domain = Column(String(16), nullable=False)
+    academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
+    exam_name = Column(String(128), nullable=False)
+    exam_date = Column(Date, nullable=True)
+    grade = Column(Integer, nullable=False)
+    class_type = Column(String(32), nullable=True)
+    class_num = Column(Integer, nullable=False)
+    teacher_name = Column(String(64), nullable=True)
+    subject_averages = Column(JSON, nullable=False, default=dict)
+    total_averages = Column(JSON, nullable=False, default=dict)
+    source = Column(String(255), nullable=False, default="import")
+    data_revision = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "data_domain IN ('homeroom', 'teaching')",
+            name="ck_workspace_class_average_domain",
+        ),
+        UniqueConstraint(
+            "data_domain", "academic_year_id", "exam_name", "grade", "class_num",
+            name="uq_workspace_class_average_natural_key",
+        ),
+        Index(
+            "idx_workspace_class_average_scope",
+            "data_domain", "academic_year_id", "exam_name", "grade",
+        ),
+    )
 
 
 class SourceArchiveRecord(Base):
@@ -551,8 +600,8 @@ class HomeworkAssignment(Base):
 
 
 class HomeworkSubmission(Base):
-    """逐人作业状态（契约 §2.1）：同人同批次唯一；无记录不推断已交；
-    evaluation 另列，不得从评价缺失推断缺交。"""
+    """逐人作业例外（契约 §2.1）：同人同批次唯一；无缺交/请假记录默认
+    已交；evaluation 另列，不得从评价内容推断缺交。"""
     __tablename__ = "homework_submission"
     id = Column(Integer, primary_key=True)
     assignment_id = Column(Integer, ForeignKey("homework_assignment.id"), nullable=False)
@@ -629,6 +678,33 @@ class WsHomeworkSemester(Base):
         CheckConstraint("mode IN ('auto', 'manual')", name="ck_ws_semester_mode"),
         UniqueConstraint("academic_year_id", "name", name="uq_ws_semester_year_name"),
         Index("idx_ws_semester_year", "academic_year_id"),
+    )
+
+
+class HomeworkStatsExclusion(Base):
+    """作业统计排除（ADR-023）：行存在即该生在本班被排除作业统计——
+    缺交不计入看板、排行与预警；相关性与个人明细/批次明细保留（沿用
+    老教学版 ClassRoster.excluded 语义，记录永不删除，只影响聚合展示）。
+    class_ref_id 按 data_domain 解释：homeroom=administrative_class.id，
+    teaching=teaching_class.id；排除仅作用于该班自身，不跨班传播。"""
+    __tablename__ = "homework_stats_exclusion"
+    id = Column(Integer, primary_key=True)
+    data_domain = Column(String(16), nullable=False)
+    class_ref_id = Column(Integer, nullable=False)
+    identity_id = Column(Integer, ForeignKey("ws_student_identity.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "data_domain IN ('homeroom', 'teaching')",
+            name="ck_hw_stats_exclusion_domain",
+        ),
+        UniqueConstraint(
+            "data_domain", "class_ref_id", "identity_id",
+            name="uq_hw_stats_exclusion",
+        ),
+        Index("idx_hw_stats_exclusion_class", "data_domain", "class_ref_id"),
     )
 
 

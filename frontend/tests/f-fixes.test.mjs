@@ -26,16 +26,17 @@ test('F04：mode 事实源 = 路径前缀 → ?ws → lastMode，公共页读 us
   assert.match(workspace, /Suspense/, 'useSearchParams 必须有最近 Suspense 边界（静态预渲染构建约束）')
 })
 
-test('F04：setMode 在公共页更新 ?ws 停留当前页，绝不静默跳工作台根', () => {
+test('F04：setMode 切换工作台统一跳 /{mode} 根路径（含公共页），公共页不再停留', () => {
   const setModeIdx = workspace.indexOf('const setMode = useCallback')
   assert.ok(setModeIdx > 0, '应能定位 setMode')
   const setModeBody = workspace.slice(setModeIdx, workspace.indexOf('const setFilter =', setModeIdx))
-  assert.match(setModeBody, /if \(pathMode != null\)/, '工作台页与公共页必须分支处理')
-  assert.match(setModeBody, /router\.push\(`\/\$\{next\}`\)/, '工作台页切换仍跳 /{mode} 根路径')
-  assert.match(setModeBody, /params\.set\('ws', next\)/, '公共页必须写 ?ws=next')
-  assert.match(setModeBody, /router\.replace\(/, '公共页切换必须 replace 当前 URL（停留本页）')
-  // 两分支互斥：工作台跳转必须先 return，再进入公共页 ?ws 分支
-  assert.match(setModeBody, /router\.push\(`\/\$\{next\}`\)[^]*?return[^]*?router\.replace\(/, '公共页分支必须在工作台分支 return 之后（互斥）')
+  assert.match(setModeBody, /if \(pathMode === next\) return/, '工作台页点击当前工作台 = 无操作守卫必须保留')
+  assert.match(setModeBody, /bumpGeneration\(\)/, '点击即作废在途响应')
+  assert.match(setModeBody, /setScope\(null\)/, '必须丢弃旧工作台范围，防止跨模式闪现')
+  assert.match(setModeBody, /router\.push\(`\/\$\{next\}`\)/, '任何页面切换均跳 /{mode} 根路径（仪表盘）')
+  // 公共页停留分支已废除：不得再写 ?ws=next，也不得 replace 停留当前页
+  assert.doesNotMatch(setModeBody, /params\.set\('ws', next\)/, '公共页分支已删除，不得再写 ?ws=next 停留')
+  assert.doesNotMatch(setModeBody, /router\.replace\(/, 'setMode 不得再 replace 停留当前页')
 })
 
 test('F04：切换器高亮与 Provider 同一 mode 值，点击已高亮项不再提前 return', () => {
@@ -51,7 +52,7 @@ test('F04：侧栏/顶栏入口链接携带当前工作台（?ws=）', () => {
   assert.match(workspace, /export function workspaceHref\(/, 'workspace.tsx 应导出 workspaceHref 助手')
   assert.match(workspace, /if \(href\.startsWith\('\/homeroom'\) \|\| href\.startsWith\('\/teaching'\)\) return href/, '工作台前缀页不加 ws，公共页目标必须补')
   assert.match(sidebar, /workspaceHref\(item\.href, mode\)/, '侧栏导航链接必须携带 ws')
-  assert.match(sidebar, /href="\/teaching\/members"/, '侧栏页内管理入口须直达有路径作用域的 v1 教学班页')
+  assert.match(sidebar, /mode === 'homeroom' \? '\/homeroom\/students' : '\/teaching\/members'/, '侧栏管理入口须随工作台进入对应的成员页')
   assert.match(topbar, /workspaceHref\(c\.href, mode\)/, '顶栏面包屑可点击链接必须携带 ws')
   // 上传页提交 multipart 的 mode 取 Provider（= URL 事实源）
   assert.match(uploadPage, /const \{ mode, filter, switching \} = useWorkspace\(\)/, '上传页 mode 必须取自 Provider')

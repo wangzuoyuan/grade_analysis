@@ -583,19 +583,30 @@ export default function ChatDrawer() {
           const call = findCall(frame.call_id)
           if (call) call.error = typeof frame.error === 'string' ? frame.error : '工具执行失败'
         } else if (frame.type === 'error') {
-          // detail 优先（Q02 范围失效帧走 detail），兼容旧 message 字段
-          const msg =
+          // 错误类型判定优先认机器码 code（scope_drift / key_not_configured 等），
+          // 旧后端 / 未重启进程发出的帧没有 code → 文字匹配（/范围/、/未配置/）降级为兜底，兼容不回退。
+          const code = typeof frame.code === 'string' ? frame.code : ''
+          // detail 优先（Q02 范围失效帧走 detail），兼容旧 message 字段；
+          // 有 code 无文案的帧回落到按 code 给中文文案（不至于裸显示"模型返回错误"）。
+          const raw =
             typeof frame.detail === 'string' && frame.detail
               ? frame.detail
               : typeof frame.message === 'string' && frame.message
                 ? frame.message
-                : '模型返回错误'
-          if (/范围/.test(msg)) {
+                : ''
+          const msg =
+            raw ||
+            (code === 'scope_drift'
+              ? '会话范围已变化，本流已终止'
+              : code === 'key_not_configured'
+                ? '模型 Key 未配置'
+                : '模型返回错误')
+          if (code === 'scope_drift' || (!code && /范围/.test(msg))) {
             // 工具层中止的范围失效帧：本流终止，旧上下文不得继续作答 →
             // 冲突态禁言 + 重建入口（配合后端每轮工具前的快照重验）
             setScopeConflict(true)
             setStreamError('会话范围已变化，本流已终止')
-          } else if (/未配置/.test(msg)) {
+          } else if (code === 'key_not_configured' || (!code && /未配置/.test(msg))) {
             // "Key 未配置"是可自助修复的配置问题：追加配置引导文案
             setStreamError(
               `${msg} 配置方式：在 backend/.env 按 CHAT_PROVIDER 设置对应模型 Key（ANTHROPIC_API_KEY 或 OPENAI_API_KEY）后重试。`

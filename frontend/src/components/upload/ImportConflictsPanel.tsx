@@ -41,10 +41,10 @@ export function ImportConflictsPanel({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <AlertTriangle className="h-4 w-4 text-warning-500" aria-hidden="true" />
-          发现成绩冲突，本次未写入任何数据
+          发现导入冲突，本次未写入任何数据
         </CardTitle>
         <CardDescription>
-          以下学生在库内已有同场次的不同分数（自然键冲突，409 整批拒绝、零写入）。
+          以下学生成绩或班级均分在库内已有同场次的不同数据（自然键冲突，409 整批拒绝、零写入）。
           默认保持库内值；确认修订才会以本次上传覆写并留下修订记录。
         </CardDescription>
       </CardHeader>
@@ -53,8 +53,8 @@ export function ImportConflictsPanel({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="text-xs">学生</TableHead>
-                <TableHead className="text-xs">学科</TableHead>
+                <TableHead className="text-xs">对象</TableHead>
+                <TableHead className="text-xs">数据项</TableHead>
                 <TableHead className="text-xs">考试</TableHead>
                 <TableHead className="text-right text-xs">库内值</TableHead>
                 <TableHead className="text-right text-xs">本次上传</TableHead>
@@ -71,10 +71,10 @@ export function ImportConflictsPanel({
                     {c.exam_name}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-sm text-slate-900">
-                    {conflictValue(c.existing_score)}
+                    {c.kind === 'class_averages' ? '已有均分数据' : conflictValue(c.existing_score)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-sm font-medium text-warning-700">
-                    {conflictValue(c.new_score)}
+                    {c.kind === 'class_averages' ? '本次均分数据' : conflictValue(c.new_score)}
                   </TableCell>
                 </TableRow>
               ))}

@@ -36,17 +36,9 @@ test('兼容班级选择器改读 v1 目录，不再访问已移除旧端点（P
   assert.doesNotMatch(classScope, /\/api\/teaching\/current/, '不得再调用旧全局当前班端点')
 })
 
-test('homework roster is a read-only view scoped to the selected teaching class', () => {
-  assert.match(homeworkSettings, /useClassScope\(\)/, '作业设置应读取当前教学班')
-  assert.match(homeworkSettings, /const rosterRequestIdRef = useRef\(0\)/, '设置页应跟踪最新花名册请求')
-  assert.match(homeworkSettings, /requestId !== rosterRequestIdRef\.current/, '旧班花名册响应不得覆盖当前班')
-  assert.match(homeworkSettings, /const visibleRoster = rosterScope === current \? roster : \[\]/, '花名册必须只渲染与当前选择器一致的范围')
-  assert.match(homeworkSettings, /setRoster\(\[\]\)/, '切班请求开始时应清空旧花名册')
-  assert.match(homeworkSettings, /setRosterError\(true\)/, '花名册失败时应进入显式错误态')
-  assert.match(homeworkSettings, /toggle-excluded/, '排除统计开关保留在作业设置')
-  assert.doesNotMatch(homeworkSettings, /addStudent|removeStudent/, '成员增删统一在班级配置页维护，作业设置不得再有成员增删')
-  assert.match(homeworkSettings, /\/settings\/classes/, '作业设置应指引用户到班级配置页维护成员')
-  assert.match(classSettings, /redirect\('\/teaching\/members'\)/, '旧班级配置深链须转到 v1 成员管理')
+test('旧作业与班级设置深链进入统一设置和教学成员管理', () => {
+  assert.match(homeworkSettings, /redirect\('\/settings'\)/, '旧作业设置须进入学期设置')
+  assert.match(classSettings, /redirect\('\/teaching\/members\?manage=classes'\)/, '旧班级配置深链须转到 v1 班级管理')
 })
 
 test('旧作业解析组件保留核心解析契约', () => {

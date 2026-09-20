@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 
-/** 旧教学班配置页依赖已移除端点；保留深链并转到 v1 成员管理。 */
+/** 保留旧深链，直达教学班管理。 */
 export default function LegacyClassSettingsPage() {
-  redirect('/teaching/members')
+  redirect('/teaching/members?manage=classes')
 }

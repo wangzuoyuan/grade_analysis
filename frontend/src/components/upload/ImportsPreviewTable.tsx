@@ -42,7 +42,7 @@ export function ImportsPreviewTable({ items }: { items: ImportPreviewItem[] }) {
             <TableHead className="whitespace-nowrap text-xs">类型</TableHead>
             <TableHead className="whitespace-nowrap text-xs">考试</TableHead>
             <TableHead className="whitespace-nowrap text-xs">学科 / 班级</TableHead>
-            <TableHead className="whitespace-nowrap text-right text-xs">成绩条目</TableHead>
+            <TableHead className="whitespace-nowrap text-right text-xs">成绩条目 / 班级行</TableHead>
             <TableHead className="whitespace-nowrap text-right text-xs">已知 / 新学生</TableHead>
             <TableHead className="text-xs">解析与警告</TableHead>
           </TableRow>

@@ -12,7 +12,15 @@ SSE 帧格式沿用 H 版（app/chat/session.py）的 data JSON 帧循环模式�
   {"type":"text","delta"} | {"type":"tool_call",call_id,name,input}
   | {"type":"tool_result",call_id,name,output}
   | {"type":"tool_error",call_id,name,error}
-  | {"type":"error","message"} | {"type":"done"}
+  | {"type":"error","message","code"?} | {"type":"done"}
+error 帧可选 code（前端优先认 code，文字匹配仅兜底）：scope_drift /
+key_not_configured / provider_failed / tool_rounds_exceeded。
+
+模型调用走异步客户端（AsyncAnthropic / AsyncOpenAI），事件循环不再被
+同步请求阻塞；回答上限取 ChatConfig.max_tokens（CHAT_MAX_TOKENS，缺省
+16384，Anthropic 接口 max_tokens 必填；OpenAI 分支不传该参数、不设上
+限），命中上限截断时在 text 帧末尾追加截断提示。空最终文本不落库，
+历史组装时防御过滤空 content 行（旧缺陷毒化行不再发给模型）。
 
 服务端会话历史——messages 端点组装"历史（最近 20 条）
 + 本次输入"请求模型；流正常完成后把本轮 user 消息与 assistant 最终文本
@@ -28,8 +36,8 @@ _persist_chat_round 之前再验一次（失效则本轮连同 user 消息一并
 
 import asyncio
 import json
-from datetime import datetime
-from typing import List
+from datetime import date, datetime
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -56,7 +64,11 @@ from app.api.chat_tools import (
     tools_for_domain,
 )
 from app.chat.config import get_chat_config
-from app.chat.tools import create_anthropic_client, create_openai_client, to_openai_tools
+from app.chat.tools import (
+    create_async_anthropic_client,
+    create_async_openai_client,
+    to_openai_tools,
+)
 from app.core.errors import (
     InvalidScopeParam,
     LinkVersionConflict,
@@ -68,7 +80,6 @@ from app.db.workspace_models import ChatMessage, ChatSession
 
 router = APIRouter(tags=["chat"])
 
-CHAT_MAX_TOKENS = 4096
 CHAT_MAX_TOOL_ROUNDS = 8
 CHAT_HISTORY_LIMIT = 20  # Q03：组装给模型的历史截断（最近 20 条）
 _CHAT_PROVIDER_RETRIES = 3
@@ -87,9 +98,15 @@ def _key_name_of(config) -> str:
     return "OPENAI_API_KEY" if config.provider == "openai" else "ANTHROPIC_API_KEY"
 
 
-def build_system_prompt(snapshot: dict) -> str:
+def build_system_prompt(snapshot: dict, time_anchor: Optional[dict] = None) -> str:
     """系统提示按域生成（契约 §2）：homeroom 全科班主任视角 / teaching
-    单科教师视角；只含范围描述，不含成员明单（按需经工具查询）。"""
+    单科教师视角；只含范围描述，不含成员明单（按需经工具查询）。
+
+    time_anchor（可选）：{"current_date", "academic_year_name", "term_name",
+    "current_grade"}，由 _stream_session_reply 用 db 现查后传入；为 None
+    （如旧调用方/锚点现查失败）时不输出锚点行，函数保持可用、规则文本
+    不变。current_grade 仅班主任会话可能有（教学会话无行政班恒 None），
+    缺失时锚点行不写年级、年级换算规则整条省略，其余时间规则仍写。"""
     if snapshot.get("mode") == "teaching":
         header = (
             "你是高中任课教师工作台的单科成绩分析助手，只服务当前会话冻结的教学班范围。\n"
@@ -110,14 +127,126 @@ def build_system_prompt(snapshot: dict) -> str:
             "你是高中班主任工作台的全科成绩分析助手，只服务当前会话冻结的行政班。\n"
             f"班级人数（cohort_size）：{snapshot.get('cohort_size')}。{link_part}\n"
         )
+    anchor_line = ""
+    if time_anchor:
+        grade_part = (
+            f"；当前年级：{time_anchor['current_grade']}"
+            if time_anchor.get("current_grade")
+            else ""
+        )
+        anchor_line = (
+            "\n时间锚点：今天是 {date}；当前学年：{year}；当前学期：{term}{grade}。\n"
+        ).format(
+            date=time_anchor.get("current_date") or "未知",
+            year=time_anchor.get("academic_year_name") or "未知",
+            term=time_anchor.get("term_name") or "未分学期",
+            grade=grade_part,
+        )
+    rule_time = (
+        "6. 时间语义：\n"
+        + "   a) 学年命名约定：2026学年 = 2026 年 9 月开学的 2026-2027 学年"
+        "（同理 2025学年 = 2025-2026 学年）。\n"
+        + "   b) 相对偏移：用户说“上学年/上学期/上上学年/这学期/第一学期”等相对时间时，"
+        "换算成 year_offset/term_offset 传参（0=本学年，-1=上一个，-2=上上一个）；"
+        "跨学期的作业区间查询用 get_academic_years 返回的学期起止日期换算 from/to。"
+        "目录中的假期条目（暑假/寒假）不参与“上/下学期”偏移换算；"
+        "查假期作业时按学期名或 term_id 直达。\n"
+    )
+    if time_anchor and time_anchor.get("current_grade"):
+        grade = time_anchor["current_grade"]
+        seq = {"高一": 1, "高二": 2, "高三": 3}.get(grade)
+
+        def _offset_text(value: int) -> str:
+            return str(value) if value <= 0 else f"+{value}"
+
+        if seq is not None:
+            rule_time += (
+                f"   c) 年级→学年换算（当前年级 {grade}）：用户说“高X”时按当前年级换算学年——"
+                f"当前是{grade}，则高一=year_offset {_offset_text(1 - seq)}、"
+                f"高二=year_offset {_offset_text(2 - seq)}、"
+                f"高三=year_offset {_offset_text(3 - seq)}"
+                "（如“高一第二学期”这类带年级的学期名：先按届差定学年，"
+                "再按学期名在 get_academic_years 目录中匹配）。\n"
+            )
+    rule_time += (
+        "   d) 学期名直接匹配：get_academic_years 返回的学期名形如“2026学年第一学期”，"
+        "用户原话即可按名称在目录中匹配，取其起止日期换算 from/to。\n"
+    )
+    # 第 7 条「自主分析」恒定注入（不依赖 time_anchor）：释放"拿表自算"能力——
+    # 没有专门工具的分析问题不拒绝，用既有数据工具拿全量真实数据后自行计算。
+    rule_auto = (
+        "7. 自主分析：没有专门工具的分析问题（进步/退步对比、排序、分布、两场考试对比等），"
+        "先用 get_scores_table / get_exam_students / get_homework_assignments 等"
+        "拿全量真实数据，再自行计算分析，绝不以“没有对应工具”为由拒绝回答：\n"
+        + "   a) 计算纪律：缺考 null 不当 0（不计入分母与均值）；数字多时先整理成"
+        "表格逐步计算并给出关键中间结果，避免心算出错。\n"
+        + "   b) 用户没说清哪场考试时，先用 get_exam_list 确认最近一场或列出候选"
+        "让用户挑选，绝不瞎猜；考试名支持部分名称模糊匹配（唯一命中自动解析，"
+        "多命中会返回候选清单）。\n"
+    )
     return (
         header
+        + anchor_line
         + "共同规则：\n"
         + "1. 引用任何数字必须先经工具查询，绝不凭空编造；工具报错或越界时如实告知，不得改用猜测值。\n"
         + "2. 学生名单不预置：需要定位学生时先用 search_students 查询 person_id。\n"
         + "3. 只分析当前会话范围内的班级与学生；跨范围请求一律拒绝并说明原因。\n"
         + "4. 缺考为空值（null），绝不转 0；排名只在本班人群内解释。\n"
+        + "5. 分析作业与成绩的关系（如“缺交多的学生成绩是否更差”）用 "
+        "get_homework_correlation（皮尔逊相关，仅描述统计关联、不构成因果，"
+        "回答时必须带上这条口径）。\n"
+        + rule_time
+        + rule_auto
     )
+
+
+def _time_anchor_of(db: Session, snapshot: dict) -> Optional[dict]:
+    """系统提示时间锚点：现查当前学年/学期/年级名称。学期名读作业学期表
+    ws_homework_semester（学期设置页/作业看板同一事实源，is_current 显式
+    标记优先，无则取含快照 as_of 的学期；P1 Term 表真实部署无数据且无维护
+    入口，弃用）。年级锚点仅班主任会话：快照行政班的 grade 转中文（延续
+    班/越界查不到 → None，提示省略年级行）。锚点是提示增强信息，任何失败
+    都降级为 None（不影响会话与工具执行）。"""
+    try:
+        from app.db.workspace_models import (
+            AcademicYear,
+            AdministrativeClass,
+            WsHomeworkSemester,
+        )
+
+        ay = db.get(AcademicYear, snapshot.get("academic_year_id"))
+        as_of = date.fromisoformat(snapshot["as_of"])
+        term = (
+            db.query(WsHomeworkSemester)
+            .filter(WsHomeworkSemester.is_current == 1)
+            .order_by(WsHomeworkSemester.id.desc())
+            .first()
+        )
+        if term is None:
+            term = (
+                db.query(WsHomeworkSemester)
+                .filter(
+                    WsHomeworkSemester.start_date <= as_of,
+                    WsHomeworkSemester.end_date >= as_of,
+                )
+                .order_by(WsHomeworkSemester.start_date.asc())
+                .first()
+            )
+        grade_name = None
+        if snapshot.get("mode") == "homeroom":
+            class_ids = snapshot.get("class_ids") or []
+            admin = db.get(AdministrativeClass, class_ids[0]) if class_ids else None
+            grade_name = {1: "高一", 2: "高二", 3: "高三"}.get(
+                admin.grade if admin is not None else None
+            )
+        return {
+            "current_date": snapshot.get("as_of"),
+            "academic_year_name": ay.name if ay is not None else None,
+            "term_name": term.name if term is not None else None,
+            "current_grade": grade_name,
+        }
+    except Exception:
+        return None
 
 
 def _load_session(db: Session, session_id: int) -> ChatSession:
@@ -260,7 +389,9 @@ def get_chat_messages(session_id: int, db: Session = Depends(get_db)):
 
 def _history_messages(db: Session, session_id: int) -> List[dict]:
     """最近 CHAT_HISTORY_LIMIT 条历史，按时间正序组装为模型 messages
-    （user/assistant 纯文本；工具事件以摘要 JSON 附在 assistant 轮）。"""
+    （user/assistant 纯文本；工具事件以摘要 JSON 附在 assistant 轮）。
+    防御过滤：跳过 content 为空（或纯空白）的行——旧缺陷曾把空 assistant
+    文本落库，Anthropic 会因空 content 400 拒绝整个请求，毒化行绝不再发。"""
     rows = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
@@ -269,7 +400,9 @@ def _history_messages(db: Session, session_id: int) -> List[dict]:
         .all()
     )
     return [
-        {"role": row.role, "content": row.content} for row in reversed(rows)
+        {"role": row.role, "content": row.content}
+        for row in reversed(rows)
+        if (row.content or "").strip()
     ]
 
 
@@ -301,13 +434,21 @@ async def _stream_session_reply(session_id: int, snapshot: dict, content: str):
     本轮 user/assistant 落 ChatMessage（刷新恢复/多轮指代追问的依据）。"""
     config = get_chat_config()
     if not config.is_configured:
-        yield sse({"type": "error", "message": "模型 Key 未配置或已失效，请配置后重试（会话仍保留）"})
+        yield sse(
+            {
+                "type": "error",
+                "code": "key_not_configured",
+                "message": "模型 Key 未配置或已失效，请配置后重试（会话仍保留）",
+            }
+        )
         yield sse({"type": "done"})
         return
-    system = build_system_prompt(snapshot)
     tools = tools_for_domain(snapshot["data_domain"])
     db = SessionLocal()
     try:
+        # 时间锚点：db 现查当前学年/学期名后传入系统提示（失败降级 None，
+        # 不阻断作答）；锚点只在流内现查，绝不写进快照
+        system = build_system_prompt(snapshot, _time_anchor_of(db, snapshot))
         history = _history_messages(db, session_id)
         messages = [*history, {"role": "user", "content": content}]
         # sink 由具体流填充：final_text=None 表示本轮未正常完成（不落库）
@@ -330,7 +471,7 @@ async def _stream_session_reply(session_id: int, snapshot: dict, content: str):
         try:
             _assert_snapshot_fresh(db, snapshot, None)
         except ScopeDriftError:
-            yield sse({"type": "error", "message": _SCOPE_DRIFT_FRAME})
+            yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
             return
         _persist_chat_round(
             db, session_id, content, sink["final_text"], sink["tool_events"]
@@ -340,7 +481,7 @@ async def _stream_session_reply(session_id: int, snapshot: dict, content: str):
 
 
 async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot, content, sink):
-    client = create_anthropic_client(config)
+    client = create_async_anthropic_client(config)
     chat_messages = list(messages)
     for _ in range(CHAT_MAX_TOOL_ROUNDS):
         # 兼容端点偶发瞬时错误（401/429/5xx/网络抖动），读操作可安全重试
@@ -348,9 +489,9 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
         last_exc = None
         for attempt in range(_CHAT_PROVIDER_RETRIES):
             try:
-                response = client.messages.create(
+                response = await client.messages.create(
                     model=config.model,
-                    max_tokens=CHAT_MAX_TOKENS,
+                    max_tokens=config.max_tokens,
                     system=system,
                     messages=chat_messages,
                     tools=tools,
@@ -361,7 +502,13 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                 if attempt < _CHAT_PROVIDER_RETRIES - 1:
                     await asyncio.sleep(0.4 * (attempt + 1))
         if response is None:
-            yield sse({"type": "error", "message": f"模型调用失败（已重试）：{last_exc}"})
+            yield sse(
+                {
+                    "type": "error",
+                    "code": "provider_failed",
+                    "message": f"模型调用失败（已重试）：{last_exc}",
+                }
+            )
             yield sse({"type": "done"})
             return
 
@@ -371,7 +518,7 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
         try:
             _assert_snapshot_fresh(db, snapshot, None)
         except ScopeDriftError:
-            yield sse({"type": "error", "message": _SCOPE_DRIFT_FRAME})
+            yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
             yield sse({"type": "done"})
             return
 
@@ -394,7 +541,7 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                 except ScopeDriftError:
                     # Q02：多轮工具执行期间范围失效 → 发范围失效帧并收流，
                     # 旧上下文绝不继续执行后续轮
-                    yield sse({"type": "error", "message": _SCOPE_DRIFT_FRAME})
+                    yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
                     yield sse({"type": "done"})
                     return
                 if result.get("error"):
@@ -430,31 +577,51 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
             continue
 
         text = "".join(final_text_parts)
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            # 截断保险丝：明确告知被截断，而非无声截尾
+            text += "\n\n（回答达到长度上限被截断，可继续追问让我接着说。）"
         if text:
             yield sse({"type": "text", "delta": text})
-        # Q03：正常完成才落库（异常收流路径 final_text 保持 None）
-        sink["final_text"] = text
+        # Q03：正常完成才落库（异常收流路径 final_text 保持 None）；空白
+        # 最终文本视同未完成不落库——空 assistant 行会让下一轮 Anthropic
+        # 请求 400（历史毒化），宁可本轮连同 user 消息不进历史
+        sink["final_text"] = text if text.strip() else None
         yield sse({"type": "done"})
         return
 
-    yield sse({"type": "error", "message": "工具调用轮次过多，已停止。请缩小问题范围后重试。"})
+    yield sse(
+        {
+            "type": "error",
+            "code": "tool_rounds_exceeded",
+            "message": "工具调用轮次过多，已停止。请缩小问题范围后重试。",
+        }
+    )
     yield sse({"type": "done"})
 
 
 async def _stream_openai_reply(config, system, tools, messages, db, snapshot, content, sink):
-    client = create_openai_client(config)
+    client = create_async_openai_client(config)
     oai_tools = to_openai_tools(tools)
     chat_messages: List[dict] = [{"role": "system", "content": system}, *messages]
     for _ in range(CHAT_MAX_TOOL_ROUNDS):
-        try:
-            response = client.chat.completions.create(
-                model=config.model,
-                messages=chat_messages,
-                tools=oai_tools,
-                max_tokens=CHAT_MAX_TOKENS,
-            )
-        except Exception as exc:
-            yield sse({"type": "error", "message": f"模型调用失败：{exc}"})
+        # 兼容端点偶发瞬时错误（401/429/5xx/网络抖动），读操作可安全重试
+        #（与 Anthropic 分支同款重试；OpenAI 通道不传 max_tokens，不设上限）
+        response = None
+        last_exc = None
+        for attempt in range(_CHAT_PROVIDER_RETRIES):
+            try:
+                response = await client.chat.completions.create(
+                    model=config.model,
+                    messages=chat_messages,
+                    tools=oai_tools,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _CHAT_PROVIDER_RETRIES - 1:
+                    await asyncio.sleep(0.4 * (attempt + 1))
+        if response is None:
+            yield sse({"type": "error", "code": "provider_failed", "message": f"模型调用失败：{last_exc}"})
             yield sse({"type": "done"})
             return
         # V02：模型返回后、发布任何文本/工具帧之前重验快照（同 Anthropic
@@ -462,7 +629,7 @@ async def _stream_openai_reply(config, system, tools, messages, db, snapshot, co
         try:
             _assert_snapshot_fresh(db, snapshot, None)
         except ScopeDriftError:
-            yield sse({"type": "error", "message": _SCOPE_DRIFT_FRAME})
+            yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
             yield sse({"type": "done"})
             return
         choice = response.choices[0]
@@ -497,7 +664,7 @@ async def _stream_openai_reply(config, system, tools, messages, db, snapshot, co
                     result = execute_session_tool(db, snapshot, tc.function.name, args)
                 except ScopeDriftError:
                     # Q02：范围失效帧 + 收流（同 Anthropic 分支）
-                    yield sse({"type": "error", "message": _SCOPE_DRIFT_FRAME})
+                    yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
                     yield sse({"type": "done"})
                     return
                 if result.get("error"):
@@ -530,11 +697,21 @@ async def _stream_openai_reply(config, system, tools, messages, db, snapshot, co
             continue
 
         text = msg.content or ""
+        if getattr(choice, "finish_reason", None) == "length":
+            # 截断保险丝（同 Anthropic 分支）
+            text += "\n\n（回答达到长度上限被截断，可继续追问让我接着说。）"
         if text:
             yield sse({"type": "text", "delta": text})
-        sink["final_text"] = text
+        # 空白最终文本视同未完成不落库（防历史毒化，同 Anthropic 分支）
+        sink["final_text"] = text if text.strip() else None
         yield sse({"type": "done"})
         return
 
-    yield sse({"type": "error", "message": "工具调用轮次过多，已停止。请缩小问题范围后重试。"})
+    yield sse(
+        {
+            "type": "error",
+            "code": "tool_rounds_exceeded",
+            "message": "工具调用轮次过多，已停止。请缩小问题范围后重试。",
+        }
+    )
     yield sse({"type": "done"})

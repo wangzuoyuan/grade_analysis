@@ -16,6 +16,8 @@ const homeworkShared = readFileSync(new URL('../src/components/homework/shared.t
 const homeroomPage = readFileSync(new URL('../src/app/homeroom/homework/page.tsx', import.meta.url), 'utf8')
 const teachingPage = readFileSync(new URL('../src/app/teaching/homework/page.tsx', import.meta.url), 'utf8')
 const sidebar = readFileSync(new URL('../src/components/layout/Sidebar.tsx', import.meta.url), 'utf8')
+const topbar = readFileSync(new URL('../src/components/layout/Topbar.tsx', import.meta.url), 'utf8')
+const settingsPage = readFileSync(new URL('../src/app/settings/page.tsx', import.meta.url), 'utf8')
 
 test('api-v1 导出 P5 全部封装函数（契约 §1-§5）', () => {
   for (const fn of [
@@ -97,10 +99,26 @@ test('两工作台作业页存在且 mode 感知（契约 §7）', () => {
   assert.match(workspace, /useWorkspace\(\)/, '容器必须读工作台上下文')
   assert.match(workspace, /generation/, '容器必须消费工作台世代号')
   assert.match(workspace, /homeworkScopeQuery/, '作用域参数须经 homeworkScopeQuery 从 filter 映射')
-  // 预警/相关性并入标签页（旧 /homework/warnings 路由被旧版占用不删不改）
-  for (const tab of ['作业录入', '批次列表', '缺交预警', '相关性', '学期设置']) {
+  // 默认作业记录优先；预警和按期汇总合并为作业管理，录入保留独立页签。
+  for (const tab of ['作业记录', '作业管理', '作业录入']) {
     assert.match(workspace, new RegExp(tab), `应包含「${tab}」标签`)
   }
+  assert.match(workspace, /useState<TabValue>\('batches'\)/, '无 tab 参数时须默认进入作业记录')
+  assert.match(workspace, /setTab\(tabFromParam\(tabParam\)\)/, '标签参数须经兼容映射')
+  assert.match(workspace, /if \(v === 'warnings'\) return 'overview'/, '旧预警深链须进入作业管理')
+  assert.match(workspace, /TAB_VALUES = \['overview', 'entry', 'batches'\]/, '录入深链须保留独立页签')
+  assert.ok(workspace.indexOf('value="batches"') < workspace.indexOf('value="overview"'), '作业记录须排在作业页签首位')
+  assert.match(workspace, /TabsTrigger value="entry">作业录入<\/TabsTrigger>/, '作业录入须独立显示')
+  assert.doesNotMatch(workspace, /TabsTrigger value="warnings"/, '预警不再重复占用独立页签')
+  const managementStart = workspace.indexOf('<TabsContent value="overview">')
+  const entryStart = workspace.indexOf('<TabsContent value="entry">')
+  const recordsStart = workspace.indexOf('<TabsContent value="batches">')
+  const management = workspace.slice(managementStart, entryStart)
+  assert.doesNotMatch(management, /<HomeworkEntryPanel/, '作业管理不应重复渲染录入面板')
+  assert.ok(management.indexOf('<WarningsPanel') < management.indexOf('summaryOnly'), '按期汇总须放在作业管理最下面')
+  assert.match(workspace.slice(recordsStart), /<AssignmentTable[\s\S]*hideSummary[\s\S]*<StatsExclusionCard/, '作业记录须以排除统计收尾且不重复按期汇总')
+  assert.match(assignmentTable, /<CardTitle>作业记录<\/CardTitle>/, '默认面板标题须使用老师可理解的“作业记录”')
+  assert.doesNotMatch(workspace, /TabsTrigger value="(?:correlation|semesters)"/, '作业页不应再放相关性或学期设置标签')
   assert.match(workspace, /\?tab=/, '应支持 ?tab= 深链直达标签')
   // 教学域显式班选择透传给录入面板（teaching_class_id 为 'all'/缺省时不传，由后端解析）
   assert.match(workspace, /typeof filter\.teaching_class_id === 'number' \? filter\.teaching_class_id : undefined/, '容器须把显式教学班 id 传给录入面板')
@@ -145,38 +163,34 @@ test('录入/批次表单走 page-draft 草稿，按工作台分键，确认成�
   assert.match(entryPanel, /\/\$\{mode\}\/homework/, '草稿键必须按工作台分路由（防两工作台互串）')
 })
 
-test('批次列表：rate 不可计算文案、乐观锁 409、撤销冲突清单（契约 §1.3/§2）', () => {
-  // H03 红线文案在 shared.ts 统一，批次表与看板都用它
-  assert.match(homeworkShared, /无法计算（无可靠分母）/, '必须使用「无法计算（无可靠分母）」文案')
-  // formatSubmissionRate 函数体：不可计算分支必须先于百分比计算，绝不落入 0%
-  const rateFn = homeworkShared.match(/export function formatSubmissionRate[\s\S]*?\n}/)?.[0] ?? ''
-  assert.match(rateFn, /unavailable \|\| rate == null/, '不可计算分支必须覆盖 unavailable 与 null')
-  assert.match(rateFn, /无法计算（无可靠分母）/, '不可计算分支返回固定文案')
-  assert.match(rateFn, /toFixed\(1\)\}%/, '可计算分支才显示百分比')
-  assert.match(assignmentTable, /formatSubmissionRate/, '提交率展示必须走统一格式化')
-  assert.match(assignmentTable, /rate_unavailable/, '须消费 rate_unavailable 字段')
+test('批次列表：隐藏技术口径、保留后台并发保护与撤销冲突清单（契约 §1.3/§2）', () => {
+  assert.doesNotMatch(assignmentTable, /formatSubmissionRate|rate_unavailable/, '批次表不再展示提交率或应交口径')
   assert.match(assignmentTable, /overflow-x-auto/, '批次宽表须横向滚动')
   // 编辑：PATCH 乐观锁，409 重新拉详情（绝不拿旧 revision 死重试）
   assert.match(assignmentTable, /homeworkPatchAssignment/, '编辑须走 PATCH')
   assert.match(assignmentTable, /revision: detail\.revision/, 'PATCH 必须携带当前 revision（乐观锁）')
-  assert.match(assignmentTable, /版本冲突/, '409 须提示版本冲突')
+  assert.match(assignmentTable, /内容已更新/, '409 须用教师可理解的文案提示重新核对')
   assert.match(assignmentTable, /reloadDetail/, '409 后须重新拉取详情取最新 revision')
   // 撤销：confirm + 409 冲突清单原样展示
   assert.match(assignmentTable, /window\.confirm/, '撤销前必须 confirm')
   assert.match(assignmentTable, /homeworkDeleteAssignment/, '撤销须走 DELETE')
   assert.match(assignmentTable, /readHomeworkRevokeConflicts/, '409 须解析撤销冲突清单')
   assert.match(assignmentTable, /该行有后续评价编辑/, '冲突清单须标注后续评价编辑')
-  // 看板：按周/月聚合 + 分母口径说明
+  // 看板：按日/周/月聚合，不展示提交率
   assert.match(assignmentTable, /homeworkDashboard/, '看板须走 dashboard 端点')
-  assert.match(assignmentTable, /groupBy/, '看板须支持按周/月切换')
+  for (const period of ['按日', '按周', '按月']) assert.match(assignmentTable, new RegExp(period), `看板须支持${period}`)
+  assert.match(apiV1, /'day' \| 'week' \| 'month'/, 'dashboard API 须允许按日聚合')
+  assert.doesNotMatch(assignmentTable, />未记录</, '批次与按期汇总不再展示未记录列')
+  assert.doesNotMatch(homeworkShared, /value: 'unknown'/, '状态选项不再提供未记录')
 })
 
-test('预警时间轴：streak_basis=unknown 标注、事件口径说明（契约 §3，H03）', () => {
+test('预警时间轴：连续阈值真筛选、旧数据口径与默认已交（契约 §3）', () => {
   assert.match(warningsPanel, /homeworkWarnings/, '预警须走 warnings 端点')
   assert.match(warningsPanel, /min_missing/, '须暴露 min_missing 参数')
-  assert.match(warningsPanel, /streak_basis === 'unknown'/, '须按 streak_basis=unknown 分支标注')
-  assert.match(warningsPanel, /连续性未知/, '须标注「连续性未知」')
-  assert.match(warningsPanel, /不冒充连续，也不断言已交/, '口径说明须声明 unknown 双不语义')
+  assert.match(warningsPanel, /min_streak: applied\.minStreak/, '连续缺交下限必须传 min_streak 真筛选')
+  assert.match(warningsPanel, /streak_basis === 'legacy_events'/, '旧数据连续值须标注 legacy_events 口径')
+  assert.doesNotMatch(warningsPanel, /streak_basis === 'unknown'|连续性未知/, '不再展示未记录或连续性未知')
+  assert.match(warningsPanel, /旧数据的全交收交台账会用于中断/, '旧全交台账须参与连续段中断')
   assert.match(warningsPanel, /basis=/, '须展示响应的 basis 口径（events）')
   assert.match(warningsPanel, /不按日折算/, '事件口径须说明不按日折算')
   assert.match(warningsPanel, /recent_missing/, '须渲染最近缺交时间轴')
@@ -210,6 +224,11 @@ test('学期设置卡：auto 推导标注、手工编辑、设当前/恢复自�
   assert.match(semesterCard, /err\.detail/, '422 优先展示后端中文 detail（重名/重叠/重复设当前）')
   assert.match(semesterCard, /window\.confirm/, '恢复自动前必须 confirm')
   assert.match(semesterCard, /listAcademicYears/, '学年下拉须走学年清单端点')
+  assert.match(semesterCard, /createAcademicYear/, '学期设置页须能先创建新学年')
+  assert.match(semesterCard, /创建学年/, '新学年入口须对老师可见')
+  assert.doesNotMatch(settingsPage, /useWorkspace|academicYearId=\{filter\./, '学期设置不得跟随工作台学年筛选')
+  assert.match(settingsPage, /班主任和教学工作台共用同一套学期日期与当前学期/, '页面须说明两个工作台共用学期')
+  assert.doesNotMatch(settingsPage, /教学班|管理教学班/, '学期设置页不得重复提供教学班管理')
 })
 
 test('请求序号按资源分离（F11）：列表/看板/详情/考试清单各比对其序号', () => {
@@ -225,10 +244,16 @@ test('请求序号按资源分离（F11）：列表/看板/详情/考试清单�
   assert.match(assignmentTable, /req !== detailReqRef\.current/, '详情回包须比对序号')
 })
 
-test('Sidebar 导航：两工作台作业跟进 + 共享缺交预警入口', () => {
+test('Sidebar 导航：作业入口按工作台互斥，设置和缺交预警留在页面内部', () => {
   assert.match(sidebar, /href: '\/homeroom\/homework'/, '须有班主任作业跟进入口')
   assert.match(sidebar, /href: '\/teaching\/homework'/, '须有教学作业跟进入口')
-  assert.match(sidebar, /href: '\/homeroom\/homework\?tab=warnings'/, '须有缺交预警深链入口（带工作台路径）')
-  assert.match(sidebar, /作业跟进（班主任）/, '班主任入口文案')
-  assert.match(sidebar, /作业跟进（教学）/, '教学入口文案')
+  assert.match(sidebar, /modes: \['homeroom'\]/, '班主任业务项须声明只在班主任模式渲染')
+  assert.match(sidebar, /modes: \['teaching'\]/, '教学业务项须声明只在教学模式渲染')
+  assert.match(sidebar, /NAV_ITEMS\.filter\(\(item\) => item\.modes\.includes\(mode\)\)/, '须根据当前 mode 过滤侧栏')
+  assert.doesNotMatch(sidebar, /label: '缺交预警'/, '侧栏不再重复显示缺交预警')
+  assert.doesNotMatch(sidebar, /label: '学期设置'/, '侧栏不再显示学期设置')
+  assert.doesNotMatch(sidebar, /作业跟进（班主任）|作业跟进（教学）/, '当前工作台内不再重复标注身份')
+  assert.match(topbar, /href=\{workspaceHref\('\/settings', mode\)\}/, '顶栏设置入口须保留当前 ws 工作台')
+  assert.match(topbar, /aria-label="学期设置"/, '窄屏图标入口须有清晰的无障碍名称')
+  assert.match(topbar, /<Settings className="h-5 w-5" \/>/, '顶栏须显示设置图标')
 })

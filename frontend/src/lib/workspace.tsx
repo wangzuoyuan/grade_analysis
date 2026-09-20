@@ -5,7 +5,7 @@
  *
  * - mode 的唯一事实源是 URL：事实源顺序 = 路径前缀（/homeroom|/teaching）→ 公共页
  *   `?ws=homeroom|teaching` → lastMode（仅无任何信号时的兜底，并立即回写 URL 修正）。
- *   setMode 只写 URL（工作台页跳根路径；公共页更新 ?ws 停留当前页），由页面层响应
+ *   setMode 只写 URL（任何页面切换均跳目标工作台根路径，公共页不再停留），由页面层响应
  *   路由变化，不做 window.location.reload。刷新/复制 URL/前进后退均不得漂移工作台。
  * - 两模式各自维护筛选记忆，localStorage 键 `workspace-scope:<mode>`。
  * - generation 世代号：setMode 与筛选变化即 +1，所有异步回包先比对世代，
@@ -197,25 +197,17 @@ function WorkspaceProviderInner({ children }: { children: ReactNode }) {
   const setMode = useCallback(
     (next: WorkspaceMode) => {
       setLastMode(next)
-      if (pathMode != null) {
-        // 工作台页：路径前缀即事实源，切换 = 跳根路径
-        if (pathMode === next) return
-        bumpGeneration() // 点击即作废在途响应，不等路由跳转完成
-        setSwitching(true)
-        setScope(null) // 丢弃旧工作台范围，防止跨模式闪现
-        setScopeError(null)
-        router.push(`/${next}`)
-        return
-      }
-      // 公共页（契约 v2.1 §3，F04）：更新 ?ws 并停留当前页，绝不静默跳工作台根。
-      // 不提前 return——点击已高亮项也要能补齐缺失/漂移的 ws 参数。
-      // 不置 switching：公共页没有路径变化效应来复位它，会卡死切换按钮。
-      bumpGeneration()
-      const params = new URLSearchParams(searchParams.toString())
-      params.set('ws', next)
-      router.replace(`${pathname}?${params.toString()}`, { scroll: false })
+      // 工作台页点击当前工作台 = 无操作（维持原行为）
+      if (pathMode === next) return
+      bumpGeneration() // 点击即作废在途响应，不等路由跳转完成
+      setSwitching(true)
+      setScope(null) // 丢弃旧工作台范围，防止跨模式闪现
+      setScopeError(null)
+      // 公共页也不再停留：统一直达目标工作台根路径（仪表盘）。
+      // 跳转后 pathMode 由 null 变为 next，上方 effect 会复位 switching。
+      router.push(`/${next}`)
     },
-    [pathMode, pathname, searchParams, bumpGeneration, router],
+    [pathMode, bumpGeneration, router],
   )
 
   const setFilter = useCallback(
@@ -338,8 +330,8 @@ export function WorkspaceSwitcher({ className, stretch }: { className?: string; 
     if (hasAnyLinkDraft() && !window.confirm('关联配置有未提交的修改（已暂存为草稿），确定要切换工作台吗？')) {
       return
     }
-    // 不按当前高亮提前 return（F04）：公共页点击已高亮项也要能补齐/修正 ?ws；
-    // 工作台页的同模式跳转由 setMode 内部拦截。
+    // 不按当前高亮提前 return（F04）：公共页点击已高亮项直达该工作台根（仪表盘）；
+    // 工作台页的同模式点击由 setMode 内部拦截为无操作。
     setMode(next)
   }
   return (

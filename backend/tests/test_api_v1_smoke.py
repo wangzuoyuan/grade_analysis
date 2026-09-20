@@ -242,6 +242,8 @@ def test_classes_lists_bound_homeroom_and_all_teaching_classes(client, seed):
         "grade": 2,
         "class_num": 6,
         "label": "高二6班",
+        "carried_from_academic_year_id": None,
+        "carried_from_academic_year_name": None,
     }
     teaching_ids = {item["class_id"] for item in body["teaching"]}
     assert teaching_ids == {seed.t6_id, seed.t8_id, seed.t_empty_id}

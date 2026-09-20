@@ -4,7 +4,7 @@
  * 班主任名册管理页主体（契约 docs/contracts/p4-students.md §2.1/§6）。
  *
  * 数据：GET /api/v1/homeroom/students（工作台筛选映射作用域，后端解析）。
- * 操作：新建（弹窗）、行内编辑姓名/座号（PATCH）、离班/恢复在班（archive，绝不物理删）、
+ * 操作：新建（弹窗）、行内编辑姓名（PATCH）、离班/恢复在班（archive，绝不物理删）、
  * 追加新学号（展开别名历史面板）、学生画像打印入口（/homeroom/students/{id}/report）。
  * 红线：不提供删除/合并入口（契约：P4 不提供）；缺考/冲突沿用 P3 提示语义；
  * 迟到回包按世代号（reqRef）丢弃。
@@ -27,6 +27,8 @@ import {
 
 import {
   archiveHomeroomStudent,
+  fetchClasses,
+  fetchSharedConfig,
   fetchStudents,
   patchHomeroomStudent,
   type WorkspaceStudent,
@@ -80,7 +82,7 @@ function isActive(s: string | null): boolean {
 }
 
 export function RosterTable() {
-  const { filter, generation, switching } = useWorkspace()
+  const { filter, scope, scopeError, generation, switching } = useWorkspace()
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
 
   const [students, setStudents] = useState<WorkspaceStudent[] | null>(null)
@@ -88,8 +90,8 @@ export function RosterTable() {
   const [reloadNonce, setReloadNonce] = useState(0)
   const reqRef = useRef(0)
 
-  // 行内编辑（姓名/座号）
-  const [editing, setEditing] = useState<{ personId: string; name: string; seatNo: string } | null>(null)
+  // 行内编辑（学号由历史链专门维护，不暗改身份）
+  const [editing, setEditing] = useState<{ personId: string; name: string } | null>(null)
   const [editBusy, setEditBusy] = useState(false)
   const [editError, setEditError] = useState<string | null>(null)
 
@@ -112,7 +114,41 @@ export function RosterTable() {
     setStudents(null)
     setLoadError(null)
     setEditing(null)
-    fetchStudents('homeroom', scopeQ)
+
+    // WorkspaceProvider 会先校验并冻结当前工作台范围。首次进入班主任页时，
+    // filter.class_id 通常为空（解析出的默认班不会写回筛选记忆），因此不能直接
+    // 用 filter 请求名册。等待 scope 成功后，再按同一学年目录解析行政班 ID；
+    // 历史学年也必须查该学年的目录，不能沿用当前学年的行政班主键。
+    if (scopeError != null) {
+      setStudents([])
+      setLoadError(`工作台范围解析失败：${apiErrorMessage(scopeError)}`)
+      return
+    }
+    if (scope == null) return
+
+    const resolveRoster = async () => {
+      let academicYearId = scopeQ.academic_year_id
+      if (academicYearId === undefined) {
+        const config = await fetchSharedConfig()
+        academicYearId = config.current_academic_year?.id
+      }
+      if (academicYearId === undefined) {
+        throw new Error('未配置当前学年，无法确定行政班名册范围')
+      }
+
+      const catalog = await fetchClasses(academicYearId)
+      if (catalog.homeroom == null) {
+        throw new Error(`学年 ${catalog.academic_year_name} 未找到本人绑定的行政班`)
+      }
+
+      return fetchStudents('homeroom', {
+        ...scopeQ,
+        academic_year_id: academicYearId,
+        class_id: catalog.homeroom.class_id,
+      })
+    }
+
+    void resolveRoster()
       .then((r) => {
         if (req !== reqRef.current) return
         setStudents(r.students ?? [])
@@ -122,7 +158,7 @@ export function RosterTable() {
         setStudents([])
         setLoadError(apiErrorMessage(err))
       })
-  }, [scopeQ])
+  }, [scope, scopeError, scopeQ])
 
   // 工作台筛选/世代变化即重拉（迟到回包按代丢弃）
   useEffect(() => {
@@ -132,7 +168,7 @@ export function RosterTable() {
   function startEdit(s: WorkspaceStudent) {
     setEditError(null)
     setExpandedPerson(null)
-    setEditing({ personId: String(s.person_id), name: s.name ?? '', seatNo: s.seat_no ?? '' })
+    setEditing({ personId: String(s.person_id), name: s.name ?? '' })
   }
 
   async function saveEdit() {
@@ -142,7 +178,6 @@ export function RosterTable() {
     try {
       await patchHomeroomStudent(editing.personId, {
         name: editing.name.trim(),
-        seat_no: editing.seatNo.trim(),
       })
       setEditing(null)
       setReloadNonce((n) => n + 1)
@@ -205,7 +240,7 @@ export function RosterTable() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">学生管理</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">学生信息</h1>
           <p className="mt-1 text-sm text-slate-500">
             行政班名册：新建、编辑、离班与换号接续{switching ? ' · 正在切换…' : ''}
           </p>
@@ -264,8 +299,7 @@ export function RosterTable() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="whitespace-nowrap text-xs">姓名</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">学号（别名）</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">座号</TableHead>
+                    <TableHead className="whitespace-nowrap text-xs">学号</TableHead>
                     <TableHead className="whitespace-nowrap text-xs">状态</TableHead>
                     <TableHead className="whitespace-nowrap text-xs">冲突提示</TableHead>
                     <TableHead className="w-56 whitespace-nowrap text-right text-xs print:hidden">操作</TableHead>
@@ -290,25 +324,17 @@ export function RosterTable() {
                                 disabled={editBusy}
                               />
                             ) : (
-                              s.name ?? '（未命名）'
+                              <Link
+                                href={`/homeroom/profile?person_id=${encodeURIComponent(key)}`}
+                                className="font-medium text-slate-900 hover:text-brand-600 hover:underline transition-colors"
+                                title={`查看 ${s.name ?? ''} 的学生档案`}
+                              >
+                                {s.name ?? '（未命名）'}
+                              </Link>
                             )}
                           </TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs text-slate-600">
                             {s.alias ?? '—'}
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap text-sm text-slate-600">
-                            {editingRow ? (
-                              <Input
-                                aria-label="编辑座号"
-                                value={editing.seatNo}
-                                onChange={(e) => setEditing({ ...editing, seatNo: e.target.value })}
-                                className="h-8 w-16"
-                                maxLength={20}
-                                disabled={editBusy}
-                              />
-                            ) : (
-                              s.seat_no ?? '—'
-                            )}
                           </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {isActive(s.status) ? (

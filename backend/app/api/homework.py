@@ -4,7 +4,7 @@
 - §1 录入 preview/confirm（full/names/detailed 三模式 + 全交展开 + 例外）
 - §1.3 编辑/撤销（revision 乐观锁 + 撤销冲突）
 - §2 读取/看板（含 rate_unavailable 标注）
-- §3 预警时间轴（事件口径 streak，unknown 打断）
+- §3 预警时间轴（事件口径 streak，默认已交打断）
 - §4 相关性（Pearson 两域口径）
 - §5 学期管理（ws_homework_semester）
 
@@ -13,7 +13,8 @@
   作业 = 多个 assignment（不同 batch_token），绝不合并。
 - 应交分母 = assignment.expected_members_json 确认时快照，不是当天人数；
   快照为空 → rate 为 null 且 rate_unavailable=true，绝不推断其余全交。
-- 无记录不推断已交；评价缺失不推断缺交；unknown 不冒充连续缺交。
+- 采用例外登记：应交名单中没有缺交/请假记录的人默认已交；旧 unknown
+  兼容读取为已交，不再作为面向老师的业务状态。
 - 双向共享：assignment 归属一域（data_domain + class_ref_id），对侧经
   active link + 有效期 + LinkedStudent 交集 + share_categories 含
   current_subject_homework 才可读/写同一事实；跨域读一律经投影映射
@@ -47,6 +48,7 @@ from app.api.homework_schemas import (
     HomeworkConfirmResponse,
     HomeworkCorrelationPair,
     HomeworkCorrelationResponse,
+    CurrentSemesterResponse,
     HomeworkDashboardGroup,
     HomeworkDashboardResponse,
     HomeworkDeleteResponse,
@@ -62,13 +64,19 @@ from app.api.homework_schemas import (
     HomeworkSemesterEntry,
     HomeworkSemesterRestoreResponse,
     HomeworkSemestersResponse,
+    HomeworkStatsExclusionEntry,
+    HomeworkStatsExclusionResponse,
+    HomeworkStatsExclusionSetRequest,
     HomeworkStudentEvent,
     HomeworkStudentResponse,
     HomeworkStudentStreaks,
     HomeworkSubmissionBrief,
     HomeworkSubmissionOut,
     HomeworkWarningStudent,
+    HomeworkAuxWarningStudent,
     HomeworkWarningsResponse,
+    HomeworkWarningDismissRequest,
+    HomeworkWarningDismissResponse,
     SemesterCreateRequest,
     SemesterUpdateRequest,
 )
@@ -80,22 +88,37 @@ from app.core.errors import (
     InvalidScopeParam,
     LinkVersionConflict,
     ResourceOutOfScope,
+    WorkspaceNotConfigured,
 )
 from app.db.models import get_db
 from app.db.workspace_models import (
     AcademicYear,
+    Enrollment,
     HomeworkAssignment,
+    HomeworkStatsExclusion,
     HomeworkSubmission,
     HomeroomTeachingLink,
     ImportBatch,
+    TeachingClassMember,
+    WsStudentNote,
     WsHomeworkSemester,
 )
 
 router = APIRouter(tags=["homework"])
 
-# 契约四值白名单（HomeworkSubmission CHECK 同源；写入前先在应用层拒绝）
+# 数据库仍兼容历史 unknown；所有业务读取会把它归一为 submitted。
 _VALID_STATUSES = ("submitted", "missing", "excused", "unknown")
+_PUBLIC_STATUSES = ("submitted", "missing", "excused")
 _VALID_INPUT_KINDS = ("full", "names", "detailed")
+_ATTENDANCE_WORDS = ("没来", "迟到", "早退", "旷课", "缺课", "缺席")
+_FORGOT_WORDS = ("忘带", "没带", "未带")
+_NEGATIVE_EVALUATIONS = (
+    "不合格", "不认真", "马虎", "潦草", "敷衍", "不工整", "退步",
+    "差劲", "作业乱", "作业没做", "错误率高",
+)
+# 单字「差」不做子串匹配（"误差分析""差错订正"等作业名含差字）：
+# 仅整段就是「差」，或以「差：细节内容」打头时才认定为负面评价。
+_POOR_MARKERS = ("差：", "差:")
 # 撤销冲突判定的时间容差：同事务内 confirm 写入的行 updated_at 会比
 # assignment.created_at 晚微小量，不视为"后续编辑"；真正的编辑另由
 # submission.revision > 1 精确刻画。
@@ -172,20 +195,18 @@ def _streaks_of(statuses: Sequence[str]) -> Tuple[Optional[int], str, int]:
     """按 assigned_date 升序的事件状态序列 → (current_missing_streak,
     streak_basis, longest_missing_streak)。
 
-    - current：从最新事件往前数连续 missing，遇 submitted/excused 停；
-      遇 unknown → 置 null（不冒充连续，也不断言已交），basis='unknown'。
-    - longest：submitted/excused/unknown 都中断连续段；每段真实连续
-      missing 计入（不跨 unknown 宣称连续，但段本身成立）。"""
+    - current：从最新事件往前数连续 missing，遇 submitted 停；
+      excused 跳过（既不计缺交，也不打断）。
+    - longest：excused 跳过，submitted 中断连续段。历史 unknown 在进入
+      本函数前已按新的例外登记口径归一为 submitted。"""
     current: Optional[int] = 0
     basis = "events"
     for status in reversed(list(statuses)):
         if status == "missing":
             current = (current or 0) + 1
-        elif status == "unknown":
-            current = None
-            basis = "unknown"
-            break
-        else:  # submitted / excused 打断
+        elif status in ("attendance", "excused"):
+            continue
+        else:  # submitted 打断
             break
     longest = 0
     run = 0
@@ -193,9 +214,161 @@ def _streaks_of(statuses: Sequence[str]) -> Tuple[Optional[int], str, int]:
         if status == "missing":
             run += 1
             longest = max(longest, run)
+        elif status in ("attendance", "excused"):
+            continue
         else:
             run = 0
     return current, basis, longest
+
+
+def _attendance_of(evaluation: Optional[str]) -> Optional[str]:
+    """出勤与作业收交正交：保留老师原始表述，不借此推断已交/缺交。"""
+    text = (evaluation or "").strip()
+    if not text:
+        return None
+    for part in text.split("｜"):
+        if any(word in part for word in _ATTENDANCE_WORDS):
+            return part.strip()
+    return None
+
+
+def _forgot_of(evaluation: Optional[str]) -> Optional[str]:
+    """从作业行中识别明确的忘带记录；普通谈话备注不走此入口。"""
+    text = (evaluation or "").strip()
+    if text and any(word in text for word in _FORGOT_WORDS):
+        return text
+    return None
+
+
+def _special_note_of(evaluation: Optional[str]) -> Optional[str]:
+    """提取忘带等特殊情况事实，避免塞入质量评价列。"""
+    text = (evaluation or "").strip()
+    if not text:
+        return None
+    for part in text.split("｜"):
+        part_clean = part.strip()
+        if any(word in part_clean for word in _FORGOT_WORDS):
+            return part_clean
+    return None
+
+
+def _sync_forgot_note(
+    db: Session,
+    assignment: HomeworkAssignment,
+    person_id: int,
+    evaluation: Optional[str],
+) -> None:
+    """把日常作业录入中的忘带与迟到/没来出勤异常同步为可追溯的独立预警事实。
+    清除作业行上的忘带时保留一条已清除标记，避免物理删除审计事实。
+    """
+    source = f"homework:{assignment.id}"
+    note = (
+        db.query(WsStudentNote)
+        .filter(
+            WsStudentNote.data_domain == assignment.data_domain,
+            WsStudentNote.person_id == person_id,
+            WsStudentNote.source == source,
+        )
+        .one_or_none()
+    )
+    forgot = _forgot_of(evaluation)
+    att = _attendance_of(evaluation)
+    tag = None
+    if forgot:
+        tag = f"[忘带] {forgot}"
+    elif att:
+        tag = f"[{att}] {assignment.subject}"
+
+    if tag:
+        if note is None:
+            db.add(WsStudentNote(
+                data_domain=assignment.data_domain,
+                person_id=person_id,
+                date=assignment.assigned_date,
+                category="其他",
+                content=tag,
+                source=source,
+            ))
+        else:
+            note.date = assignment.assigned_date
+            note.content = tag
+    elif note is not None:
+        note.content = "[作业记录已清除]"
+
+
+def _is_pure_missing(submission: HomeworkSubmission) -> bool:
+    """是否计入连续缺交统计：只有纯缺交才计入连续缺交。
+    迟到、没来等出勤异常与忘带/没带，均不计入连续缺交统计。
+    """
+    if _effective_status(submission) != "missing":
+        return False
+    if _attendance_of(submission.evaluation):
+        return False
+    if _forgot_of(submission.evaluation):
+        return False
+    return True
+
+
+def _streak_status(submission: HomeworkSubmission) -> str:
+    """为 _streaks_of 映射状态：迟到/没来/忘带映射为 'attendance' 跳过（不累加，不打断）。"""
+    eff = _effective_status(submission)
+    if eff == "missing":
+        if _attendance_of(submission.evaluation) or _forgot_of(submission.evaluation):
+            return "attendance"
+        return "missing"
+    return eff
+
+
+def _normalized_row_semantics(
+    status: str, evaluation: Optional[str], attendance: Optional[str]
+) -> Tuple[str, Optional[str]]:
+    """出勤文本与质量评价共存于原评价字段，API 分列返回。"""
+    evaluation_text = (evaluation or "").strip()
+    attendance_text = (attendance or "").strip()
+    if attendance_text:
+        if not any(word in attendance_text for word in _ATTENDANCE_WORDS):
+            raise InvalidScopeParam(
+                "attendance must describe 没来/迟到/早退/旷课/缺课/缺席",
+                details={"attendance": attendance_text},
+            )
+        stored = "｜".join(part for part in (attendance_text, evaluation_text) if part)
+        return "submitted" if status == "unknown" else status, stored
+    if _attendance_of(evaluation_text):
+        return "submitted" if status == "unknown" else status, evaluation_text
+    return ("submitted" if status == "unknown" else status), evaluation_text or None
+
+
+def _effective_status(submission: HomeworkSubmission) -> str:
+    return "submitted" if submission.submission_status == "unknown" else submission.submission_status
+
+
+def _evaluation_tone(value: Optional[str]) -> str:
+    """按「｜」分段判定评价倾向；出勤/忘带片段由 _quality_text 剥离口径另行处理。"""
+    text = (value or "").strip()
+    if not text:
+        return "neutral"
+    for part in text.split("｜"):
+        part = part.strip()
+        if not part:
+            continue
+        if part == "差" or part.startswith(_POOR_MARKERS):
+            return "negative"
+        if any(word in part for word in _NEGATIVE_EVALUATIONS):
+            return "negative"
+    return "neutral"
+
+
+def _quality_text(value: Optional[str]) -> str:
+    """从兼容存储字段中剔除出勤与忘带等非评价片段，只返回纯作业质量评价。"""
+    return "｜".join(
+        part.strip()
+        for part in (value or "").split("｜")
+        if (
+            part.strip()
+            and not any(word in part for word in _ATTENDANCE_WORDS)
+            and not any(word in part for word in _FORGOT_WORDS)
+        )
+    )
 
 
 # ────────────────────────────── 作用域与跨域门 ──────────────────────────────
@@ -399,13 +572,96 @@ def _projected_submissions(
     return [(s, mapping[s.person_id]) for s in subs if s.person_id in mapping]
 
 
-def _projected_expected(
-    a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
-) -> List[int]:
+def _legacy_expected_ids(db: Session, a: HomeworkAssignment) -> List[int]:
+    """旧迁移批次没有快照时，只按原班级与事件日的有效成员补读写投影。"""
+    if a.data_domain == "homeroom":
+        rows = db.query(Enrollment.identity_id).filter(
+            Enrollment.admin_class_id == a.class_ref_id,
+            Enrollment.valid_from <= a.assigned_date,
+            (Enrollment.valid_to.is_(None)) | (Enrollment.valid_to >= a.assigned_date),
+        ).all()
+    else:
+        rows = db.query(TeachingClassMember.identity_id).filter(
+            TeachingClassMember.teaching_class_id == a.class_ref_id,
+            TeachingClassMember.valid_from <= a.assigned_date,
+            (TeachingClassMember.valid_to.is_(None)) | (TeachingClassMember.valid_to >= a.assigned_date),
+        ).all()
+    return sorted({row[0] for row in rows})
+
+
+def _effective_expected_ids(db: Session, a: HomeworkAssignment) -> List[int]:
+    """返回可用于业务统计的应交名单。
+
+    新批次使用确认时快照；旧迁移批次的源系统只保存例外，因此按原班级、
+    原日期的有效成员恢复名单。恢复只发生在原范围内，不扩大跨域权限。
+    """
     expected = _parse_expected_ids(a.expected_members_json)
+    if not expected and a.batch_token.startswith("migration:"):
+        expected = _legacy_expected_ids(db, a)
+    return expected
+
+
+def _projected_expected(
+    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
+) -> List[int]:
+    expected = _effective_expected_ids(db, a)
     if mapping is None:
         return expected
     return [mapping[pid] for pid in expected if pid in mapping]
+
+
+def _assignment_status_counts(
+    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
+    skip_reader_ids: Optional[Set[int]] = None,
+) -> Tuple[List[int], List[Tuple[HomeworkSubmission, int]], Dict[str, int]]:
+    """按例外登记口径统计批次。
+
+    应交名单里没有逐人行的人默认已交；旧 unknown 也归为已交。显式缺交和
+    请假覆盖默认值。极少数历史快照外的保留行继续计入，避免丢失旧例外。
+    skip_reader_ids（ADR-023 统计排除）只影响聚合计数：这些读域 id 的
+    应交与逐人行都不计入，行本身仍然保留。
+    """
+    expected_reader = _projected_expected(db, a, mapping)
+    pairs = _projected_submissions(db, a, mapping)
+    status_by_reader = {rid: _effective_status(s) for s, rid in pairs}
+    reader_ids = sorted(set(expected_reader) | set(status_by_reader))
+    if skip_reader_ids:
+        reader_ids = [rid for rid in reader_ids if rid not in skip_reader_ids]
+    counts = {key: 0 for key in _PUBLIC_STATUSES}
+    for rid in reader_ids:
+        status = status_by_reader.get(rid, "submitted")
+        if status not in counts:
+            status = "submitted"
+        counts[status] += 1
+    return reader_ids, pairs, counts
+
+
+def _stats_excluded_ids(
+    db: Session, data_domain: str, class_ref_ids: Sequence[int]
+) -> Set[int]:
+    """班级维度（ADR-023）被排除作业统计的写域身份集合；行存在即排除。"""
+    if not class_ref_ids:
+        return set()
+    rows = db.query(HomeworkStatsExclusion.identity_id).filter(
+        HomeworkStatsExclusion.data_domain == data_domain,
+        HomeworkStatsExclusion.class_ref_id.in_(list(class_ref_ids)),
+    ).all()
+    return {row[0] for row in rows}
+
+
+def _excluded_readers_of(
+    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
+) -> Set[int]:
+    """某批次在当前读域视角下被排除的 reader id 集合。
+
+    排除按批次归属班（写域）登记；跨域读时经 mapping 投影回读域 id。
+    未映射到的排除身份（不在交集内）本就不可见，无需处理。"""
+    source_excluded = _stats_excluded_ids(db, a.data_domain, [a.class_ref_id])
+    if not source_excluded:
+        return set()
+    if mapping is None:
+        return source_excluded
+    return {mapping[pid] for pid in source_excluded if pid in mapping}
 
 
 def _rate_stats_of(
@@ -413,7 +669,6 @@ def _rate_stats_of(
     submitted: int,
     missing: int,
     excused: int,
-    unknown: int,
 ) -> Tuple[Optional[float], bool]:
     """分母 = 快照人数 − excused；快照为空（或扣完）→ rate null +
     rate_unavailable（仅缺交历史不推断全交，契约 §0）。"""
@@ -421,6 +676,17 @@ def _rate_stats_of(
     if expected_count == 0 or denom <= 0:
         return None, True
     return round(submitted / denom, 4), False
+
+
+def _current_semester_bounds(db: Session, academic_year_id: int) -> Tuple[date, date]:
+    ay = db.get(AcademicYear, academic_year_id)
+    if ay is None:
+        raise ResourceOutOfScope("academic year not found", details={"academic_year_id": academic_year_id})
+    semester = db.query(WsHomeworkSemester).filter(
+        WsHomeworkSemester.academic_year_id == academic_year_id,
+        WsHomeworkSemester.is_current == 1,
+    ).order_by(WsHomeworkSemester.id.desc()).first()
+    return (semester.start_date, semester.end_date) if semester is not None else (ay.start_date, ay.end_date)
 
 
 # ────────────────────────────── §1.1 preview ──────────────────────────────
@@ -500,10 +766,11 @@ def _merge_resolved_rows(
 def _validate_status(status: str) -> str:
     if status not in _VALID_STATUSES:
         raise InvalidScopeParam(
-            "status must be one of submitted/missing/excused/unknown",
+            "status must be one of submitted/missing/excused",
             details={"status": status},
         )
-    return status
+    # 兼容旧草稿或旧客户端；新界面不再提供 unknown。
+    return "submitted" if status == "unknown" else status
 
 
 def _preview_target_teaching_class(
@@ -571,8 +838,9 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
         exception_rows: List[Tuple[int, str, Optional[str]]] = []
         for exc in spec.exceptions or []:
             status = _validate_status(exc.status)
+            status, evaluation = _normalized_row_semantics(status, exc.evaluation, exc.attendance)
             item = _resolve_roster_ref(roster, exc.person_id, exc.name_or_alias)
-            exception_rows.append((item["person_id"], status, exc.evaluation))
+            exception_rows.append((item["person_id"], status, evaluation))
         merged.update(_merge_resolved_rows(exception_rows))
     elif spec.kind == "names":
         names = [n.strip() for n in (spec.names or []) if n and n.strip()]
@@ -593,8 +861,9 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
             )
         for row in spec.rows:
             status = _validate_status(row.status)
+            status, evaluation = _normalized_row_semantics(status, row.evaluation, row.attendance)
             item = _resolve_roster_ref(roster, row.person_id, row.name_or_alias)
-            resolved.append((item["person_id"], status, row.evaluation))
+            resolved.append((item["person_id"], status, evaluation))
         merged = _merge_resolved_rows(resolved)
 
     existing = (
@@ -672,7 +941,10 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
                     person_id=pid,
                     name=name_map.get(pid),
                     status=merged[pid][0],
-                    evaluation=merged[pid][1],
+                    evaluation=_quality_text(merged[pid][1]) or None,
+                    attendance=_attendance_of(merged[pid][1]),
+                    special_note=_special_note_of(merged[pid][1]),
+                    quality_negative=_evaluation_tone(merged[pid][1]) == "negative",
                 )
                 for pid in ordered_ids
             ],
@@ -691,21 +963,13 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
 
 
 def _assignment_counts(db: Session, a: HomeworkAssignment) -> HomeworkConfirmResponse:
-    subs = (
-        db.query(HomeworkSubmission)
-        .filter(HomeworkSubmission.assignment_id == a.id)
-        .all()
-    )
-    counts = {key: 0 for key in _VALID_STATUSES}
-    for s in subs:
-        counts[s.submission_status] = counts.get(s.submission_status, 0) + 1
+    _reader_ids, _pairs, counts = _assignment_status_counts(db, a, None)
     return HomeworkConfirmResponse(
         assignment_id=a.id,
         revision=a.revision,
         submitted=counts["submitted"],
         missing=counts["missing"],
         excused=counts["excused"],
-        unknown=counts["unknown"],
     )
 
 
@@ -823,6 +1087,7 @@ def homework_confirm(req: HomeworkConfirmRequest, db: Session = Depends(get_db))
                     submitted_at=now if status == "submitted" else None,
                 )
             )
+            _sync_forgot_note(db, assignment, pid, evaluation)
         batch.status = "confirmed"
         db.commit()
     except DomainError:
@@ -868,19 +1133,23 @@ def homework_assignment_detail(
         db, teacher_id, mode, academic_year_id, class_id, teaching_class_id
     )
     a, mapping = _load_accessible_assignment(db, ctx, assignment_id)
-    expected_reader = _projected_expected(a, mapping)
-    pairs = _projected_submissions(db, a, mapping)
-    reader_ids = sorted(set(expected_reader) | {rid for _s, rid in pairs})
+    expected_reader = _projected_expected(db, a, mapping)
+    editable_init = _parse_expected_ids(a.expected_members_json)
+    if not editable_init and a.batch_token.startswith("migration:"):
+        editable_init = _legacy_expected_ids(db, a)
+    editable_reader = (
+        editable_init if mapping is None
+        else [mapping[pid] for pid in editable_init if pid in mapping]
+    )
+    counted_ids, pairs, counts = _assignment_status_counts(db, a, mapping)
+    reader_ids = sorted(set(editable_reader) | set(counted_ids))
     names = q.names_for(db, reader_ids)
-    counts = {key: 0 for key in _VALID_STATUSES}
-    for s, _rid in pairs:
-        counts[s.submission_status] = counts.get(s.submission_status, 0) + 1
+    pair_by_reader = {rid: s for s, rid in pairs}
     rate, unavailable = _rate_stats_of(
         len(expected_reader),
         counts["submitted"],
         counts["missing"],
         counts["excused"],
-        counts["unknown"],
     )
     return HomeworkAssignmentDetail(
         metadata=_metadata(ctx),
@@ -897,7 +1166,6 @@ def homework_assignment_detail(
         submitted=counts["submitted"],
         missing=counts["missing"],
         excused=counts["excused"],
-        unknown=counts["unknown"],
         submission_rate=rate,
         rate_unavailable=unavailable,
         expected_members=[
@@ -908,10 +1176,28 @@ def homework_assignment_detail(
             HomeworkSubmissionOut(
                 person_id=rid,
                 name=names.get(rid),
-                status=s.submission_status,
-                evaluation=s.evaluation,
+                status=(
+                    _effective_status(pair_by_reader[rid])
+                    if rid in pair_by_reader else "submitted"
+                ),
+                evaluation=(
+                    _quality_text(pair_by_reader[rid].evaluation) or None
+                    if rid in pair_by_reader else None
+                ),
+                attendance=(
+                    _attendance_of(pair_by_reader[rid].evaluation)
+                    if rid in pair_by_reader else None
+                ),
+                special_note=(
+                    _special_note_of(pair_by_reader[rid].evaluation)
+                    if rid in pair_by_reader else None
+                ),
+                quality_negative=(
+                    _evaluation_tone(pair_by_reader[rid].evaluation) == "negative"
+                    if rid in pair_by_reader else False
+                ),
             )
-            for s, rid in sorted(pairs, key=lambda item: item[1])
+            for rid in reader_ids
         ],
     )
 
@@ -945,17 +1231,32 @@ def homework_assignment_patch(
             "revision conflict: assignment was modified",
             details={"assignment_id": a.id, "current_revision": a.revision},
         )
-    due_date = _parse_date(req.due_date, "due_date")
+    due_date = _parse_date(req.due_date, "due_date") if req.due_date is not None else None
+    assigned_date = (
+        _parse_date(req.assigned_date, "assigned_date")
+        if req.assigned_date is not None
+        else None
+    )
+    has_type = req.homework_type is not None
+    has_subject = req.subject is not None
     has_rows = req.rows is not None
-    if not has_rows and req.due_date is None:
+    if (
+        not has_rows
+        and req.due_date is None
+        and req.assigned_date is None
+        and not has_type
+        and not has_subject
+    ):
         raise InvalidScopeParam(
-            "nothing to update: provide rows and/or due_date",
+            "nothing to update: provide rows, due_date, assigned_date, homework_type, and/or subject",
             details={"param": "rows"},
         )
 
     updated = 0
     if has_rows:
         expected_init = _parse_expected_ids(a.expected_members_json)
+        if not expected_init and a.batch_token.startswith("migration:"):
+            expected_init = _legacy_expected_ids(db, a)
         if mapping is None:
             reader_to_init = {pid: pid for pid in expected_init}
         else:
@@ -971,9 +1272,10 @@ def homework_assignment_patch(
         resolved: List[Tuple[int, str, Optional[str]]] = []
         for row in req.rows or []:
             status = _validate_status(row.status)
+            status, evaluation = _normalized_row_semantics(status, row.evaluation, row.attendance)
             item = _resolve_roster_ref(universe, row.person_id, row.name_or_alias)
             resolved.append(
-                (reader_to_init[item["person_id"]], status, row.evaluation)
+                (reader_to_init[item["person_id"]], status, evaluation)
             )
         merged = _merge_resolved_rows(resolved)
         try:
@@ -1004,12 +1306,34 @@ def homework_assignment_patch(
                     existing.revision = (existing.revision or 1) + 1
                     if status == "submitted" and existing.submitted_at is None:
                         existing.submitted_at = datetime.utcnow()
+                _sync_forgot_note(db, a, pid, evaluation)
                 updated += 1
         except DomainError:
             db.rollback()
             raise
     if req.due_date is not None:
         a.due_date = due_date
+    if assigned_date is not None:
+        a.assigned_date = assigned_date
+    if has_type:
+        new_type = (req.homework_type or "").strip()
+        if not new_type:
+            raise InvalidScopeParam(
+                "homework_type cannot be empty", details={"param": "homework_type"}
+            )
+        a.homework_type = new_type
+    if has_subject:
+        new_sub = (req.subject or "").strip()
+        if not new_sub:
+            raise InvalidScopeParam(
+                "subject cannot be empty", details={"param": "subject"}
+            )
+        if ctx.data_domain == "teaching" and new_sub not in ctx.authorized_subjects:
+            raise InvalidScopeParam(
+                f"subject {new_sub} is not authorized for current teacher",
+                details={"param": "subject"},
+            )
+        a.subject = new_sub
     a.revision = (a.revision or 1) + 1
     db.commit()
     return HomeworkPatchResponse(
@@ -1075,6 +1399,8 @@ def homework_assignment_delete(
     if mapping is not None:
         # 跨域：先核验无权管理的成员（含快照外越界行），命中即整批拒绝
         expected_init = set(_parse_expected_ids(a.expected_members_json))
+        if not expected_init and a.batch_token.startswith("migration:"):
+            expected_init = set(_legacy_expected_ids(db, a))
         all_rows = (
             db.query(HomeworkSubmission.person_id)
             .filter(HomeworkSubmission.assignment_id == a.id)
@@ -1112,18 +1438,31 @@ def homework_assignment_delete(
 def _list_item_of(
     db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
 ) -> HomeworkAssignmentListItem:
-    expected_reader = _projected_expected(a, mapping)
-    pairs = _projected_submissions(db, a, mapping)
-    counts = {key: 0 for key in _VALID_STATUSES}
-    for s, _rid in pairs:
-        counts[s.submission_status] = counts.get(s.submission_status, 0) + 1
+    expected_reader = _projected_expected(db, a, mapping)
+    _reader_ids, pairs, counts = _assignment_status_counts(db, a, mapping)
+    attendance_count = sum(1 for s, _rid in pairs if _attendance_of(s.evaluation))
+    negative_count = sum(1 for s, _rid in pairs if _evaluation_tone(s.evaluation) == "negative")
     rate, unavailable = _rate_stats_of(
         len(expected_reader),
         counts["submitted"],
         counts["missing"],
         counts["excused"],
-        counts["unknown"],
     )
+    excused_ids = [rid for s, rid in pairs if _effective_status(s) == "excused"]
+    missing_ids = [
+        rid for s, rid in pairs
+        if _effective_status(s) == "missing" and a.subject != "考勤"
+    ]
+    attendance_ids = [
+        rid for s, rid in pairs
+        if _attendance_of(s.evaluation) or (a.subject == "考勤" and _effective_status(s) == "missing")
+    ]
+    negative_ids = [
+        rid for s, rid in pairs
+        if _evaluation_tone(s.evaluation) == "negative"
+    ]
+    # 忘带名单与既有 4 类例外 ID 同一套 reader id 映射；仅作标注，不改任何计数口径
+    forgot_ids = [rid for s, rid in pairs if _forgot_of(s.evaluation)]
     return HomeworkAssignmentListItem(
         assignment_id=a.id,
         data_domain=a.data_domain,
@@ -1133,11 +1472,17 @@ def _list_item_of(
         due_date=a.due_date.isoformat() if a.due_date else None,
         revision=a.revision,
         status=a.status,
+        attendance_count=attendance_count,
+        negative_count=negative_count,
         expected_count=len(expected_reader),
         submitted=counts["submitted"],
         missing=counts["missing"],
         excused=counts["excused"],
-        unknown=counts["unknown"],
+        excused_ids=excused_ids,
+        missing_ids=missing_ids,
+        attendance_ids=attendance_ids,
+        negative_ids=negative_ids,
+        forgot_ids=forgot_ids,
         submission_rate=rate,
         rate_unavailable=unavailable,
     )
@@ -1207,11 +1552,11 @@ def homework_dashboard(
     group_by: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """按期聚合（week=ISO 周一，month=月首）；rate 仅计有可靠分母的批次，
+    """按期聚合（day=布置日，week=ISO 周一，month=月首）；rate 仅计有可靠分母的批次，
     组内全部无分母 → rate null + rate_unavailable。"""
-    if group_by not in ("week", "month"):
+    if group_by not in ("day", "week", "month"):
         raise InvalidScopeParam(
-            "group_by must be 'week' or 'month'", details={"param": "group_by"}
+            "group_by must be 'day', 'week' or 'month'", details={"param": "group_by"}
         )
     teacher_id = current_teacher_id(db)
     ctx = _resolve_hw_scope(
@@ -1219,8 +1564,11 @@ def homework_dashboard(
     )
     subject_f = (subject or "").strip() or None
     type_f = (homework_type or "").strip() or None
+    period_start, period_end = _current_semester_bounds(db, ctx.academic_year_id)
 
     def _label(d: date) -> str:
+        if group_by == "day":
+            return d.isoformat()
         if group_by == "week":
             monday = d - timedelta(days=d.weekday())
             return monday.isoformat()
@@ -1228,25 +1576,35 @@ def homework_dashboard(
 
     groups: Dict[str, dict] = {}
     for a, mapping in _visible_assignments(db, ctx, active_only=True):
+        if a.assigned_date < period_start or a.assigned_date > period_end:
+            continue
         if subject_f is not None and a.subject != subject_f:
             continue
         if type_f is not None and a.homework_type != type_f:
             continue
-        expected_reader = _projected_expected(a, mapping)
-        pairs = _projected_submissions(db, a, mapping)
-        # 逐批次先算自己的计数，再并入组桶（避免组级累计污染本批分母）
-        counts = {key: 0 for key in _VALID_STATUSES}
-        for s, _rid in pairs:
-            counts[s.submission_status] += 1
+        # ADR-023：被排除学生的应交与逐人行都不计入看板聚合
+        skip_ids = _excluded_readers_of(db, a, mapping)
+        expected_reader = [
+            pid for pid in _projected_expected(db, a, mapping) if pid not in skip_ids
+        ]
+        _reader_ids, pairs, counts = _assignment_status_counts(
+            db, a, mapping, skip_reader_ids=skip_ids
+        )
+        neg_count = sum(
+            1 for s, rid in pairs
+            if rid not in skip_ids and _evaluation_tone(s.evaluation) == "negative"
+        )
         denom = len(expected_reader) - counts["excused"]
         bucket = groups.setdefault(
             _label(a.assigned_date),
             {"assignments": 0, "submitted": 0, "missing": 0, "excused": 0,
-             "unknown": 0, "expected": 0, "rate_sub": 0, "rate_denom": 0,
+             "negative_count": 0,
+             "expected": 0, "rate_sub": 0, "rate_denom": 0,
              "computable": 0},
         )
         bucket["assignments"] += 1
-        for key in _VALID_STATUSES:
+        bucket["negative_count"] += neg_count
+        for key in _PUBLIC_STATUSES:
             bucket[key] += counts[key]
         # expected_count = 组内各批次应交快照人数的真实合计（v2 契约债务：
         # 不再恒 0；快照为空的批次自然贡献 0，rate_unavailable 语义不变）
@@ -1270,7 +1628,7 @@ def homework_dashboard(
                 submitted=b["submitted"],
                 missing=b["missing"],
                 excused=b["excused"],
-                unknown=b["unknown"],
+                negative_count=b.get("negative_count", 0),
                 submission_rate=rate,
                 rate_unavailable=unavailable,
             )
@@ -1284,38 +1642,51 @@ def homework_dashboard(
 
 
 def _person_events(
-    db: Session, ctx: WorkspaceContext, person_id: int
+    db: Session,
+    ctx: WorkspaceContext,
+    person_id: int,
+    academic_year_id: Optional[int] = None,
+    all_history: bool = False,
 ) -> List[Tuple[HomeworkAssignment, HomeworkSubmission]]:
     """该生（读域 person_id）的作业事件（active 批次，assigned_date 升序）。
 
-    - 直读：本域全部学年的该生行（历史跟人——H05 换号接续按 person 聚合；
-      身份展开不越域：仍限本 data_domain）。
+    - 直读：若显式指定 academic_year_id（且 not all_history）则严格过滤该学年；
+      未指定学年或 all_history=True 时查全部学年（H05 跨学年跟人）。
+      没有例外行时合成 submitted 事件，使后续全交批次能正确中断连续缺交。
     - 跨域：经共享门取关联班、link.subject 的批次，逐批次过
       _event_time_mapping 事件时点门（G01：作业后入班者看不到入班前
       批次的记录），person 经映射换算。"""
     events: List[Tuple[HomeworkAssignment, HomeworkSubmission]] = []
-    direct = (
-        db.query(HomeworkSubmission, HomeworkAssignment)
-        .join(
-            HomeworkAssignment,
-            HomeworkSubmission.assignment_id == HomeworkAssignment.id,
-        )
-        .filter(
-            HomeworkSubmission.person_id == person_id,
-            HomeworkAssignment.data_domain == ctx.data_domain,
-            HomeworkAssignment.status == "active",
-        )
-        .all()
+    target_ay_id = None if all_history else academic_year_id
+    direct_query = db.query(HomeworkAssignment).filter(
+        HomeworkAssignment.data_domain == ctx.data_domain,
+        HomeworkAssignment.status == "active",
     )
-    events.extend((a, s) for s, a in direct)
+    if target_ay_id is not None:
+        direct_query = direct_query.filter(
+            HomeworkAssignment.academic_year_id == target_ay_id
+        )
+    direct_assignments = direct_query.all()
     if ctx.mode == "teaching":
-        events = [(a, s) for a, s in events if a.subject == ctx.subject]
+        direct_assignments = [a for a in direct_assignments if a.subject == ctx.subject]
+    for a in direct_assignments:
+        row = db.query(HomeworkSubmission).filter(
+            HomeworkSubmission.assignment_id == a.id,
+            HomeworkSubmission.person_id == person_id,
+        ).one_or_none()
+        if row is None and person_id not in _effective_expected_ids(db, a):
+            continue
+        events.append((a, row or HomeworkSubmission(
+            assignment_id=a.id,
+            person_id=person_id,
+            submission_status="submitted",
+        )))
     other_domain = "teaching" if ctx.mode == "homeroom" else "homeroom"
     for link in _homework_share_links(db, ctx):
         other_class = (
             link.teaching_class_id if ctx.mode == "homeroom" else link.admin_class_id
         )
-        cross = (
+        cross_query = (
             db.query(HomeworkAssignment)
             .filter(
                 HomeworkAssignment.data_domain == other_domain,
@@ -1323,8 +1694,12 @@ def _person_events(
                 HomeworkAssignment.subject == link.subject,
                 HomeworkAssignment.status == "active",
             )
-            .all()
         )
+        if target_ay_id is not None:
+            cross_query = cross_query.filter(
+                HomeworkAssignment.academic_year_id == target_ay_id
+            )
+        cross = cross_query.all()
         for a in cross:
             mapping = _event_time_mapping(db, link, ctx, a)
             if mapping is None:
@@ -1332,15 +1707,17 @@ def _person_events(
             init_id = {v: k for k, v in mapping.items()}.get(person_id)
             if init_id is None:
                 continue
-            rows = (
-                db.query(HomeworkSubmission)
-                .filter(
-                    HomeworkSubmission.assignment_id == a.id,
-                    HomeworkSubmission.person_id == init_id,
-                )
-                .all()
-            )
-            events.extend((a, s) for s in rows)
+            row = db.query(HomeworkSubmission).filter(
+                HomeworkSubmission.assignment_id == a.id,
+                HomeworkSubmission.person_id == init_id,
+            ).one_or_none()
+            if row is None and init_id not in _effective_expected_ids(db, a):
+                continue
+            events.append((a, row or HomeworkSubmission(
+                assignment_id=a.id,
+                person_id=init_id,
+                submission_status="submitted",
+            )))
     events.sort(key=lambda item: (item[0].assigned_date, item[0].id))
     return events
 
@@ -1353,10 +1730,12 @@ def homework_student(
     class_id: Optional[int] = None,
     teaching_class_id: Optional[int] = None,
     academic_year_id: Optional[int] = None,
+    all_history: bool = False,
     db: Session = Depends(get_db),
 ):
     """学生维度事件流 + streaks（画像页消费）。person 不在当前作用域名册
-    → 404；unknown 使 current_missing_streak 置 null（不冒充连续）。"""
+    → 404；无缺交/请假例外的应交批次按已交事件返回。显式指定 academic_year_id 时
+    过滤该学年，未指定或 all_history=True 时返回全部历史学年。"""
     teacher_id = current_teacher_id(db)
     ctx = _resolve_hw_scope(
         db, teacher_id, mode, academic_year_id, class_id, teaching_class_id
@@ -1365,8 +1744,10 @@ def homework_student(
         raise ResourceOutOfScope(
             "person not in current workspace scope", details={"person_id": person_id}
         )
-    events = _person_events(db, ctx, person_id)
-    statuses = [s.submission_status for _a, s in events]
+    events = _person_events(
+        db, ctx, person_id, academic_year_id=academic_year_id, all_history=all_history
+    )
+    statuses = [_streak_status(s) for a, s in events if a.subject != "考勤"]
     current, basis, longest = _streaks_of(statuses)
     return HomeworkStudentResponse(
         metadata=_metadata(ctx),
@@ -1378,7 +1759,7 @@ def homework_student(
                 assigned_date=a.assigned_date.isoformat(),
                 subject=a.subject,
                 homework_type=a.homework_type,
-                status=s.submission_status,
+                status=_effective_status(s),
                 evaluation=s.evaluation,
             )
             for a, s in events
@@ -1404,14 +1785,28 @@ def homework_warnings(
     subject: Optional[str] = None,
     homework_type: Optional[str] = None,
     min_missing: int = 2,
+    min_streak: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     """按人聚合缺交（事件维度，basis='events'）：missing_count /
-    current_streak（unknown → null + basis='unknown'）/ 最近 5 条缺交。
-    仅缺交历史批次照常计数；本端点不计算 submission_rate。"""
+    current_streak / 最近 5 条缺交。无缺交/请假例外的应交批次按已交，
+    因而会中断此前的连续缺交。
+
+    连续口径保持旧业务维度：班主任按学科、教学按作业种类分别计算，
+    不把不同学科/种类的缺交串成一条序列。迁移的仅缺交历史批次没有
+    expected_members 快照时，按旧版保留下来的班级级日期轴计算并返回
+    basis='legacy_events'；该值不等价于完整新批次事件链。本端点不计算
+    submission_rate。
+    """
     if min_missing < 1:
         raise InvalidScopeParam(
             "min_missing must be >= 1", details={"param": "min_missing"}
+        )
+    if min_streak is not None and min_streak < 1:
+        raise InvalidScopeParam(
+            "min_streak must be >= 1", details={"param": "min_streak"}
         )
     teacher_id = current_teacher_id(db)
     ctx = _resolve_hw_scope(
@@ -1419,29 +1814,272 @@ def homework_warnings(
     )
     subject_f = (subject or "").strip() or None
     type_f = (homework_type or "").strip() or None
+    default_start, default_end = _current_semester_bounds(db, ctx.academic_year_id)
+    period_start = _parse_date(date_from, "date_from") or default_start
+    period_end = _parse_date(date_to, "date_to") or default_end
+    if period_start > period_end:
+        raise InvalidScopeParam("date_from must not be after date_to", details={"date_from": date_from, "date_to": date_to})
 
     events_by_person: Dict[int, List[Tuple[HomeworkAssignment, HomeworkSubmission]]] = {}
+    visible_rows: List[
+        Tuple[HomeworkAssignment, List[Tuple[HomeworkSubmission, int]]]
+    ] = []
     for a, mapping in _visible_assignments(db, ctx, active_only=True):
+        if a.subject == "考勤":
+            continue
+        if a.assigned_date < period_start or a.assigned_date > period_end:
+            continue
         if subject_f is not None and a.subject != subject_f:
             continue
         if type_f is not None and a.homework_type != type_f:
             continue
-        for s, rid in _projected_submissions(db, a, mapping):
+        projected_rows = _projected_submissions(db, a, mapping)
+        row_by_reader = {rid: s for s, rid in projected_rows}
+        expected_reader = _projected_expected(db, a, mapping)
+        # ADR-023：排除学生的行不进入预警事件流与排行/连续轴，其他学生的
+        # 连续判定不受其缺交日期影响（老版 respect_excluded 同口径）
+        skip_ids = _excluded_readers_of(db, a, mapping)
+        projected = list(projected_rows)
+        for rid in expected_reader:
+            if rid not in row_by_reader:
+                projected.append((HomeworkSubmission(
+                    assignment_id=a.id,
+                    person_id=rid,
+                    submission_status="submitted",
+                ), rid))
+        if skip_ids:
+            projected = [(s, rid) for s, rid in projected if rid not in skip_ids]
+        visible_rows.append((a, projected))
+        for s, rid in projected:
             events_by_person.setdefault(rid, []).append((a, s))
 
+    # 维度分组与快照解析预计算（原实现把两件事放在「每学生 × 每维度」循环里，
+    # 对同一 expected_members_json 反复 json.loads，班额大时是数万次重复解析）：
+    # 每个 (域, 班, 维度) 的批次行只收集一次，每份快照只解析一次。
+    dimension_rows_map: Dict[Tuple[str, int, str], List[Tuple[HomeworkAssignment, list]]] = {}
+    expected_ids_empty: Dict[int, bool] = {}
+    for a, projected in visible_rows:
+        dim = a.subject if mode == "homeroom" else a.homework_type
+        dimension_rows_map.setdefault((a.data_domain, a.class_ref_id, dim), []).append((a, projected))
+        if a.id not in expected_ids_empty:
+            expected_ids_empty[a.id] = not _parse_expected_ids(a.expected_members_json)
+
     students: List[HomeworkWarningStudent] = []
-    roster_ids = sorted(set(ctx.member_person_ids) | set(events_by_person.keys()))
+    # ADR-023：本域作用域班级中被排除统计的学生不进入任何预警清单
+    # （缺交排行、负面评价、忘带）；其个人明细与相关性另走独立端点保留。
+    scope_excluded = _stats_excluded_ids(db, ctx.data_domain, ctx.class_ids)
+    roster_ids = sorted(
+        (set(ctx.member_person_ids) | set(events_by_person.keys())) - scope_excluded
+    )
     names = q.names_for(db, roster_ids)
+
+    # 预警时间基准：以当前作业最新日期为时间轴基准点，无作业时以今日为准
+    anchor_date = max((a.assigned_date for a, _ in visible_rows), default=date.today())
+
+    # 人工解除记录（连续负面评价等）
+    dismiss_notes = db.query(WsStudentNote).filter(
+        WsStudentNote.data_domain == ctx.data_domain,
+        WsStudentNote.person_id.in_(roster_ids),
+        WsStudentNote.source.like("warning_dismissal:quality%"),
+    ).all()
+    dismissed_dates: Dict[int, date] = {}
+    for note in dismiss_notes:
+        if note.person_id not in dismissed_dates or note.date > dismissed_dates[note.person_id]:
+            dismissed_dates[note.person_id] = note.date
+
+    # 负面评价是与收交状态正交的独立预警。只沿本人“已交且有评价”
+    # 的记录倒序判定；正面/中性评价打断，无评价不充当中性。
+    # 退出机制：支持人工跟进解除。生效日及之前的历史负面不再计入连续段；
+    # 若后续产生新负面且连续达到下限，则重新激活报警。
+    quality: List[HomeworkAuxWarningStudent] = []
+    for pid in roster_ids:
+        cutoff = dismissed_dates.get(pid)
+        evaluated = [
+            (a, s)
+            for a, s in sorted(
+                events_by_person.get(pid, []),
+                key=lambda item: (item[0].assigned_date, item[0].id),
+            )
+            if _effective_status(s) == "submitted"
+            and _quality_text(s.evaluation)
+            and (cutoff is None or a.assigned_date > cutoff)
+        ]
+        streak: List[Tuple[HomeworkAssignment, HomeworkSubmission]] = []
+        for a, s in reversed(evaluated):
+            if _evaluation_tone(s.evaluation) == "negative":
+                streak.append((a, s))
+            else:
+                break
+        if len(streak) >= 2:
+            chronological = list(reversed(streak))
+            quality.append(
+                HomeworkAuxWarningStudent(
+                    person_id=pid,
+                    name=names.get(pid),
+                    count=len(streak),
+                    dates=[a.assigned_date.isoformat() for a, _s in chronological],
+                    details=[_quality_text(s.evaluation) for _a, s in chronological],
+                )
+            )
+    quality.sort(key=lambda item: (-item.count, item.name or "", item.person_id))
+
+    # 忘带与出勤预警（忘带、没带、迟到、没来等）：
+    # 来自旧特殊记录投影或日常作业行的明确录入，不与连续缺交/评价混算；
+    # 自动冲刷：采用近 30 天滑动窗口（基于 anchor_date），30 天前的记录自然沉淀；支持人工解除。
+    dismiss_forgot_notes = db.query(WsStudentNote).filter(
+        WsStudentNote.data_domain == ctx.data_domain,
+        WsStudentNote.person_id.in_(roster_ids),
+        (
+            WsStudentNote.source.like("warning_dismissal:forgot%")
+            | WsStudentNote.source.like("warning_dismissal:attendance%")
+        ),
+    ).all()
+    dismissed_forgot_dates: Dict[int, date] = {}
+    for note in dismiss_forgot_notes:
+        if note.person_id not in dismissed_forgot_dates or note.date > dismissed_forgot_dates[note.person_id]:
+            dismissed_forgot_dates[note.person_id] = note.date
+
+    forgot: List[HomeworkAuxWarningStudent] = []
+    if roster_ids:
+        visible_assignment_ids = {a.id for a, _projected in visible_rows}
+        forgot_by_person: Dict[int, List[WsStudentNote]] = {}
+        window_start = max(period_start, anchor_date - timedelta(days=30))
+        for note in db.query(WsStudentNote).filter(
+            WsStudentNote.data_domain == ctx.data_domain,
+            WsStudentNote.person_id.in_(roster_ids),
+            WsStudentNote.date >= window_start,
+            WsStudentNote.date <= period_end,
+            (
+                WsStudentNote.source.like("migration:%")
+                | WsStudentNote.source.like("homework:%")
+            ),
+        ).all():
+            if note.source and note.source.startswith("homework:"):
+                try:
+                    if int(note.source.split(":", 1)[1]) not in visible_assignment_ids:
+                        continue
+                except ValueError:
+                    continue
+            if note.person_id in dismissed_forgot_dates and note.date <= dismissed_forgot_dates[note.person_id]:
+                continue
+            raw = f"{note.category or ''} {note.content or ''}"
+            if note.content.startswith("[") and any(
+                word in raw for word in ("忘带", "没带", "未带", "迟到", "没来", "早退", "旷课", "缺课", "缺席")
+            ):
+                forgot_by_person.setdefault(note.person_id, []).append(note)
+        for pid, notes in forgot_by_person.items():
+            if len(notes) < 3:
+                continue
+            ordered = sorted(notes, key=lambda note: (note.date, note.id))
+            forgot.append(
+                HomeworkAuxWarningStudent(
+                    person_id=pid,
+                    name=names.get(pid),
+                    count=len(ordered),
+                    dates=[note.date.isoformat() for note in ordered],
+                    details=[note.content for note in ordered],
+                )
+            )
+        forgot.sort(key=lambda item: (-item.count, item.name or "", item.person_id))
     for pid in roster_ids:
         evs = sorted(
             events_by_person.get(pid, []),
             key=lambda item: (item[0].assigned_date, item[0].id),
         )
-        missing_events = [(a, s) for a, s in evs if s.submission_status == "missing"]
+        # 迟到、没来、忘带不计入连续缺交统计
+        missing_events = [
+            (a, s) for a, s in evs if _is_pure_missing(s)
+        ]
         if len(missing_events) < min_missing:
             continue
-        statuses = [s.submission_status for _a, s in evs]
-        current, basis, _longest = _streaks_of(statuses)
+
+        # H 的旧版连续预警按学科分组；T 的旧版按作业种类分组。
+        grouped: Dict[Tuple[str, int, str], List[Tuple[HomeworkAssignment, HomeworkSubmission]]] = {}
+        for a, s in evs:
+            dimension = a.subject if mode == "homeroom" else a.homework_type
+            # “全部所教班”只汇总结果，连续轴仍以实际归属班为边界；否则 B 班
+            # 某日的事件会错误中断 A 班学生的连击。
+            grouped.setdefault((a.data_domain, a.class_ref_id, dimension), []).append((a, s))
+
+        streak_candidates: List[Tuple[Optional[int], str, str, date, int]] = []
+        for (group_domain, group_class_id, dimension), group_events in grouped.items():
+            dimension_rows = dimension_rows_map.get(
+                (group_domain, group_class_id, dimension), []
+            )
+            legacy = any(expected_ids_empty.get(a.id, False) for a, _ in dimension_rows)
+
+            if legacy:
+                # 旧 H：某学科班内任一收交日期构成时间轴；该生当日没有
+                # missing 即打断。旧 T：某种类班内有人 missing 的日期，再并入
+                # 本人显式 submitted/excused/missing 日期。这里只使用已投影业务
+                # 事实，不直接读取 source_archive_record；若归档中的全交台账尚未
+                # 投影，basis='legacy_events' 明示这是“已保留时间轴”口径。
+                own_by_date: Dict[date, List[str]] = {}
+                for a, s in group_events:
+                    own_by_date.setdefault(a.assigned_date, []).append(_streak_status(s))
+                if mode == "homeroom":
+                    # 旧 H 的原始模型只记录“谁缺交”，所以同班同学科任一缺交日
+                    # 都是全班收交时间轴；该生日无缺交即代表本次连击结束。
+                    rows_by_date: Dict[date, List[HomeworkAssignment]] = {}
+                    for dimension_assignment, _projected in dimension_rows:
+                        rows_by_date.setdefault(
+                            dimension_assignment.assigned_date, []
+                        ).append(dimension_assignment)
+                    axis = sorted(rows_by_date)
+                else:
+                    class_missing_dates = {
+                        a.assigned_date
+                        for a, projected in dimension_rows
+                        if any(s.submission_status == "missing" for s, _rid in projected)
+                    }
+                    axis = sorted(class_missing_dates | set(own_by_date))
+                current = 0
+                basis = "legacy_events"
+                for event_date in reversed(axis):
+                    statuses = own_by_date.get(event_date, [])
+                    if "missing" in statuses:
+                        current += 1
+                    elif any(status in ("attendance", "excused") for status in statuses):
+                        continue
+                    else:
+                        if mode != "homeroom":
+                            break
+                        day_assignments = rows_by_date.get(event_date, [])
+                        if day_assignments and all(
+                            item.batch_token.startswith("migration:h:")
+                            for item in day_assignments
+                        ):
+                            break
+                        # 该生日已交 → 连续段在此结束，保留已从最新日数出的
+                        # 连缺值（与 _streaks_of 的 submitted 打断语义一致；
+                        # 不得清零——清零会把「最近一次缺交」也抹掉，令整卡
+                        # 连续缺交预警配合 min_streak 过滤后显示为空）。
+                        break
+            else:
+                statuses = [_streak_status(s) for _a, s in group_events]
+                current, basis, _longest = _streaks_of(statuses)
+            last_assignment = group_events[-1][0]
+            missing_in_group = sum(
+                1 for _a, s in group_events if _is_pure_missing(s)
+            )
+            streak_candidates.append(
+                (current, basis, dimension, last_assignment.assigned_date, missing_in_group)
+            )
+
+        # 优先展示最长的当前连续段。
+        reliable = [item for item in streak_candidates if item[0] is not None]
+        if reliable:
+            current, basis, streak_dimension, _last_date, _count = max(
+                reliable,
+                key=lambda item: (item[0] or 0, item[3], item[4], item[2]),
+            )
+        else:
+            current, basis, streak_dimension, _last_date, _count = max(
+                streak_candidates,
+                key=lambda item: (item[3], item[4], item[2]),
+            )
+        if min_streak is not None and (current is None or current < min_streak):
+            continue
         recent = [
             HomeworkRecentMissing(
                 assignment_id=a.id,
@@ -1462,6 +2100,8 @@ def homework_warnings(
                 missing_count=len(missing_events),
                 current_streak=current,
                 streak_basis=basis,
+                streak_subject=streak_dimension if mode == "homeroom" else None,
+                streak_homework_type=streak_dimension if mode == "teaching" else None,
                 recent_missing=recent,
             )
         )
@@ -1472,8 +2112,181 @@ def homework_warnings(
         metadata=_metadata(ctx),
         basis="events",
         min_missing=min_missing,
+        min_streak=min_streak,
         students=students,
+        quality=quality,
+        forgot=forgot,
     )
+
+
+@router.post("/homework/warnings/dismiss", response_model=HomeworkWarningDismissResponse)
+@domain_endpoint
+def dismiss_homework_warning(
+    payload: HomeworkWarningDismissRequest,
+    db: Session = Depends(get_db),
+):
+    """人工解除作业预警（当前主要支持 quality 连续负面评价）。
+    写入 WsStudentNote，记录跟进日志并作为该生历史负面评价的截止点。
+    """
+    teacher_id = current_teacher_id(db)
+    ctx = _resolve_hw_scope(
+        db,
+        teacher_id,
+        payload.mode,
+        payload.academic_year_id,
+        payload.class_id,
+        payload.teaching_class_id,
+        payload.subject,
+    )
+    if payload.dismiss_date:
+        d_date = _parse_date(payload.dismiss_date, "dismiss_date") or date.today()
+    else:
+        d_date = date.today()
+
+    target_pid = payload.person_id
+    if target_pid not in ctx.member_person_ids:
+        existing_event = db.query(HomeworkSubmission).filter(
+            HomeworkSubmission.person_id == target_pid
+        ).first()
+        if not existing_event:
+            raise ResourceOutOfScope(
+                "Student not found in current scope",
+                details={"person_id": target_pid},
+            )
+
+    class_ref = ctx.class_ids[0] if ctx.class_ids else 0
+    note = WsStudentNote(
+        data_domain=ctx.data_domain,
+        person_id=target_pid,
+        date=d_date,
+        category="谈话",
+        content=f"[预警解除] {payload.warning_kind} 预警已跟进处理",
+        source=f"warning_dismissal:{payload.warning_kind}:{class_ref}",
+    )
+    db.add(note)
+    db.commit()
+    return HomeworkWarningDismissResponse(
+        ok=True,
+        person_id=target_pid,
+        warning_kind=payload.warning_kind,
+        dismissed_date=d_date.isoformat(),
+    )
+
+
+# ────────────────────────────── §3.1 统计排除（ADR-023） ──────────────────────────────
+
+
+def _exclusion_target_class(
+    db: Session, teacher_id: int, mode: Optional[str],
+    academic_year_id: Optional[int], class_id: Optional[int],
+    teaching_class_id: Optional[int],
+) -> Tuple[WorkspaceContext, int]:
+    """解析排除管理的目标班：homeroom=当前绑定行政班；teaching=显式教学班
+    （并集作用域无法定位单班名册，必须先选班）。"""
+    if mode == "teaching" and teaching_class_id is None:
+        raise InvalidScopeParam(
+            "teaching_class_id is required to manage stats exclusion",
+            details={"param": "teaching_class_id"},
+        )
+    ctx = _resolve_hw_scope(
+        db, teacher_id, mode, academic_year_id, class_id, teaching_class_id
+    )
+    if mode == "teaching":
+        if teaching_class_id not in ctx.class_ids:
+            raise ResourceOutOfScope(
+                "teaching class not in this workspace scope",
+                details={"teaching_class_id": teaching_class_id},
+            )
+        return ctx, teaching_class_id
+    return ctx, ctx.class_ids[0]
+
+
+def _stats_exclusion_payload(
+    db: Session, ctx: WorkspaceContext, target_class: int
+) -> HomeworkStatsExclusionResponse:
+    if ctx.mode == "homeroom":
+        roster = q.homeroom_roster(db, target_class, ctx.as_of, ctx.academic_year_id)
+    else:
+        roster = q.teaching_roster(db, [target_class], ctx.as_of, ctx.academic_year_id)
+    excluded = _stats_excluded_ids(db, ctx.data_domain, [target_class])
+    return HomeworkStatsExclusionResponse(
+        metadata=_metadata(ctx),
+        data_domain=ctx.data_domain,
+        class_ref_id=target_class,
+        entries=[
+            HomeworkStatsExclusionEntry(
+                person_id=item["person_id"],
+                name=item["name"],
+                alias=item.get("alias"),
+                excluded=item["person_id"] in excluded,
+            )
+            for item in roster
+        ],
+    )
+
+
+@router.get("/homework/stats-exclusion", response_model=HomeworkStatsExclusionResponse)
+@domain_endpoint
+def homework_stats_exclusion_list(
+    mode: Optional[str] = None,
+    class_id: Optional[int] = None,
+    teaching_class_id: Optional[int] = None,
+    academic_year_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """当前班名册与排除状态（ADR-023）：排除=缺交不计入看板/排行/预警；
+    相关性与个人明细保留。"""
+    teacher_id = current_teacher_id(db)
+    ctx, target_class = _exclusion_target_class(
+        db, teacher_id, mode, academic_year_id, class_id, teaching_class_id
+    )
+    return _stats_exclusion_payload(db, ctx, target_class)
+
+
+@router.put("/homework/stats-exclusion", response_model=HomeworkStatsExclusionResponse)
+@domain_endpoint
+def homework_stats_exclusion_set(
+    req: HomeworkStatsExclusionSetRequest, db: Session = Depends(get_db)
+):
+    """开/关一个学生的统计排除（幂等；关闭=删除排除行，业务记录永不删除）。"""
+    teacher_id = current_teacher_id(db)
+    ctx, target_class = _exclusion_target_class(
+        db, teacher_id, req.mode, req.academic_year_id, req.class_id,
+        req.teaching_class_id,
+    )
+    if ctx.mode == "homeroom":
+        roster = q.homeroom_roster(db, target_class, ctx.as_of, ctx.academic_year_id)
+    else:
+        roster = q.teaching_roster(db, [target_class], ctx.as_of, ctx.academic_year_id)
+    if not any(item["person_id"] == req.person_id for item in roster):
+        raise InvalidScopeParam(
+            "person not in current roster of this class",
+            details={"person_id": req.person_id},
+        )
+    if req.excluded:
+        exists = (
+            db.query(HomeworkStatsExclusion)
+            .filter(
+                HomeworkStatsExclusion.data_domain == ctx.data_domain,
+                HomeworkStatsExclusion.class_ref_id == target_class,
+                HomeworkStatsExclusion.identity_id == req.person_id,
+            )
+            .first()
+        )
+        if exists is None:
+            db.add(HomeworkStatsExclusion(
+                data_domain=ctx.data_domain,
+                class_ref_id=target_class,
+                identity_id=req.person_id,
+            ))
+    else:
+        db.query(HomeworkStatsExclusion).filter(
+            HomeworkStatsExclusion.data_domain == ctx.data_domain,
+            HomeworkStatsExclusion.class_ref_id == target_class,
+            HomeworkStatsExclusion.identity_id == req.person_id,
+        ).delete(synchronize_session=False)
+    db.commit()
+    return _stats_exclusion_payload(db, ctx, target_class)
 
 
 # ────────────────────────────── §4 相关性 ──────────────────────────────
@@ -1517,10 +2330,10 @@ def _submission_rates_by_person(
             excluded += 1
             continue
         pairs = _projected_submissions(db, a, mapping)
-        status_by_reader = {rid: s.submission_status for s, rid in pairs}
-        expected_reader = _projected_expected(a, mapping)
+        status_by_reader = {rid: _effective_status(s) for s, rid in pairs}
+        expected_reader = _projected_expected(db, a, mapping)
         for rid in expected_reader:
-            status = status_by_reader.get(rid)
+            status = status_by_reader.get(rid, "submitted")
             if status == "excused":
                 continue
             contrib.setdefault(rid, []).append(1 if status == "submitted" else 0)
@@ -1678,6 +2491,59 @@ def _derived_semester_entries(ay: AcademicYear) -> List[HomeworkSemesterEntry]:
             )
         )
     return entries
+
+
+@router.get("/homework/current-semester", response_model=CurrentSemesterResponse)
+@domain_endpoint
+def get_current_semester(db: Session = Depends(get_db)):
+    """Return the single application-wide current semester.
+
+    An explicitly selected semester wins.  Before the user creates manual
+    rows, fall back to the automatically derived semester for today's academic
+    year (or the newest academic year when today is outside every configured
+    year).
+    """
+    row = (
+        db.query(WsHomeworkSemester)
+        .filter(WsHomeworkSemester.is_current == 1)
+        .order_by(WsHomeworkSemester.id.desc())
+        .first()
+    )
+    if row is not None:
+        ay = db.get(AcademicYear, row.academic_year_id)
+        return CurrentSemesterResponse(
+            id=row.id,
+            academic_year_id=ay.id,
+            academic_year_name=ay.name,
+            name=row.name,
+            start_date=row.start_date.isoformat(),
+            end_date=row.end_date.isoformat(),
+            mode=row.mode,
+        )
+
+    today = date.today()
+    ay = (
+        db.query(AcademicYear)
+        .filter(AcademicYear.start_date <= today, AcademicYear.end_date >= today)
+        .order_by(AcademicYear.start_date.desc(), AcademicYear.id.desc())
+        .first()
+        or db.query(AcademicYear)
+        .order_by(AcademicYear.start_date.desc(), AcademicYear.id.desc())
+        .first()
+    )
+    if ay is None:
+        raise WorkspaceNotConfigured("no academic year configured")
+    entries = _derived_semester_entries(ay)
+    selected = next((item for item in entries if item.is_current), entries[0])
+    return CurrentSemesterResponse(
+        id=None,
+        academic_year_id=ay.id,
+        academic_year_name=ay.name,
+        name=selected.name,
+        start_date=selected.start_date,
+        end_date=selected.end_date,
+        mode="auto",
+    )
 
 
 def _check_semester_conflicts(
@@ -1867,11 +2733,8 @@ def set_current_semester(semester_id: int, db: Session = Depends(get_db)):
             "该学期已是当前学期，请勿重复设置",
             details={"id": row.id, "name": row.name},
         )
-    for other in (
-        db.query(WsHomeworkSemester)
-        .filter(WsHomeworkSemester.academic_year_id == row.academic_year_id)
-        .all()
-    ):
+    # “当前学期”是整个应用的唯一当前范围，不是每个学年各自一条。
+    for other in db.query(WsHomeworkSemester).all():
         other.is_current = 0
     row.is_current = 1
     db.commit()
