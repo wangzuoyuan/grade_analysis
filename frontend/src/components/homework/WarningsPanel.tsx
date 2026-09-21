@@ -5,8 +5,8 @@
  *
  * 口径（响应 basis='events'）：按收交事件（作业布置日期）逐人统计缺交次数，
  * 不按日折算；旧缺交记录与旧全交收交台账共同构成可证明的历史时间轴。
- * 连续口径：班主任按学科、教学按作业种类；无缺交/请假例外的批次按已交，
- * 会中断此前的连续缺交。
+ * 连续口径按天（同日多种作业缺只计 1 天）：班主任按学科、教学按天
+ * （不分作业种类）；无缺交/请假例外的批次按已交，会中断此前的连续缺交。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -277,7 +277,11 @@ export function WarningsPanel({
                     title={s.streak_basis === 'legacy_events' ? '依据历史已保留时间轴推算' : undefined}
                   >
                     当前连续缺交：
-                    {`${String(s.current_streak ?? 0)} 次（${s.streak_subject ? `按${s.streak_subject}学科` : `按${s.streak_homework_type ?? '当前'}作业种类`}）`}
+                    {`${String(s.current_streak ?? 0)} 次（${
+                      s.streak_subject
+                        ? `按${s.streak_subject}学科`
+                        : '按天（不分作业种类）'
+                    }）`}
                   </p>
                   {s.recent_missing.length > 0 ? (
                     <div className="mt-2">
@@ -306,8 +310,8 @@ export function WarningsPanel({
           )}
           <p className="mt-3 flex items-start gap-1.5 text-[10px] text-slate-400">
             <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
-            连续缺交按收交事件排序判定：班主任按学科、教学按作业种类；已交打断，请假跳过。
-            旧数据的全交收交台账会用于中断对应学生的缺交连续段。
+            连续缺交按天判定（同日多种作业缺只计 1 天）：班主任按学科、教学按天（不分作业种类）；
+            已交打断，请假跳过。旧数据的全交收交台账会用于中断对应学生的缺交连续段。
           </p>
         </CardContent>
       </Card>

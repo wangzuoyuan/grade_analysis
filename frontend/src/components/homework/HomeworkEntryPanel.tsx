@@ -555,9 +555,13 @@ export function HomeworkEntryPanel({
     (form.kind === 'detailed' && form.rows.some((r) => (r.name_or_alias ?? '').trim() !== ''))
   const hasTeachingClass = !teaching || typeof teachingClassId === 'number'
   // 班主任整段「学科：名单」：学科由文本携带，不强制手填学科字段
+  // （左侧无学科词的待定学科行同理：允许进入预览流程，由 buildGroups 给出精准报错或按默认学科补齐）
   const homeroomSplit = !teaching && form.smartText.trim() ? splitHomeroomHomeworkText(form.smartText) : null
   const homeroomSubjectReady =
-    teaching || form.subject.trim() !== '' || (homeroomSplit?.subjectGroups.length ?? 0) > 0
+    teaching ||
+    form.subject.trim() !== '' ||
+    (homeroomSplit?.subjectGroups.length ?? 0) > 0 ||
+    (homeroomSplit?.unmarkedGroups.length ?? 0) > 0
   const canPreview =
     homeroomSubjectReady &&
     (teaching ? effectiveSubject !== '' : true) &&
@@ -599,6 +603,17 @@ export function HomeworkEntryPanel({
       const plain = parseSmartHomeworkText(homeroomSplit.plainLines.join('\n'))
       if (plain.error) return { error: plain.error }
       if (plain.input) groups.push({ subject: form.subject.trim(), input: plain.input })
+    }
+    // 待定学科组（如「听力第四周：张三」）：作业名保留、学科由默认学科补，绝不自建假学科
+    if (homeroomSplit && homeroomSplit.unmarkedGroups.length > 0) {
+      if (form.subject.trim() === '') {
+        return {
+          error: `存在未标注学科的行（如「${homeroomSplit.unmarkedGroups[0].line}」）：请在行首加「学科：」，或先在上方填写学科`,
+        }
+      }
+      for (const g of homeroomSplit.unmarkedGroups) {
+        groups.push({ subject: form.subject.trim(), homeworkType: g.homeworkType, input: g.input })
+      }
     }
     if (groups.length === 0) {
       if (form.subject.trim() === '') {

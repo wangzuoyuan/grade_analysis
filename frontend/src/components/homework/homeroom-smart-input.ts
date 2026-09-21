@@ -11,6 +11,8 @@
  * - 「学科：名单」里的裸姓名 = 该科缺交例外（班主任只记谁没交，默认已交，
  *   沿用老班主任版按作业种类录入的例外口径）；带状态的 token 按状态登记。
  * - 「学科：全交」= 该科无缺交（full 台账）。
+ * - 冒号左侧不含学科词、也非纯种类前缀的行（如「听力第四周：张三」）不建假学科
+ *   批次（防呆）：归入 unmarkedGroups 待定学科组，学科由面板默认学科补齐。
  * - 没有「学科：」前缀的行不走本模块的缺交默认，交回上层沿用既有
  *   parseSmartHomeworkText 语义（裸姓名=已交、动作行按动作），保证
  *   两种输入格式的既有行为互不干扰。
@@ -37,9 +39,20 @@ export interface HomeroomSubjectGroup {
   input: HomeworkInputSpec
 }
 
+/** 待定学科组：冒号左侧不含学科词的行（如「听力第四周：张三」），作业名保留、学科由面板默认学科补。 */
+export interface HomeroomUnmarkedGroup {
+  /** 清理后的作业名（冒号左侧，去首尾分隔符）。 */
+  homeworkType: string
+  /** 原始整行，供报错文案引用。 */
+  line: string
+  input: HomeworkInputSpec
+}
+
 export interface HomeroomSmartSplit {
   /** 带学科前缀或由按人多科展开的行组（每科一批次）。 */
   subjectGroups: HomeroomSubjectGroup[]
+  /** 左侧无学科词、又非纯种类前缀的行组：绝不自建假学科批次（防呆），学科由面板默认学科补齐。 */
+  unmarkedGroups: HomeroomUnmarkedGroup[]
   /** 无学科前缀且未归入学科的原始行（沿用既有 parseSmartHomeworkText 语义处理）。 */
   plainLines: string[]
   error: string | null
@@ -233,12 +246,13 @@ function parseStudentSubjectItem(token: string): ParsedSubjectItem | null {
  * 1. 支持「学科：姓名 姓名」与「学科：全交」；
  * 2. 支持「姓名：学科作业，学科作业，学科」（如「秦一：语文作文，数学」）；
  * 3. 支持请假、迟到、忘带等状态描述，并自动按学科反转归组；
- * 4. 无学科前缀且未归入学科的行原样返回 plainLines。
+ * 4. 左侧无学科词的行组（如「听力第四周：张三」）返回 unmarkedGroups（待定学科），
+ *    纯种类前缀（如「练习册：张三」）与其他未识别行原样返回 plainLines。
  */
 export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   if (lines.length === 0) {
-    return { subjectGroups: [], plainLines: [], error: '请输入作业收交内容' }
+    return { subjectGroups: [], unmarkedGroups: [], plainLines: [], error: '请输入作业收交内容' }
   }
 
   interface SubjectBucket {
@@ -254,6 +268,8 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
 
   const grouped = new Map<string, SubjectBucket>()
   const plainLines: string[] = []
+  // 待定学科组：按作业名归并（同作业名多行合并为一组），学科由面板默认学科补
+  const unmarkedBuckets = new Map<string, { homeworkType: string; line: string; full: boolean; rows: HomeworkRowInput[] }>()
   const globalStudentExceptions: Array<{ name: string; status: HomeworkRowInput['status']; attendance?: string | null; evaluation?: string | null }> = []
   const attendanceRows: HomeworkRowInput[] = []
 
@@ -397,31 +413,54 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
 
         if (leftLooksSubject && (right === '' || rightIsFull || nameResidue(right) !== '')) {
           const canonical = matchCanonicalSubject(left)
-          // 若包含标准学科词，规范为标准名（如"语文作文"归入"语文"），否则保留原学科名
-          const finalSubject = canonical ?? left
-          let homeworkType: string | null = null
-          if (canonical) {
-            const residue = left.replace(canonical, '').replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim()
-            if (residue) homeworkType = residue
-          }
-          const key = makeGroupKey(finalSubject, homeworkType)
-          const bucket = grouped.get(key) ?? {
-            subject: finalSubject,
-            homeworkType,
-            full: false,
-            rows: [],
-          }
-          if (rightIsFull) {
-            bucket.full = true
-          } else if (right !== '') {
-            for (const token of rightTokens) {
-              for (const name of expandNameToken(token)) {
-                const row = tokenToRow(name)
-                if (row) bucket.rows.push(row)
+          if (canonical === null) {
+            // 防呆（真实事故）：「听力第四周：张三」这类左侧不含学科词的行，绝不把 left
+            // 整个当成学科自建假学科批次（污染按学科归并的预警/画像/相关性）。改为待定
+            // 学科组：作业名保留（清理方式与学科分支的 residue 一致），右侧名单语义与
+            // 学科分支完全一致（全交/裸姓名=缺交/带状态 token），学科由面板默认学科补。
+            const unmarkedType = left.replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim() || left
+            const bucket = unmarkedBuckets.get(unmarkedType) ?? {
+              homeworkType: unmarkedType,
+              line,
+              full: false,
+              rows: [],
+            }
+            if (rightIsFull) {
+              bucket.full = true
+            } else if (right !== '') {
+              for (const token of rightTokens) {
+                for (const name of expandNameToken(token)) {
+                  const row = tokenToRow(name)
+                  if (row) bucket.rows.push(row)
+                }
               }
             }
+            unmarkedBuckets.set(unmarkedType, bucket)
+          } else {
+            // 若包含标准学科词，规范为标准名（如"语文作文"归入"语文"）
+            const finalSubject = canonical
+            let homeworkType: string | null = null
+            const residue = left.replace(canonical, '').replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim()
+            if (residue) homeworkType = residue
+            const key = makeGroupKey(finalSubject, homeworkType)
+            const bucket = grouped.get(key) ?? {
+              subject: finalSubject,
+              homeworkType,
+              full: false,
+              rows: [],
+            }
+            if (rightIsFull) {
+              bucket.full = true
+            } else if (right !== '') {
+              for (const token of rightTokens) {
+                for (const name of expandNameToken(token)) {
+                  const row = tokenToRow(name)
+                  if (row) bucket.rows.push(row)
+                }
+              }
+            }
+            grouped.set(key, bucket)
           }
-          grouped.set(key, bucket)
           handled = true
         }
       }
@@ -494,5 +533,23 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
     }
     // 既无名单也无全交的空学科行（如「物理：」）直接丢弃
   }
-  return { subjectGroups, plainLines, error: null }
+
+  const unmarkedGroups: HomeroomUnmarkedGroup[] = []
+  for (const bucket of unmarkedBuckets.values()) {
+    if (bucket.full) {
+      unmarkedGroups.push({
+        homeworkType: bucket.homeworkType,
+        line: bucket.line,
+        input: { kind: 'full', exceptions: bucket.rows },
+      })
+    } else if (bucket.rows.length > 0) {
+      unmarkedGroups.push({
+        homeworkType: bucket.homeworkType,
+        line: bucket.line,
+        input: { kind: 'detailed', rows: bucket.rows },
+      })
+    }
+    // 既无名单也无全交的空行（如「听力第四周：」）直接丢弃
+  }
+  return { subjectGroups, unmarkedGroups, plainLines, error: null }
 }

@@ -1780,6 +1780,9 @@ function DayGroupOverview({
             const isAtt = a.subject === '考勤'
             const abnormalCount = a.attendance_ids?.length ?? (a.attendance_count || a.missing)
             const hasAbnormal = isAtt && abnormalCount > 0
+            // 请假人数与出勤异常分开呈现：有人请假时当天不再是「全勤」
+            const excusedCount = isAtt ? (a.excused_ids?.length ?? a.excused) : 0
+            const hasExcused = isAtt && excusedCount > 0
             const cardLabel = isAtt ? '📋 出勤登记' : subjectWithContent(a.subject, a.homework_type)
 
             return (
@@ -1802,7 +1805,9 @@ function DayGroupOverview({
                     : isAtt
                       ? hasAbnormal
                         ? 'border-amber-200 bg-amber-50/40 hover:border-amber-300'
-                        : 'border-slate-200 bg-white hover:border-slate-300'
+                        : hasExcused
+                          ? 'border-blue-200 bg-blue-50/40 hover:border-blue-300'
+                          : 'border-slate-200 bg-white hover:border-slate-300'
                       : a.missing > 0
                         ? 'border-rose-200 bg-rose-50/40 hover:border-rose-300'
                         : 'border-slate-200 bg-white hover:border-slate-300'
@@ -1851,7 +1856,15 @@ function DayGroupOverview({
                       '批次已撤销'
                     ) : isAtt ? (
                       hasAbnormal ? (
-                        <>出勤异常 <span className="font-semibold text-amber-600">{abnormalCount}</span> · 正常出勤 {a.submitted}</>
+                        <>
+                          出勤异常 <span className="font-semibold text-amber-600">{abnormalCount}</span>
+                          {hasExcused ? (
+                            <> · 请假 <span className="font-semibold text-blue-600">{excusedCount}</span></>
+                          ) : null}
+                          {' · '}正常出勤 {a.submitted}
+                        </>
+                      ) : hasExcused ? (
+                        <><span className="font-semibold text-blue-600">请假 {excusedCount}</span> · 正常出勤 {a.submitted}</>
                       ) : (
                         <span className="font-medium text-emerald-600">全勤 · 正常出勤 {a.submitted}</span>
                       )
@@ -2156,6 +2169,9 @@ function DayGroupRow({
               // 出勤异常数以例外学生 ID 去重为准：涵盖迟到/没来及未注明原因的缺勤
               const abnormalCount = a.attendance_ids?.length ?? (a.attendance_count || a.missing)
               const hasAbnormal = isAtt && abnormalCount > 0
+              // 请假人数与出勤异常分开呈现：有人请假时当天不再是「全勤」
+              const excusedCount = isAtt ? (a.excused_ids?.length ?? a.excused) : 0
+              const hasExcused = isAtt && excusedCount > 0
 
               return (
                 <button
@@ -2163,14 +2179,20 @@ function DayGroupRow({
                   type="button"
                   title={
                     isAtt
-                      ? hasAbnormal
-                        ? `出勤异常 ${abnormalCount}`
-                        : '全勤'
+                      ? hasAbnormal && hasExcused
+                        ? `出勤异常 ${abnormalCount} · 请假 ${excusedCount}`
+                        : hasAbnormal
+                          ? `出勤异常 ${abnormalCount}`
+                          : hasExcused
+                            ? `请假 ${excusedCount}`
+                            : '全勤'
                       : `点击查看/编辑「${subjectWithContent(a.subject, a.homework_type)}」作业`
                   }
                   onClick={(e) => {
                     e.stopPropagation()
-                    onSelectTab(a.assignment_id, isAtt ? 'attendance' : a.missing > 0 ? 'missing' : 'all')
+                    onSelectTab(a.assignment_id, isAtt
+                      ? (hasAbnormal ? 'attendance' : hasExcused ? 'excused' : 'all')
+                      : (a.missing > 0 ? 'missing' : 'all'))
                   }}
                   className={cn(
                     'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs transition-colors cursor-pointer border',
@@ -2179,7 +2201,9 @@ function DayGroupRow({
                       : isAtt
                         ? hasAbnormal
                           ? 'bg-amber-50 text-amber-700 border-amber-200 font-medium hover:bg-amber-100'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                          : hasExcused
+                            ? 'bg-blue-50 text-blue-700 border-blue-200 font-medium hover:bg-blue-100'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
                         : a.missing > 0
                           ? 'bg-rose-50 text-rose-700 border-rose-200 font-medium hover:bg-rose-100'
                           : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
@@ -2190,7 +2214,11 @@ function DayGroupRow({
                     <span className="text-[10px] text-slate-400">已撤销</span>
                   ) : isAtt ? (
                     hasAbnormal ? (
-                      <span className="text-[11px] font-semibold text-amber-600">{`出勤异常 ${abnormalCount}`}</span>
+                      <span className="text-[11px] font-semibold text-amber-600">
+                        {`出勤异常 ${abnormalCount}${hasExcused ? ` · 请假 ${excusedCount}` : ''}`}
+                      </span>
+                    ) : hasExcused ? (
+                      <span className="text-[11px] font-semibold text-blue-600">请假 {excusedCount}</span>
                     ) : (
                       <span className="text-[10px] text-emerald-600 font-medium">全勤</span>
                     )

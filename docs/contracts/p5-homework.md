@@ -82,6 +82,9 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - `GET /api/v1/homework/warnings?mode=&class_id|teaching_class_id=&min_missing=2&subject?` →
   `{students: [{person_id, name, missing_count, current_streak, streak_basis: 'events'|'legacy_events',
   recent_missing: [{assigned_date, subject, homework_type}]}]}`。
+- 连续缺交按天口径（与画像端点 streaks 同一实现）：同日多批次先合并成天（任一缺交该天计 1、
+  已交清零停止、请假/出勤异常跳过）；班主任按学科分线取最大，教学按天单线（不分作业种类，
+  `streak_homework_type` 恒 None）。
 - 仅缺交历史批次（无分母）的学生照常列出缺交计数（事件维度），但 submission_rate 类指标不计算。
 - 日维度统计与事件维度预警分别标注口径（响应字段 `basis`）。
 

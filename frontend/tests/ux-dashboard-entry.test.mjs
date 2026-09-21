@@ -346,3 +346,30 @@ test('作业跟进重构：展开区无学科页签，透视卡片直达缺交�
   assert.match(table, /忘带: \{f\.subject\}/, '学生须渲染琥珀色「忘带: 学科」标签')
   assert.match(apiV1, /forgot_ids\?: number\[\] \| null/, '列表项类型须补 forgot_ids 字段')
 })
+
+test('考勤胶囊与出勤登记卡片区分请假：有人请假不再误标「全勤」', () => {
+  const table = readFileSync(new URL('../src/components/homework/AssignmentTable.tsx', import.meta.url), 'utf8')
+
+  // 0. 请假人数与出勤异常同源：主行胶囊与透视卡片两处均以 excused_ids 去重为准
+  const excusedDefs = table.match(/const excusedCount = isAtt \? \(a\.excused_ids\?\.length \?\? a\.excused\) : 0/g) || []
+  assert.ok(excusedDefs.length >= 2, `按日合并主行与全科透视卡片均须单独计算考勤批次的请假人数（当前 ${excusedDefs.length} 处）`)
+
+  // 1. 主行胶囊四态：仅请假时蓝色 pill（与筛选请假色系一致）且后缀为「请假 N」，绝不显示「全勤」
+  assert.match(table, /hasExcused\s*\?\s*'bg-blue-50 text-blue-700 border-blue-200 font-medium hover:bg-blue-100'/, '仅请假考勤胶囊须用蓝色系（bg-blue-50）与筛选请假色一致')
+  assert.match(table, /text-\[11px\] font-semibold text-blue-600">请假 \{excusedCount\}<\/span>/, '仅请假考勤胶囊须显示「请假 N」蓝色后缀')
+
+  // 2. 混合态：琥珀 pill 不变，后缀合并为「出勤异常 N · 请假 M」
+  assert.match(table, /出勤异常 \$\{abnormalCount\}\$\{hasExcused \? ` · 请假 \$\{excusedCount\}` : ''\}/, '混合态胶囊后缀须为「出勤异常 N · 请假 M」')
+  assert.match(table, /出勤异常 \$\{abnormalCount\} · 请假 \$\{excusedCount\}/, '混合态胶囊 title 须同步「出勤异常 N · 请假 M」')
+
+  // 3. 点击直达：excused-only 传 'excused'、混合传 'attendance'、真全勤传 'all'（学科分支不变）
+  assert.match(table, /hasAbnormal \? 'attendance' : hasExcused \? 'excused' : 'all'/, '考勤胶囊点击须按 异常→请假→全勤 优先级直达对应筛选')
+
+  // 4. 全科透视「📋 出勤登记」卡片同口径四态：仅请假时蓝色边框，底部小字含蓝色「请假 N」
+  assert.match(table, /hasExcused\s*\?\s*'border-blue-200 bg-blue-50\/40 hover:border-blue-300'/, '仅请假出勤卡片须用蓝色边框（border-blue-200 bg-blue-50/40）')
+  assert.match(table, /出勤异常 <span className="font-semibold text-amber-600">\{abnormalCount\}<\/span>\s*\{hasExcused \? \(\s*<> · 请假 <span className="font-semibold text-blue-600">\{excusedCount\}<\/span>/, '混合态卡片小字须为「出勤异常 N · 请假 M · 正常出勤」且请假数字用蓝色')
+  assert.match(table, /font-semibold text-blue-600">请假 \{excusedCount\}<\/span> · 正常出勤 \{a\.submitted\}/, '仅请假卡片小字须为「请假 N · 正常出勤 M」')
+
+  // 5. 卡片点击行为不变：出勤卡片点击仍统一 missing 筛选（此前有意设计）
+  assert.match(table, /onClick=\{\(\) => onSelectSubject\(a\.assignment_id, 'missing'\)\}/, '透视卡片点击仍统一直达缺交筛选，不随请假态改变')
+})

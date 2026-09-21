@@ -339,6 +339,96 @@ test('纯作业种类前缀（无学科）仍走默认学科兜底：练习册/�
   assert.deepEqual([...split.plainLines], ['练习册：秦三，秦二十一', '订正：秦二十七'], '两行应原样落入 plainLines 由手填默认学科接收')
 })
 
+test('防呆：左侧无学科词（如「听力第四周：张三」）绝不自建假学科，归入待定学科组 unmarkedGroups', () => {
+  // 真实事故输入：冒号左侧无任何学科词，旧解析器把「听力第四周」整个当成学科建批次
+  const split = loadSplitter()('听力第四周：张三，李四')
+  assert.equal(split.error, null)
+  assert.equal(split.subjectGroups.length, 0, '绝无 subject=「听力第四周」的假学科批次')
+  assert.equal(split.unmarkedGroups.length, 1, '应归入待定学科组')
+  const unmarked = split.unmarkedGroups[0]
+  assert.equal(unmarked.homeworkType, '听力第四周', '作业名保留')
+  assert.equal(unmarked.line, '听力第四周：张三，李四', '原始整行供报错文案引用')
+  assert.equal(unmarked.input.kind, 'detailed')
+  // 右侧名单语义与学科分支完全一致：裸姓名=缺交
+  assert.deepEqual(
+    [...unmarked.input.rows.map((r) => r.name_or_alias)],
+    ['张三', '李四'],
+    '右侧名单按既有学科行语义解析',
+  )
+  assert.ok(unmarked.input.rows.every((r) => r.status === 'missing'), '裸姓名应为缺交')
+  assert.ok(unmarked.input.rows.every((r) => r.evaluation === undefined), '作业名绝不写入 evaluation')
+
+  // 全交右侧语义同样保留：full 台账零例外
+  const fullSplit = loadSplitter()('听力第四周：全交')
+  assert.equal(fullSplit.subjectGroups.length, 0)
+  assert.equal(fullSplit.unmarkedGroups.length, 1)
+  assert.equal(fullSplit.unmarkedGroups[0].input.kind, 'full')
+  assert.deepEqual([...fullSplit.unmarkedGroups[0].input.exceptions], [])
+})
+
+test('防呆：待定学科组按作业名归并——同作业名多行合并一组，不同作业名分列', () => {
+  const merged = loadSplitter()('听力第四周：张三\n听力第四周：李四')
+  assert.equal(merged.subjectGroups.length, 0)
+  assert.equal(merged.unmarkedGroups.length, 1, '同作业名两行应合并为 1 组')
+  assert.deepEqual(
+    [...merged.unmarkedGroups[0].input.rows.map((r) => r.name_or_alias)],
+    ['张三', '李四'],
+    '合并后名单两人齐全',
+  )
+
+  const two = loadSplitter()('听力第四周：张三\n听力第五周：李四')
+  assert.equal(two.subjectGroups.length, 0)
+  assert.equal(two.unmarkedGroups.length, 2, '不同作业名应分列 2 组')
+  assert.deepEqual(
+    [...two.unmarkedGroups.map((g) => g.homeworkType)],
+    ['听力第四周', '听力第五周'],
+  )
+})
+
+test('防呆回归：含学科词的「英语听力第一周：张三」照旧出学科批次，不进待定学科组', () => {
+  const split = loadSplitter()('英语听力第一周：张三')
+  assert.equal(split.error, null)
+  assert.equal(split.plainLines.length, 0)
+  assert.equal(split.unmarkedGroups.length, 0, '含学科词的行不得进入待定学科组')
+  assert.equal(split.subjectGroups.length, 1)
+  const eng = split.subjectGroups[0]
+  assert.equal(eng.subject, '英语')
+  assert.equal(eng.homeworkType, '听力第一周', '剥离学科名后残留作为作业名')
+  assert.equal(eng.input.rows[0].name_or_alias, '张三')
+  assert.equal(eng.input.rows[0].status, 'missing')
+})
+
+test('防呆回归：纯作业种类前缀仍走 plainLines，不进待定学科组', () => {
+  const split = loadSplitter()('练习册：张三')
+  assert.equal(split.subjectGroups.length, 0)
+  assert.equal(split.unmarkedGroups.length, 0, 'TYPE_KEYWORD 纯种类前缀照旧落 plainLines')
+  assert.deepEqual([...split.plainLines], ['练习册：张三'])
+})
+
+test('录入面板：buildGroups 处理待定学科组——默认学科空报「未标注学科」，填了按默认学科+作业名成组', () => {
+  // 面板层沿用本文件源断言风格（组件含 JSX/hooks 不入沙箱）
+  assert.match(
+    entryPanel,
+    /homeroomSplit\.unmarkedGroups\.length > 0/,
+    'buildGroups 须处理待定学科组',
+  )
+  assert.match(
+    entryPanel,
+    /存在未标注学科的行（如「\$\{homeroomSplit\.unmarkedGroups\[0\]\.line\}」）/,
+    '默认学科为空时报错文案须引用待定学科的原始行，与 plainLines 同款句式',
+  )
+  assert.match(
+    entryPanel,
+    /subject: form\.subject\.trim\(\), homeworkType: g\.homeworkType, input: g\.input/,
+    '填了默认学科则产出「默认学科 + 作业名」批次（如 英语·听力第四周）',
+  )
+  assert.match(
+    entryPanel,
+    /homeroomSplit\?\.unmarkedGroups\.length \?\? 0/,
+    '待定学科行也允许进入预览流程（homeroomSubjectReady），使精准报错可达',
+  )
+})
+
 test('录入面板：多学科合并单卡、一键确认全部、默认学科框', () => {
   assert.match(entryPanel, /splitHomeroomHomeworkText/, '班主任分支须用整段解析器')
   assert.match(entryPanel, /PreviewBatch\[\]/, '预览结果应为批次数组')

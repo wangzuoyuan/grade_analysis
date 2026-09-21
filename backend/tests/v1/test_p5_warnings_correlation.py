@@ -72,8 +72,9 @@ def test_warnings_min_missing_threshold_and_streaks(client, v1_seed):
     assert [s["person_id"] for s in body["students"]] == [v1_seed.jia_h_id]
     jia = body["students"][0]
     assert jia["missing_count"] == 3
-    # 其间其他独立批次没有登记秦甲缺交，按默认已交中断。
-    assert jia["current_streak"] == 1
+    # 按天口径：同日其他批次的默认已交不再打断（同日有缺交该天计 1），
+    # 三天各有缺交 → current=3。
+    assert jia["current_streak"] == 3
     assert jia["streak_basis"] == "events"
 
     relaxed = client.get(
@@ -105,7 +106,8 @@ def test_warnings_subject_filter_separate_domains(client, v1_seed):
     jia_math = next(s for s in math["students"] if s["person_id"] == v1_seed.jia_h_id)
     assert jia_math["missing_count"] == 1
 
-    # 不同学科不得串成连续段；同科其他批次未登记缺交时按已交中断。
+    # 不同学科不得串成连续段；按天口径下物理线三天各有缺交 → current=3
+    # 胜出数学单日线（不同学科各自成线，取最大）。
     grouped = client.get(
         "/api/v1/homework/warnings",
         params={"mode": "homeroom", "class_id": v1_seed.h6_id,
@@ -115,8 +117,8 @@ def test_warnings_subject_filter_separate_domains(client, v1_seed):
     grouped_jia = next(
         s for s in grouped.json()["students"] if s["person_id"] == v1_seed.jia_h_id
     )
-    assert grouped_jia["current_streak"] == 1
-    assert grouped_jia["streak_subject"] == "数学"
+    assert grouped_jia["current_streak"] == 3
+    assert grouped_jia["streak_subject"] == "物理"
     assert grouped_jia["streak_homework_type"] is None
     assert grouped.json()["min_streak"] == 1
 

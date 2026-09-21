@@ -319,6 +319,111 @@ def _streak_status(submission: HomeworkSubmission) -> str:
     return eff
 
 
+# 连续缺交统一按天口径（预警端点与画像端点共用，单一实现）：
+# - 连缺线：班主任 =（域, 班, 学科）；教学 =（域, 班）单线，不再按作业种类分线。
+#   轴 = 该线范围内全部批次（不分种类）的 assigned_date 全集，保持按班分界，
+#   B 班的收交日不得重置 A 班学生的连击。
+# - 天判定：任一行 missing → 该天计 1（同日多种作业缺只算 1 天）；否则任一行
+#   submitted（含合成的默认已交）→ 清零停止；当天只有 attendance/excused → 跳过；
+#   当天该生无任何行：当天批次全部是 legacy（无应交快照）→ 跳过（无法核实），
+#   否则（有新批次）→ 默认已交、清零停止。
+LineKey = Tuple[str, int, Optional[str]]
+
+
+def _day_merged_statuses(
+    rows_by_date: Dict[date, List[str]],
+    day_is_legacy: Dict[date, List[bool]],
+) -> List[str]:
+    """把某条连缺线内该生的逐行状态按 assigned_date 合并成天状态序列
+    （喂给 _streaks_of；跳过的天不出现 = 既不累加也不打断）。"""
+    statuses: List[str] = []
+    for day in sorted(day_is_legacy):
+        rows = rows_by_date.get(day) or []
+        if not rows:
+            if day_is_legacy[day] and all(day_is_legacy[day]):
+                continue  # 当天只有 legacy 批次，无法核实，跳过
+            statuses.append("submitted")  # 有新批次而无例外行 → 默认已交
+            continue
+        if "missing" in rows:
+            statuses.append("missing")
+        elif "submitted" in rows:
+            statuses.append("submitted")
+    return statuses
+
+
+def _streak_line_of(
+    line_events: Sequence[Tuple[HomeworkAssignment, HomeworkSubmission]],
+    line_axis: Sequence[HomeworkAssignment],
+    legacy_ids: Set[int],
+) -> Tuple[int, str, int]:
+    """一条连缺线的按天 (current, basis, longest)。basis 恒 'events'
+    （按天序列走 _streaks_of；legacy 日期轴另有 _legacy_homeroom_streak）。"""
+    rows_by_date: Dict[date, List[str]] = {}
+    for a, s in line_events:
+        rows_by_date.setdefault(a.assigned_date, []).append(_streak_status(s))
+    day_is_legacy: Dict[date, List[bool]] = {}
+    for a in line_axis:
+        day_is_legacy.setdefault(a.assigned_date, []).append(a.id in legacy_ids)
+    statuses = _day_merged_statuses(rows_by_date, day_is_legacy)
+    current, basis, longest = _streaks_of(statuses)
+    return current, basis, longest
+
+
+def _legacy_homeroom_streak(
+    line_events: Sequence[Tuple[HomeworkAssignment, HomeworkSubmission]],
+    line_axis: Sequence[HomeworkAssignment],
+) -> Tuple[int, str]:
+    """旧班主任迁移数据（仅缺交历史、无应交快照）按学科班的日期轴连缺：
+    该生日无缺交（含全交台账日、migration-only 日）即结束连续段，但保留
+    已从最新日数出的连缺值。返回 (current, basis='legacy_events')。"""
+    own_by_date: Dict[date, List[str]] = {}
+    for a, s in line_events:
+        own_by_date.setdefault(a.assigned_date, []).append(_streak_status(s))
+    rows_by_date: Dict[date, List[HomeworkAssignment]] = {}
+    for a in line_axis:
+        rows_by_date.setdefault(a.assigned_date, []).append(a)
+    current = 0
+    for event_date in reversed(sorted(rows_by_date)):
+        statuses = own_by_date.get(event_date, [])
+        if "missing" in statuses:
+            current += 1
+        elif any(status in ("attendance", "excused") for status in statuses):
+            continue
+        else:
+            # 该生日已交（无论新台账全交日还是 migration:h 收交日）→ 连续段
+            # 在此结束，保留已数值、不清零——清零会把「最近一次缺交」也抹掉，
+            # 令整卡连续缺交预警配合 min_streak 过滤后显示为空。
+            break
+    return current, "legacy_events"
+
+
+def _streak_lines_of(
+    mode: str,
+    events: Sequence[Tuple[HomeworkAssignment, HomeworkSubmission]],
+    line_axis_map: Dict[LineKey, List[HomeworkAssignment]],
+    legacy_ids: Set[int],
+) -> List[Tuple[Optional[int], str, int, Optional[str], date, int]]:
+    """某人全部事件逐连缺线计算 (current, basis, longest, 维度, 最后事件日,
+    纯缺交数)。班主任按（域, 班, 学科）分线；教学按（域, 班）单线。
+    homework_warnings 与 homework_student 共用，保证口径一致。"""
+    grouped: Dict[LineKey, List[Tuple[HomeworkAssignment, HomeworkSubmission]]] = {}
+    for a, s in events:
+        dimension = a.subject if mode == "homeroom" else None
+        grouped.setdefault((a.data_domain, a.class_ref_id, dimension), []).append((a, s))
+    lines: List[Tuple[Optional[int], str, int, Optional[str], date, int]] = []
+    for key, line_events in grouped.items():
+        line_axis = line_axis_map.get(key, [])
+        if mode == "homeroom" and any(a.id in legacy_ids for a in line_axis):
+            current, basis = _legacy_homeroom_streak(line_events, line_axis)
+            longest = 0
+        else:
+            current, basis, longest = _streak_line_of(line_events, line_axis, legacy_ids)
+        last_date = max(a.assigned_date for a, _s in line_events)
+        missing_in_line = sum(1 for _a, s in line_events if _is_pure_missing(s))
+        lines.append((current, basis, longest, key[2], last_date, missing_in_line))
+    return lines
+
+
 def _normalized_row_semantics(
     status: str, evaluation: Optional[str], attendance: Optional[str]
 ) -> Tuple[str, Optional[str]]:
@@ -1647,16 +1752,21 @@ def _person_events(
     person_id: int,
     academic_year_id: Optional[int] = None,
     all_history: bool = False,
-) -> List[Tuple[HomeworkAssignment, HomeworkSubmission]]:
-    """该生（读域 person_id）的作业事件（active 批次，assigned_date 升序）。
+) -> Tuple[List[Tuple[HomeworkAssignment, HomeworkSubmission]], Dict[LineKey, List[HomeworkAssignment]]]:
+    """该生（读域 person_id）的作业事件（active 批次，assigned_date 升序）
+    及连缺线批次轴。
 
     - 直读：若显式指定 academic_year_id（且 not all_history）则严格过滤该学年；
       未指定学年或 all_history=True 时查全部学年（H05 跨学年跟人）。
       没有例外行时合成 submitted 事件，使后续全交批次能正确中断连续缺交。
     - 跨域：经共享门取关联班、link.subject 的批次，逐批次过
       _event_time_mapping 事件时点门（G01：作业后入班者看不到入班前
-      批次的记录），person 经映射换算。"""
+      批次的记录），person 经映射换算。
+    - 连缺线轴：与事件同一可见性口径，收齐每条线（班主任 =（域, 班, 学科），
+      教学 =（域, 班））范围内全部 active 批次（含该生无行的默认已交日），
+      供 _streak_lines_of 按天判定使用。"""
     events: List[Tuple[HomeworkAssignment, HomeworkSubmission]] = []
+    line_axis_map: Dict[LineKey, List[HomeworkAssignment]] = {}
     target_ay_id = None if all_history else academic_year_id
     direct_query = db.query(HomeworkAssignment).filter(
         HomeworkAssignment.data_domain == ctx.data_domain,
@@ -1670,6 +1780,7 @@ def _person_events(
     if ctx.mode == "teaching":
         direct_assignments = [a for a in direct_assignments if a.subject == ctx.subject]
     for a in direct_assignments:
+        line_axis_map.setdefault(_line_key_of(ctx.mode, a), []).append(a)
         row = db.query(HomeworkSubmission).filter(
             HomeworkSubmission.assignment_id == a.id,
             HomeworkSubmission.person_id == person_id,
@@ -1704,6 +1815,7 @@ def _person_events(
             mapping = _event_time_mapping(db, link, ctx, a)
             if mapping is None:
                 continue
+            line_axis_map.setdefault(_line_key_of(ctx.mode, a), []).append(a)
             init_id = {v: k for k, v in mapping.items()}.get(person_id)
             if init_id is None:
                 continue
@@ -1719,7 +1831,12 @@ def _person_events(
                 submission_status="submitted",
             )))
     events.sort(key=lambda item: (item[0].assigned_date, item[0].id))
-    return events
+    return events, line_axis_map
+
+
+def _line_key_of(mode: str, a: HomeworkAssignment) -> LineKey:
+    """批次所属连缺线的键：班主任按学科分线，教学按班单线（不分种类）。"""
+    return (a.data_domain, a.class_ref_id, a.subject if mode == "homeroom" else None)
 
 
 @router.get("/homework/students/{person_id}", response_model=HomeworkStudentResponse)
@@ -1735,7 +1852,11 @@ def homework_student(
 ):
     """学生维度事件流 + streaks（画像页消费）。person 不在当前作用域名册
     → 404；无缺交/请假例外的应交批次按已交事件返回。显式指定 academic_year_id 时
-    过滤该学年，未指定或 all_history=True 时返回全部历史学年。"""
+    过滤该学年，未指定或 all_history=True 时返回全部历史学年。
+
+    streaks 与 homework_warnings 完全同一套算法（_streak_lines_of）：
+    班主任按学科分线（按天）取最大 current；教学按天单线（不分作业种类）；
+    longest 取各线最大；basis 取胜出线的 basis。"""
     teacher_id = current_teacher_id(db)
     ctx = _resolve_hw_scope(
         db, teacher_id, mode, academic_year_id, class_id, teaching_class_id
@@ -1744,11 +1865,24 @@ def homework_student(
         raise ResourceOutOfScope(
             "person not in current workspace scope", details={"person_id": person_id}
         )
-    events = _person_events(
+    events, line_axis_map = _person_events(
         db, ctx, person_id, academic_year_id=academic_year_id, all_history=all_history
     )
-    statuses = [_streak_status(s) for a, s in events if a.subject != "考勤"]
-    current, basis, longest = _streaks_of(statuses)
+    # 考勤批次不参与连缺统计（事件列表照常返回供档案展示）
+    streak_events = [(a, s) for a, s in events if a.subject != "考勤"]
+    legacy_ids = {
+        a.id
+        for axis in line_axis_map.values()
+        for a in axis
+        if not _parse_expected_ids(a.expected_members_json)
+    }
+    lines = _streak_lines_of(ctx.mode, streak_events, line_axis_map, legacy_ids)
+    if lines:
+        winner = max(lines, key=lambda t: (t[0] or 0, t[2], t[4]))
+        current, basis = winner[0], winner[1]
+        longest = max(t[2] for t in lines)
+    else:
+        current, basis, longest = 0, "events", 0
     return HomeworkStudentResponse(
         metadata=_metadata(ctx),
         person_id=person_id,
@@ -1794,11 +1928,13 @@ def homework_warnings(
     current_streak / 最近 5 条缺交。无缺交/请假例外的应交批次按已交，
     因而会中断此前的连续缺交。
 
-    连续口径保持旧业务维度：班主任按学科、教学按作业种类分别计算，
-    不把不同学科/种类的缺交串成一条序列。迁移的仅缺交历史批次没有
-    expected_members 快照时，按旧版保留下来的班级级日期轴计算并返回
-    basis='legacy_events'；该值不等价于完整新批次事件链。本端点不计算
-    submission_rate。
+    连续口径按天（与画像端点共用 _streak_lines_of，单一实现）：同日多批次
+    先合并成天——任一缺交该天计 1、默认/显式已交清零停止、请假与出勤异常
+    跳过；班主任按（域, 班, 学科）分线取最大 current，教学按（域, 班）单线
+    （不分作业种类，streak_homework_type 恒 None）。迁移的仅缺交历史批次
+    没有 expected_members 快照时，班主任线按旧版保留下来的班级级日期轴
+    计算并返回 basis='legacy_events'；教学线按天轴统一处理（当天仅 legacy
+    批次无法核实 → 跳过）。本端点不计算 submission_rate。
     """
     if min_missing < 1:
         raise InvalidScopeParam(
@@ -1853,16 +1989,16 @@ def homework_warnings(
         for s, rid in projected:
             events_by_person.setdefault(rid, []).append((a, s))
 
-    # 维度分组与快照解析预计算（原实现把两件事放在「每学生 × 每维度」循环里，
-    # 对同一 expected_members_json 反复 json.loads，班额大时是数万次重复解析）：
-    # 每个 (域, 班, 维度) 的批次行只收集一次，每份快照只解析一次。
-    dimension_rows_map: Dict[Tuple[str, int, str], List[Tuple[HomeworkAssignment, list]]] = {}
-    expected_ids_empty: Dict[int, bool] = {}
-    for a, projected in visible_rows:
-        dim = a.subject if mode == "homeroom" else a.homework_type
-        dimension_rows_map.setdefault((a.data_domain, a.class_ref_id, dim), []).append((a, projected))
-        if a.id not in expected_ids_empty:
-            expected_ids_empty[a.id] = not _parse_expected_ids(a.expected_members_json)
+    # 连缺线批次轴与快照解析预计算（原实现把两件事放在「每学生 × 每维度」
+    # 循环里，对同一 expected_members_json 反复 json.loads，班额大时是数万次
+    # 重复解析）：每条连缺线的批次轴只收集一次，legacy 快照只解析一次。
+    # 连缺线：班主任 =（域, 班, 学科）；教学 =（域, 班）按天单线，不分作业种类。
+    line_axis_map: Dict[LineKey, List[HomeworkAssignment]] = {}
+    legacy_assignment_ids: Set[int] = set()
+    for a, _projected in visible_rows:
+        line_axis_map.setdefault(_line_key_of(mode, a), []).append(a)
+        if not _parse_expected_ids(a.expected_members_json):
+            legacy_assignment_ids.add(a.id)
 
     students: List[HomeworkWarningStudent] = []
     # ADR-023：本域作用域班级中被排除统计的学生不进入任何预警清单
@@ -1993,90 +2129,23 @@ def homework_warnings(
         if len(missing_events) < min_missing:
             continue
 
-        # H 的旧版连续预警按学科分组；T 的旧版按作业种类分组。
-        grouped: Dict[Tuple[str, int, str], List[Tuple[HomeworkAssignment, HomeworkSubmission]]] = {}
-        for a, s in evs:
-            dimension = a.subject if mode == "homeroom" else a.homework_type
-            # “全部所教班”只汇总结果，连续轴仍以实际归属班为边界；否则 B 班
-            # 某日的事件会错误中断 A 班学生的连击。
-            grouped.setdefault((a.data_domain, a.class_ref_id, dimension), []).append((a, s))
+        # 连续缺交按天口径（与画像端点共用 _streak_lines_of，单一实现）：
+        # 班主任按（域, 班, 学科）分线取最大 current；教学按（域, 班）单线
+        # （不分作业种类）。“全部所教班”只汇总结果，连续轴仍以实际归属班为
+        # 边界；否则 B 班某日的事件会错误中断 A 班学生的连击。
+        lines = _streak_lines_of(mode, evs, line_axis_map, legacy_assignment_ids)
 
-        streak_candidates: List[Tuple[Optional[int], str, str, date, int]] = []
-        for (group_domain, group_class_id, dimension), group_events in grouped.items():
-            dimension_rows = dimension_rows_map.get(
-                (group_domain, group_class_id, dimension), []
-            )
-            legacy = any(expected_ids_empty.get(a.id, False) for a, _ in dimension_rows)
-
-            if legacy:
-                # 旧 H：某学科班内任一收交日期构成时间轴；该生当日没有
-                # missing 即打断。旧 T：某种类班内有人 missing 的日期，再并入
-                # 本人显式 submitted/excused/missing 日期。这里只使用已投影业务
-                # 事实，不直接读取 source_archive_record；若归档中的全交台账尚未
-                # 投影，basis='legacy_events' 明示这是“已保留时间轴”口径。
-                own_by_date: Dict[date, List[str]] = {}
-                for a, s in group_events:
-                    own_by_date.setdefault(a.assigned_date, []).append(_streak_status(s))
-                if mode == "homeroom":
-                    # 旧 H 的原始模型只记录“谁缺交”，所以同班同学科任一缺交日
-                    # 都是全班收交时间轴；该生日无缺交即代表本次连击结束。
-                    rows_by_date: Dict[date, List[HomeworkAssignment]] = {}
-                    for dimension_assignment, _projected in dimension_rows:
-                        rows_by_date.setdefault(
-                            dimension_assignment.assigned_date, []
-                        ).append(dimension_assignment)
-                    axis = sorted(rows_by_date)
-                else:
-                    class_missing_dates = {
-                        a.assigned_date
-                        for a, projected in dimension_rows
-                        if any(s.submission_status == "missing" for s, _rid in projected)
-                    }
-                    axis = sorted(class_missing_dates | set(own_by_date))
-                current = 0
-                basis = "legacy_events"
-                for event_date in reversed(axis):
-                    statuses = own_by_date.get(event_date, [])
-                    if "missing" in statuses:
-                        current += 1
-                    elif any(status in ("attendance", "excused") for status in statuses):
-                        continue
-                    else:
-                        if mode != "homeroom":
-                            break
-                        day_assignments = rows_by_date.get(event_date, [])
-                        if day_assignments and all(
-                            item.batch_token.startswith("migration:h:")
-                            for item in day_assignments
-                        ):
-                            break
-                        # 该生日已交 → 连续段在此结束，保留已从最新日数出的
-                        # 连缺值（与 _streaks_of 的 submitted 打断语义一致；
-                        # 不得清零——清零会把「最近一次缺交」也抹掉，令整卡
-                        # 连续缺交预警配合 min_streak 过滤后显示为空）。
-                        break
-            else:
-                statuses = [_streak_status(s) for _a, s in group_events]
-                current, basis, _longest = _streaks_of(statuses)
-            last_assignment = group_events[-1][0]
-            missing_in_group = sum(
-                1 for _a, s in group_events if _is_pure_missing(s)
-            )
-            streak_candidates.append(
-                (current, basis, dimension, last_assignment.assigned_date, missing_in_group)
-            )
-
-        # 优先展示最长的当前连续段。
-        reliable = [item for item in streak_candidates if item[0] is not None]
+        # 优先展示最长的当前连续段（平手依次看最后事件日、纯缺交数、维度名）。
+        reliable = [item for item in lines if item[0] is not None]
         if reliable:
-            current, basis, streak_dimension, _last_date, _count = max(
+            current, basis, _longest, streak_dimension, _last_date, _count = max(
                 reliable,
-                key=lambda item: (item[0] or 0, item[3], item[4], item[2]),
+                key=lambda item: (item[0] or 0, item[4], item[5], item[3] or ""),
             )
         else:
-            current, basis, streak_dimension, _last_date, _count = max(
-                streak_candidates,
-                key=lambda item: (item[3], item[4], item[2]),
+            current, basis, _longest, streak_dimension, _last_date, _count = max(
+                lines,
+                key=lambda item: (item[4], item[5], item[3] or ""),
             )
         if min_streak is not None and (current is None or current < min_streak):
             continue
@@ -2101,7 +2170,8 @@ def homework_warnings(
                 current_streak=current,
                 streak_basis=basis,
                 streak_subject=streak_dimension if mode == "homeroom" else None,
-                streak_homework_type=streak_dimension if mode == "teaching" else None,
+                # 教学改为按天单线后不再按作业种类标注维度
+                streak_homework_type=None,
                 recent_missing=recent,
             )
         )

@@ -298,7 +298,7 @@ export default function HomeworkCard({
                   <span className="font-medium text-slate-800">
                     {streaks!.current_missing_streak}
                   </span>{' '}
-                  次（最长 {streaks!.longest_missing_streak} 次）
+                  次
                 </>
               )}
             </div>
