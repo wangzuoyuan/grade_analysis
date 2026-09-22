@@ -5,6 +5,7 @@ import { DatabaseBackup, Download } from 'lucide-react'
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { MoreToggle } from '@/components/ui/more-toggle'
 
 interface BackupItem {
   filename: string
@@ -22,6 +23,7 @@ export default function BackupCard() {
   const [backups, setBackups] = useState<BackupItem[]>([])
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(false)
 
   const load = useCallback(async () => {
     const data = await fetch('/api/backups').then((r) => r.json())
@@ -91,7 +93,7 @@ export default function BackupCard() {
           <p className="text-sm text-slate-400">暂无备份。点「立即备份」生成一份。</p>
         ) : (
           <div className="space-y-1.5">
-            {backups.slice(0, 6).map((b) => (
+            {(expanded ? backups : backups.slice(0, 6)).map((b) => (
               <div
                 key={b.filename}
                 className="flex items-center justify-between rounded-md border border-slate-100 px-3 py-1.5 text-sm"
@@ -120,6 +122,12 @@ export default function BackupCard() {
                 </div>
               </div>
             ))}
+            <MoreToggle
+              hiddenCount={backups.length - 6}
+              unit="份备份"
+              expanded={expanded}
+              onToggle={() => setExpanded((v) => !v)}
+            />
           </div>
         )}
         <p className="text-xs text-slate-400">

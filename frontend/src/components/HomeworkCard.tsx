@@ -12,6 +12,7 @@ import {
 } from '@/lib/api-v1'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { MoreToggle } from '@/components/ui/more-toggle'
 import { homeworkStatusLabel } from '@/components/homework/shared'
 
 function isAttendanceAnomaly(e: HomeworkStudentEvent): boolean {
@@ -103,6 +104,7 @@ export default function HomeworkCard({
 }) {
   const [allHistory, setAllHistory] = useState(false)
   const [showAllEvents, setShowAllEvents] = useState(false)
+  const [eventsExpanded, setEventsExpanded] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [data, setData] = useState<HomeworkStudentResponse | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -404,7 +406,7 @@ export default function HomeworkCard({
                     </tr>
                   </thead>
                   <tbody>
-                    {displayEvents.slice(0, 30).map((r, i) => {
+                    {(eventsExpanded ? displayEvents : displayEvents.slice(0, 30)).map((r, i) => {
                       const isMissing = r.status === 'missing' && r.subject !== '考勤'
                       const isExcused = r.status === 'excused'
                       const isAttendance = isAttendanceAnomaly(r)
@@ -451,6 +453,12 @@ export default function HomeworkCard({
                 </table>
               </div>
             )}
+            <MoreToggle
+              hiddenCount={displayEvents.length - 30}
+              unit="条记录"
+              expanded={eventsExpanded}
+              onToggle={() => setEventsExpanded((v) => !v)}
+            />
           </details>
         )}
 

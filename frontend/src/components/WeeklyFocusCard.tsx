@@ -14,6 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { MoreToggle } from '@/components/ui/more-toggle'
 import { Skeleton } from '@/components/ui/skeleton'
 
 interface WeeklyFocus extends HomeroomWeeklyFocusResponse {}
@@ -46,6 +47,7 @@ export default function WeeklyFocusCard({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [showAllStudents, setShowAllStudents] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -146,7 +148,7 @@ export default function WeeklyFocusCard({
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {students.slice(0, 8).map((student) => (
+            {(showAllStudents ? students : students.slice(0, 8)).map((student) => (
               <div
                 key={student.student_id}
                 className="flex flex-col justify-center gap-1.5 py-2.5 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
@@ -171,11 +173,13 @@ export default function WeeklyFocusCard({
                 </div>
               </div>
             ))}
-            {students.length > 8 && (
-              <p className="pt-3 text-center text-xs text-slate-400">
-                另有 {students.length - 8} 人需关注
-              </p>
-            )}
+            <MoreToggle
+              hiddenCount={students.length - 8}
+              unit="人"
+              suffix="需关注"
+              expanded={showAllStudents}
+              onToggle={() => setShowAllStudents((v) => !v)}
+            />
           </div>
         )}
       </CardContent>

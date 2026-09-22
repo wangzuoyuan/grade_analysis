@@ -26,6 +26,7 @@ import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace, WorkspaceSwitcher } from '@/lib/workspace'
 import { analysisScopeQuery } from '@/components/scores/shared'
 import { Card, CardContent } from '@/components/ui/card'
+import { MoreToggle } from '@/components/ui/more-toggle'
 
 const DASH = '—'
 
@@ -61,6 +62,7 @@ export default function StudentReportPage() {
   const [missingCount, setMissingCount] = useState<number | null>(null)
   const [excusedCount, setExcusedCount] = useState<number>(0)
   const [notes, setNotes] = useState<StudentNote[]>([])
+  const [notesExpanded, setNotesExpanded] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const reqRef = useRef(0)
@@ -277,14 +279,22 @@ export default function StudentReportPage() {
       <section>
         <h2 className="mb-2 text-base font-semibold">三、近期沟通摘要</h2>
         {notes.length > 0 ? (
-          <ul className="space-y-1.5 text-sm">
-            {notes.slice(0, 4).map((n) => (
-              <li key={n.id} className="text-slate-700">
-                <span className="text-slate-400">{n.date}</span>{' '}
-                <span className="font-medium">[{n.category}]</span> {n.content}
-              </li>
-            ))}
-          </ul>
+          <>
+            <ul className="space-y-1.5 text-sm">
+              {(notesExpanded ? notes : notes.slice(0, 4)).map((n) => (
+                <li key={n.id} className="text-slate-700">
+                  <span className="text-slate-400">{n.date}</span>{' '}
+                  <span className="font-medium">[{n.category}]</span> {n.content}
+                </li>
+              ))}
+            </ul>
+            <MoreToggle
+              hiddenCount={notes.length - 4}
+              unit="条记录"
+              expanded={notesExpanded}
+              onToggle={() => setNotesExpanded((v) => !v)}
+            />
+          </>
         ) : (
           <p className="text-sm text-slate-400">暂无记录</p>
         )}

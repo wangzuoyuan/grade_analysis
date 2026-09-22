@@ -5,7 +5,8 @@
  *
  * GET /api/v1/homeroom/students/{person_id}/report：基本信息（person.aliases
  * 学号史/当期座号）+ 各科各场成绩 + 总分 + 档案摘要（notes_summary={count,recent}，
- * 本域可见档案，默认域隔离）。类型逐字段对齐后端响应（G05）。
+ * 本域可见档案，默认域隔离）。摘要另经 listStudentNotes('homeroom') 拉全量档案
+ * 折叠展示（失败回退 recent）。类型逐字段对齐后端响应（G05）。
  * 本页即班主任打印页，档案编辑区固定 mode='homeroom'（N01：只读写本域）。
  * 打印复用全局 @media print 基线（侧栏/顶栏/按钮/档案编辑区隐藏）；
  * 缺考显示「—」不转 0。越界（resource_out_of_scope 404）与加载失败进错误态，不白屏。
@@ -28,6 +29,7 @@ import { apiErrorMessage, isApiErrorCode } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
+import { MoreToggle } from '@/components/ui/more-toggle'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -277,11 +279,20 @@ export default function StudentReportPrintPage() {
   const [report, setReport] = useState<StudentReportResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [nonce, setNonce] = useState(0)
+  // 摘要用全量档案（后端 notes_summary.recent 只给最近 5 条）；null=加载中/失败，回退 recent
+  const [allNotes, setAllNotes] = useState<StudentNote[] | null>(null)
+  const [summaryExpanded, setSummaryExpanded] = useState(false)
 
   const load = useCallback(() => {
     if (personId == null || personId === '') return
     setReport(null)
     setError(null)
+    setAllNotes(null)
+    // 全量档案独立拉取：失败降级回退 notes_summary.recent，不阻塞报告主体；
+    // 随 nonce（档案增删）/generation（作用域刷新）/personId 一起重拉。域隔离：恒 'homeroom'。
+    listStudentNotes('homeroom', personId)
+      .then((r) => setAllNotes(r.notes ?? []))
+      .catch(() => setAllNotes(null))
     getStudentReport(personId)
       .then(setReport)
       .catch((err: unknown) => {
@@ -301,6 +312,9 @@ export default function StudentReportPrintPage() {
   // G05 修正：别名史在 person.aliases；档案摘要是 {count, recent} 对象
   const aliases = report?.person.aliases ?? []
   const recentNotes = report?.notes_summary.recent ?? []
+  // 摘要数据源：全量档案优先；加载中/失败回退后端 recent（最近 5 条，口径不变）
+  const summaryNotes: Array<{ id: number; date: string; category: string; content: string }> =
+    allNotes ?? recentNotes
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 bg-white p-6 text-slate-900 print:p-0">
@@ -369,20 +383,29 @@ export default function StudentReportPrintPage() {
             <ScoreTable key={t.total_type} title={`总分（${t.total_type}）`} rows={t.exams} />
           ))}
 
-          {/* 档案摘要（最近 5 条；域隔离红线：仅本域可见档案进入摘要） */}
+          {/* 档案摘要（全量拉取，收起显示最近 5 条与后端 recent 口径一致；
+              域隔离红线：仅 homeroom 域可见档案进入摘要） */}
           <section>
             <h2 className="mb-2 text-base font-semibold">近期档案摘要</h2>
-            {recentNotes.length === 0 ? (
+            {summaryNotes.length === 0 ? (
               <p className="text-sm text-slate-500">暂无档案记录</p>
             ) : (
-              <ul className="space-y-1.5 text-sm">
-                {recentNotes.map((n) => (
-                  <li key={String(n.id)} className="text-slate-700">
-                    <span className="text-slate-400">{fmtDate(n.date)}</span>{' '}
-                    <span className="font-medium">[{n.category}]</span> {n.content}
-                  </li>
-                ))}
-              </ul>
+              <>
+                <ul className="space-y-1.5 text-sm">
+                  {(summaryExpanded ? summaryNotes : summaryNotes.slice(0, 5)).map((n) => (
+                    <li key={String(n.id)} className="text-slate-700">
+                      <span className="text-slate-400">{fmtDate(n.date)}</span>{' '}
+                      <span className="font-medium">[{n.category}]</span> {n.content}
+                    </li>
+                  ))}
+                </ul>
+                <MoreToggle
+                  hiddenCount={summaryNotes.length - 5}
+                  unit="条记录"
+                  expanded={summaryExpanded}
+                  onToggle={() => setSummaryExpanded((v) => !v)}
+                />
+              </>
             )}
           </section>
 

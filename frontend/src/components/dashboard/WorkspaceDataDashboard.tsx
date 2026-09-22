@@ -54,6 +54,7 @@ import WeeklyFocusCard from '@/components/WeeklyFocusCard'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { MoreToggle } from '@/components/ui/more-toggle'
 import { Skeleton } from '@/components/ui/skeleton'
 
 interface TrendDatum {
@@ -200,6 +201,11 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
   const [nonce, setNonce] = useState(0)
   const [currentSemester, setCurrentSemester] = useState<CurrentSemester | null>(null)
   const requestRef = useRef(0)
+  // 列表折叠状态：空态视图与主视图是两个条件分支，状态统一提升到本组件顶层（hooks 规则），
+  // 收起默认条数由渲染层控制（重点关注 6/3 条、需关注学生 8 人），数据层保留全量。
+  const [warningsEmptyExpanded, setWarningsEmptyExpanded] = useState(false)
+  const [warningsExpanded, setWarningsExpanded] = useState(false)
+  const [focusExpanded, setFocusExpanded] = useState(false)
 
   useEffect(() => {
     homeworkCurrentSemester()
@@ -265,7 +271,8 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
         label: group.label.slice(0, 7),
         assignments: group.assignments,
       }))
-      const warningData = (warning.students ?? []).slice(0, 6).map((student) => ({
+      // 数据层保留全量；渲染层按「重点关注卡」的默认条数折叠展示
+      const warningData = (warning.students ?? []).map((student) => ({
         id: String(student.person_id),
         name: student.name ?? '未命名学生',
         kind: 'missing' as const,
@@ -327,7 +334,8 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
 
       let focus: FocusStudent[] = []
       if (mode === 'homeroom') {
-        focus = (latestFocus?.students ?? []).slice(0, 8).map((student) => ({
+        // 数据层保留全量；渲染层统一按前 8 人折叠展示
+        focus = (latestFocus?.students ?? []).map((student) => ({
           id: String(student.person_id),
           name: student.name ?? '未命名学生',
           value: student.xueji_rank == null ? '—' : `第 ${String(student.xueji_rank)} 名`,
@@ -337,7 +345,6 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
         focus = (latestStudents as TeachingStudentsResponse).students
           .slice()
           .sort((a, b) => (a.score == null ? -1 : b.score == null ? 1 : a.score - b.score))
-          .slice(0, 6)
           .map((student) => ({
             id: String(student.person_id),
             name: student.name ?? '未命名学生',
@@ -446,7 +453,8 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
               <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button></CardHeader>
             <CardContent>
               {homeworkAssignmentCount > 0 ? <div className="h-32"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.homework}><CartesianGrid strokeDasharray="3 3" stroke="#eef4f8" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10, fill: '#7890a8' }} /><YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#7890a8' }} /><Tooltip /><Bar dataKey="assignments" name="作业批次" fill="#35b9e9" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div> : <div className="flex h-20 items-center justify-center text-sm text-slate-400">暂无可统计的作业批次</div>}
-              <ul className="mt-3 space-y-2">{data.warnings.slice(0, 6).map((student) => <li key={student.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs"><span className="font-medium text-amber-900">{student.name}</span><span className="text-amber-700">{student.summary}</span></li>)}</ul>
+              <ul className="mt-3 space-y-2">{(warningsEmptyExpanded ? data.warnings : data.warnings.slice(0, 6)).map((student) => <li key={student.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs"><span className="font-medium text-amber-900">{student.name}</span><span className="text-amber-700">{student.summary}</span></li>)}</ul>
+              <MoreToggle hiddenCount={data.warnings.length - 6} unit="条" expanded={warningsEmptyExpanded} onToggle={() => setWarningsEmptyExpanded((v) => !v)} />
               {data.warnings.length === 0 ? <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><CheckCircle2 className="h-4 w-4" />当前筛选下暂无重点作业预警</div> : null}
             </CardContent>
           </Card>
@@ -517,14 +525,15 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
               <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>需关注学生</CardTitle><CardDescription>{mode === 'homeroom' ? '进退步、波动、名次段、偏科与稳定优秀综合标注' : '根据最近考试排序，供教师进一步核查'}</CardDescription></div><Button asChild variant="ghost" size="sm"><Link href={scoreHref}>查看成绩 <ArrowRight className="h-4 w-4" /></Link></Button></CardHeader>
-              <CardContent><ul className="divide-y divide-slate-100">{data.focus.map((student) => <li key={student.id} className="flex items-center gap-3 py-2.5"><span className="grid h-8 w-8 place-items-center rounded-full bg-slate-50 text-brand-600"><UserRoundSearch className="h-4 w-4" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-slate-700">{student.name}</p><p className="text-xs text-slate-400">{student.reason}</p></div><span className="text-sm font-semibold tabular-nums text-slate-700">{student.value}</span></li>)}</ul>{data.focus.length === 0 ? <p className="py-8 text-center text-sm text-slate-400">暂无可分析的学生成绩</p> : null}</CardContent>
+              <CardContent><ul className="divide-y divide-slate-100">{(focusExpanded ? data.focus : data.focus.slice(0, 8)).map((student) => <li key={student.id} className="flex items-center gap-3 py-2.5"><span className="grid h-8 w-8 place-items-center rounded-full bg-slate-50 text-brand-600"><UserRoundSearch className="h-4 w-4" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-slate-700">{student.name}</p><p className="text-xs text-slate-400">{student.reason}</p></div><span className="text-sm font-semibold tabular-nums text-slate-700">{student.value}</span></li>)}</ul><MoreToggle hiddenCount={data.focus.length - 8} unit="人" expanded={focusExpanded} onToggle={() => setFocusExpanded((v) => !v)} />{data.focus.length === 0 ? <p className="py-8 text-center text-sm text-slate-400">暂无可分析的学生成绩</p> : null}</CardContent>
             </Card>
 
             <Card>
               <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button></CardHeader>
               <CardContent>
                 {homeworkAssignmentCount > 0 ? <div className="h-32"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.homework}><CartesianGrid strokeDasharray="3 3" stroke="#eef4f8" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10, fill: '#7890a8' }} /><YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#7890a8' }} /><Tooltip /><Bar dataKey="assignments" name="作业批次" fill="#35b9e9" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div> : <div className="flex h-24 flex-col items-center justify-center text-center"><p className="text-sm text-slate-500">暂无可统计的作业批次</p><p className="mt-1 text-xs text-slate-400">可从作业看板开始录入。</p></div>}
-                <ul className="mt-3 space-y-2">{data.warnings.slice(0, 3).map((student) => <li key={student.id} className="flex items-center justify-between rounded-lg bg-amber-50 px-3 py-2 text-xs"><span className="font-medium text-amber-900">{student.name}</span><span className="text-amber-700">{student.summary}</span></li>)}</ul>
+                <ul className="mt-3 space-y-2">{(warningsExpanded ? data.warnings : data.warnings.slice(0, 3)).map((student) => <li key={student.id} className="flex items-center justify-between rounded-lg bg-amber-50 px-3 py-2 text-xs"><span className="font-medium text-amber-900">{student.name}</span><span className="text-amber-700">{student.summary}</span></li>)}</ul>
+                <MoreToggle hiddenCount={data.warnings.length - 3} unit="条" expanded={warningsExpanded} onToggle={() => setWarningsExpanded((v) => !v)} />
                 {data.warnings.length === 0 ? <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><CheckCircle2 className="h-4 w-4" />当前筛选下暂无重点作业预警</div> : null}
               </CardContent>
             </Card>
