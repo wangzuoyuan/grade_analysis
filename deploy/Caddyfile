@@ -5,7 +5,10 @@
 	encode gzip
 
 	handle /api/* {
-		reverse_proxy backend:8000
+		reverse_proxy backend:8000 {
+			# DSM terminates HTTPS; preserve its scheme for Secure session cookies.
+			header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+		}
 	}
 
 	handle {
