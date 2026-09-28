@@ -8,6 +8,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+backend.env
 data/
 backups/
 .test-data/
