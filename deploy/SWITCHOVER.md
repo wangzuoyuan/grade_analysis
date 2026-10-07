@@ -86,3 +86,29 @@
 | 8 | 本地健康 + 公网访问 | 绕过代理直连健康端点；公网域名入口鉴权 |
 | 9 | 回退预演 | 实际恢复一份合并版备份并验证查询（非纸面） |
 | 10 | 旧站只读留存 | 快照、最终切换点、下线决策待用户验收后定 |
+
+## 6. Vercel 前端与分支后端候选
+
+Vercel 项目从 GitHub 构建 `frontend/`，`main` 为 Production，其他分支/PR 为 Preview。
+Production 的 `BACKEND_INTERNAL_URL` 指向正式持久化后端；Preview 必须单独配置
+与分支接口/数据库版本一致的候选后端地址。SQLite、备份和上传文件保留在持久化主机，
+不得提交数据库或将其放入 Vercel 的临时文件系统。
+
+分支后端使用 `deploy/docker-compose.preview.yml`，项目名 `grade_analysis_preview`，
+镜像名 `grade-analysis-preview-backend`，与正式 Compose 相互独立。启动前显式设置
+`PREVIEW_IMAGE_TAG`、`PREVIEW_ENV_FILE`、`PREVIEW_DATA_DIR`、`PREVIEW_BACKUP_DIR`；
+数据与备份路径必须是独立候选目录，禁止填正式挂载目录。凭据文件必须含独立
+`APP_PASSWORD` 和 `SESSION_SECRET`，不入 Git。正式库使用 SQLite Backup API 取得
+一致性副本，完整性及外键校验后在副本上迁移，不直接复制正在写入的数据库文件。
+
+```bash
+docker compose -f deploy/docker-compose.preview.yml config --quiet
+docker compose -f deploy/docker-compose.preview.yml build backend
+docker compose -f deploy/docker-compose.preview.yml up -d
+curl http://127.0.0.1:8082/api/health
+```
+
+候选缺省仅监听 `127.0.0.1:8082`，`PUBLIC_HOST` 为空，所有业务请求均需登录。
+公网独立反代与 TLS 就绪、未登录业务 API 返回 401 后，再把该地址设置到对应
+Vercel Preview 分支。主线前端部署不代表 NAS 后端自动发布；合并含后端变更时，
+仍需备份、迁移验证、后端发布及回退检查。PR 测试继续在 GitHub 的独立合成数据上运行。
