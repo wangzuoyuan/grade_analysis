@@ -652,8 +652,18 @@ def compare_classes(class_nums: list[int], exam_id: int, metric: str) -> list[di
 
 
 def focus_list(exam_id: int, category: Optional[str] = None) -> list[dict[str, Any]]:
-    """重点关注名单。"""
-    from app.analysis.config import SUBJECT_WEAKNESS_PCT_DIFF, get_band_config
+    """重点关注名单。
+
+    P1-B5 收编：名次解析、段位与偏科判定全部委托 app.analysis.definitions
+    共享口径——名次不可得 → None（不落段），不再按 999999 哨兵把缺名次学生
+    误入薄弱段；xueji_rank 可为 null、排序置末，与旧 /api/focus-list 的
+    P0-A1 修法一致。返回结构与 issue 文案保持不变。"""
+    from app.analysis.config import get_band_config
+    from app.analysis.definitions import (
+        band_issues,
+        resolve_year_rank,
+        subject_weakness_subjects,
+    )
     from app.db.models import SubjectScore, TotalScore
     from app.db.models import get_db
 
@@ -665,28 +675,31 @@ def focus_list(exam_id: int, category: Optional[str] = None) -> list[dict[str, A
     ).all()
     rows = []
     for total in totals:
-        rank = total.xueji_rank or total.grade_rank or 999999
+        # 共享口径：学籍名次优先、其次年级名次；皆缺 → None（绝不冒充最弱名次）
+        rank = resolve_year_rank(total.xueji_rank, total.grade_rank)
         subjects = db.query(SubjectScore).filter(
             SubjectScore.exam_id == exam_id,
             SubjectScore.student_id == total.student_id,
         ).all()
         # 展示名兜底到学号时剥前缀；student_id 字段保持原值供回传查询
         name = next((s.name for s in subjects if s.name), display_sid(total.student_id))
-        issues = []
-        if band_cfg["critical_min"] <= rank <= band_cfg["critical_max"]:
-            issues.append("临界段")
-        if rank >= band_cfg["weak_min"]:
-            issues.append("薄弱段")
-        if total.grade_percentile is not None:
-            for subject in subjects:
-                if subject.grade_percentile is not None and subject.grade_percentile - total.grade_percentile >= SUBJECT_WEAKNESS_PCT_DIFF:
-                    issues.append(f"严重偏科({subject.subject})")
+        # 临界段/薄弱段（用户自定义阈值；名次不可得 → 不落段）
+        issues = band_issues(rank, band_cfg)
+        # 严重偏科（共享口径：单科百分位 − 主三门百分位 ≥ 0.20，任一侧缺失不判）
+        issues.extend(
+            f"严重偏科({subject})"
+            for subject in subject_weakness_subjects(
+                [(s.subject, s.grade_percentile) for s in subjects],
+                total.grade_percentile,
+            )
+        )
         if category:
             issues = [issue for issue in issues if category in issue]
         if issues:
             rows.append({"student_id": total.student_id, "name": name, "xueji_rank": rank, "issues": issues})
     db.close()
-    return sorted(rows, key=lambda row: row["xueji_rank"])[:50]
+    # 按名次排序（名次不可得的排最后）
+    return sorted(rows, key=lambda row: (row["xueji_rank"] is None, row["xueji_rank"] or 0))[:50]
 
 
 def subject_weakness(class_num: int, exam_id: int) -> list[dict[str, Any]]:
@@ -853,6 +866,7 @@ def multi_exam_progress_ranking(
     min_points: int = 2,
 ) -> dict[str, Any]:
     """多场考试合并判断进退步/趋势排行。"""
+    from app.analysis import definitions as defs
     from app.db.models import Exam, SubjectScore, TotalScore
     from app.db.models import get_db
 
@@ -894,13 +908,18 @@ def multi_exam_progress_ranking(
 
     def classify_trend(overall_change: float, step_changes: list[float]) -> str:
         eps = 1e-9
+        # P1-B5 收编：整体进退步方向判定委托共享口径 progress_issue（正数=进步，
+        # |变化| 不过阈值不判）——这里把 eps 作为「可忽略变化」阈值传入；
+        # 相邻步进的计数与「持续/总体」标签组合是本工具的展示语义（无共享对应
+        # 概念），比较保持原样，对外标签不变。
+        overall_issue = defs.progress_issue(overall_change, threshold=eps)
         progress_steps = sum(1 for value in step_changes if value > eps)
         regression_steps = sum(1 for value in step_changes if value < -eps)
-        if abs(overall_change) <= eps:
+        if overall_issue is None:
             if progress_steps and regression_steps:
                 return "波动持平"
             return "基本稳定"
-        if overall_change > 0:
+        if overall_issue == defs.ISSUE_PROGRESS:
             return "持续进步" if progress_steps == len(step_changes) else "总体进步"
         return "持续退步" if regression_steps == len(step_changes) else "总体退步"
 
@@ -1100,6 +1119,7 @@ def band_trend(grade: int, class_num: Optional[int] = None) -> dict[str, Any]:
     """某年级历次考试的高分段/临界段/薄弱段人数趋势。class_num 为空统计全年级。
     分段口径用用户当前自定义的 band_config，改阈值后结果同步变化。"""
     from app.analysis.config import get_band_config
+    from app.analysis.definitions import band_flags, resolve_year_rank
     from app.db.models import Exam, SubjectScore, TotalScore, get_db
 
     db = next(get_db())
@@ -1134,15 +1154,12 @@ def band_trend(grade: int, class_num: Optional[int] = None) -> dict[str, Any]:
             for t in totals:
                 if allowed is not None and t.student_id not in allowed:
                     continue
-                rank = t.xueji_rank or t.grade_rank
-                if rank is None:
-                    continue
-                if 1 <= rank <= cfg["high_score_max"]:
-                    high += 1
-                if cfg["critical_min"] <= rank <= cfg["critical_max"]:
-                    crit += 1
-                if rank >= cfg["weak_min"]:
-                    weak += 1
+                # P1-B5 收编：名次解析 + 段位判定走共享口径（缺名次不落段、不计数，
+                # 绝不把名次阈值当分数比较）
+                flags = band_flags(resolve_year_rank(t.xueji_rank, t.grade_rank), cfg)
+                high += flags["high_score"]
+                crit += flags["critical"]
+                weak += flags["weak"]
             series.append({
                 "exam_name": exam.name,
                 "exam_date": exam.exam_date,
@@ -1171,6 +1188,7 @@ def custom_rank_band_trend(
     """按用户临时指定的排名区间统计历次考试人数变化。"""
     from datetime import date
 
+    from app.analysis.definitions import resolve_year_rank
     from app.db.models import Exam, SubjectScore, TotalScore, get_db
 
     def normalize_date(value: Optional[str], *, end: bool = False) -> Optional[date]:
@@ -1239,7 +1257,8 @@ def custom_rank_band_trend(
             for total in totals:
                 if allowed is not None and total.student_id not in allowed:
                     continue
-                rank = total.xueji_rank or total.grade_rank
+                # P1-B5 收编：名次解析走共享口径（学籍名次优先、非正数视为缺失）
+                rank = resolve_year_rank(total.xueji_rank, total.grade_rank)
                 if rank is not None:
                     ranks.append(rank)
 

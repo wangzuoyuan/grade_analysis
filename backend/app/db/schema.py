@@ -33,7 +33,7 @@ _ALEMBIC_INI = os.path.join(_BACKEND_DIR, "alembic.ini")
 # 升级，绝不允许；落后时已 head 库退化为读迁移目录（有目录的环境行为仍
 # 正确，无目录环境会响亮失败而非静默错升级）。因此新增迁移必须同步更新
 # 本常量，由 tests/v1/test_p7_deploy.py 的常量一致性回归兜底。
-ALEMBIC_HEAD = "0016"
+ALEMBIC_HEAD = "0017"
 
 # head 形态抽查表（分属 0003/0005 两个建表迁移）：仅用于判定"库里有业务表
 # 却没有 alembic_version 表"的历史遗留库是否恰好处于 head 形态——缺任何一张

@@ -1,103 +1,31 @@
+"""旧版 /api 排名指标实现（/rank-metrics、/rank-range、/rank-frequency）。
+
+P0-A1 起所有概念判定（指标选项、分箱、班内名次）一律委托
+app.analysis.definitions 的共享实现；本模块只负责旧库（SubjectScore/
+TotalScore/Exam）取数与旧响应组装，保证与新 /api/v1 路径同一概念输出
+同一数值。
+
+名次语义（v2.1/P0-A1）：总分类指标只用真实学籍/年级名次（xueji_rank/
+grade_rank）；单科没有真实年级名次时名次不可得——绝不按「百分位 × 人数」
+推算名次（历史实现 _percentile_to_rank 已删除，见
+docs/diagnosis-roadmap/p0-definitions.md §名次区间）。
+"""
+
 from __future__ import annotations
 
-import math
 from collections import Counter, defaultdict
 from typing import Any, Optional
 
-
-BASE_SUBJECTS = ["语文", "数学", "英语"]
-ELECTIVE_SUBJECTS = ["物理", "化学", "生物", "政治", "历史", "地理"]
-ALL_SUBJECTS = BASE_SUBJECTS + ELECTIVE_SUBJECTS
-PERCENTILE_BINS = [
-    ("p0_20", "前20%", 0, 0.2),
-    ("p20_40", "20%-40%", 0.2, 0.4),
-    ("p40_60", "40%-60%", 0.4, 0.6),
-    ("p60_80", "60%-80%", 0.6, 0.8),
-    ("p80_100", "后20%", 0.8, 1.0),
-]
-GRADE_SCORE_VALUES = [70, 67, 64, 61, 58, 55, 52, 49, 46, 43, 40]
-GRADE_SCORE_SEPARATOR_AFTER = {67, 58, 49, 43}
-GRADE_SCORE_BINS = [
-    (f"g{score}", f"{score}分", score, score in GRADE_SCORE_SEPARATOR_AFTER)
-    for score in GRADE_SCORE_VALUES
-]
+from app.analysis import definitions as defs
 
 
 def rank_metric_options(grade: int, mode: str = "frequency") -> list[dict[str, str]]:
-    options: list[dict[str, str]] = []
-    if grade == 1:
-        options.extend(
-            {"value": f"subject:{subject}", "label": subject, "kind": "subject_percentile"}
-            for subject in ALL_SUBJECTS
-        )
-        options.extend(
-            {"value": f"total:{total_type}", "label": f"{total_type}总分", "kind": "total_rank"}
-            for total_type in ["主三门", "五门"]
-        )
-        return options
-
-    options.extend(
-        {"value": f"subject:{subject}", "label": subject, "kind": "subject_percentile"}
-        for subject in BASE_SUBJECTS
-    )
-    if mode == "frequency":
-        options.extend(
-            {"value": f"subject_grade:{subject}", "label": f"{subject}等级分", "kind": "subject_grade_score"}
-            for subject in ELECTIVE_SUBJECTS
-        )
-    options.extend(
-        {"value": f"total:{total_type}", "label": f"{total_type}总分", "kind": "total_rank"}
-        for total_type in ["主三门", "3+3"]
-    )
-    return options
+    """排名指标选项（共享定义委托，新 /api/v1 同一口径）。"""
+    return defs.metric_options(grade, mode)
 
 
 def _metric_meta(grade: int, metric: str, mode: str) -> dict[str, str]:
-    for option in rank_metric_options(grade, mode):
-        if option["value"] == metric:
-            source, key = metric.split(":", 1)
-            return {**option, "source": source, "key": key}
-    raise ValueError("该年级不支持此排名指标")
-
-
-def _normalize_percentile(value: Optional[float]) -> Optional[float]:
-    if value is None:
-        return None
-    number = float(value)
-    if number > 1:
-        number = number / 100
-    return max(0, min(number, 1))
-
-
-def _percentile_bin(value: Optional[float]) -> Optional[str]:
-    pct = _normalize_percentile(value)
-    if pct is None:
-        return None
-    for key, _, lower, upper in PERCENTILE_BINS:
-        if pct <= upper and (pct > lower or lower == 0):
-            return key
-    return PERCENTILE_BINS[-1][0]
-
-
-def _grade_score_bin(value: Optional[float]) -> Optional[str]:
-    if value is None:
-        return None
-    score = int(round(float(value)))
-    if score in GRADE_SCORE_VALUES:
-        return f"g{score}"
-    return None
-
-
-def _rank_bin(rank: Optional[int]) -> Optional[str]:
-    if rank is None or rank < 1:
-        return None
-    start = ((int(rank) - 1) // 40) * 40 + 1
-    return f"r{start}_{start + 39}"
-
-
-def _rank_bin_label(key: str) -> str:
-    start, end = key.removeprefix("r").split("_")
-    return f"{start}-{end}名次数"
+    return defs.metric_meta(grade, metric, mode)
 
 
 def _parse_exam_ids(exam_ids: Optional[str | list[int]]) -> list[int]:
@@ -131,6 +59,7 @@ def _profiles_for_exams(db, exam_ids: list[int]) -> dict[tuple[int, str], dict[s
 
 
 def _ranked_class_scores(rows: list[Any], value_attr: str, profiles: dict[tuple[int, str], dict[str, Any]]) -> dict[tuple[int, str], int]:
+    """班内名次：共享定义 min_ranks（同分同名次，NULL 不参与）。"""
     grouped: dict[tuple[int, int], list[tuple[str, float]]] = defaultdict(list)
     for row in rows:
         value = getattr(row, value_attr)
@@ -144,37 +73,12 @@ def _ranked_class_scores(rows: list[Any], value_attr: str, profiles: dict[tuple[
 
     ranks: dict[tuple[int, str], int] = {}
     for (exam_id, _class_num), items in grouped.items():
-        values = [value for _, value in items]
-        for student_id, value in items:
-            ranks[(exam_id, student_id)] = sum(1 for peer in values if peer > value) + 1
+        class_ranks = defs.min_ranks([(student_id, value) for student_id, value in items])
+        for student_id, _value in items:
+            rank = class_ranks.get(student_id)
+            if rank is not None:
+                ranks[(exam_id, student_id)] = rank
     return ranks
-
-
-def _cohort_sizes(db, exam_ids: list[int]) -> dict[int, int]:
-    from app.db.models import TotalScore
-
-    result: dict[int, int] = {}
-    rows = (
-        db.query(TotalScore)
-        .filter(TotalScore.exam_id.in_(exam_ids), TotalScore.total_type == "主三门")
-        .all()
-    )
-    grouped: dict[int, list[int]] = defaultdict(list)
-    for row in rows:
-        rank = row.xueji_rank or row.grade_rank
-        if rank is not None:
-            grouped[row.exam_id].append(rank)
-    for exam_id, ranks in grouped.items():
-        if ranks:
-            result[exam_id] = max(ranks)
-    return result
-
-
-def _percentile_to_rank(percentile: Optional[float], cohort_size: Optional[int]) -> Optional[int]:
-    pct = _normalize_percentile(percentile)
-    if pct is None or not cohort_size:
-        return None
-    return max(1, int(math.ceil(pct * cohort_size)))
 
 
 def rank_range_filter(
@@ -184,6 +88,11 @@ def rank_range_filter(
     rank_max: int,
     class_num: Optional[int] = None,
 ) -> dict[str, Any]:
+    """单场考试按指标与年级名次区间筛选学生。
+
+    名次语义：只用真实名次。总分类取 TotalScore.xueji_rank/grade_rank；
+    单科旧成绩库（SubjectScore）没有年级名次列，真实名次不可得 → 该科
+    名单为空并在 metric_note 标注（绝不按百分位推算名次）。"""
     from app.db.models import Exam, SessionLocal, SubjectScore, TotalScore
 
     db = SessionLocal()
@@ -211,7 +120,8 @@ def rank_range_filter(
                 profile = profiles.get((row.exam_id, row.student_id), {})
                 if class_num is not None and profile.get("class_num") != class_num:
                     continue
-                year_rank = row.xueji_rank or row.grade_rank
+                # 真实名次：学籍名次优先，其次年级名次；皆缺 → 名次不可得
+                year_rank = defs.resolve_year_rank(row.xueji_rank, row.grade_rank)
                 if year_rank is None or not (rank_min <= year_rank <= rank_max):
                     continue
                 rows.append(
@@ -231,12 +141,15 @@ def rank_range_filter(
                 .all()
             )
             class_ranks = _ranked_class_scores(subject_rows, "raw_score", profiles)
-            cohort_size = _cohort_sizes(db, [exam_id]).get(exam_id) or len(subject_rows)
             for row in subject_rows:
                 profile = profiles.get((row.exam_id, row.student_id), {})
                 if class_num is not None and profile.get("class_num") != class_num:
                     continue
-                year_rank = _percentile_to_rank(row.grade_percentile, cohort_size)
+                # 单科仅当来源提供真实年级名次时才可筛（旧库无该列，恒为 None）；
+                # 名次不可得的学生不进结果，百分位仍可在排名频次里查。
+                year_rank = defs.resolve_year_rank(
+                    getattr(row, "xueji_rank", None), getattr(row, "grade_rank", None)
+                )
                 if year_rank is None or not (rank_min <= year_rank <= rank_max):
                     continue
                 rows.append(
@@ -260,7 +173,10 @@ def rank_range_filter(
             "rank_max": rank_max,
             "class_num": class_num,
             "rows": rows,
-            "metric_note": "总分按已有学籍/年级排名筛选；单科按年级百分位换算年级排名后筛选。",
+            "metric_note": (
+                "只按真实学籍/年级名次筛选；名次不可得的学生不进名单"
+                "（不按百分位推算名次），可靠百分位见排名频次的百分位分箱。"
+            ),
         }
     finally:
         db.close()
@@ -304,8 +220,8 @@ def rank_frequency_stats(
                 profile = profiles.get((row.exam_id, row.student_id), {})
                 if class_num is not None and profile.get("class_num") != class_num:
                     continue
-                rank = row.xueji_rank or row.grade_rank
-                bin_key = _rank_bin(rank)
+                rank = defs.resolve_year_rank(row.xueji_rank, row.grade_rank)
+                bin_key = defs.rank_bin(rank)
                 if not bin_key:
                     continue
                 rank_bin_keys.add(bin_key)
@@ -324,7 +240,10 @@ def rank_frequency_stats(
                 rank_bin_keys,
                 key=lambda key: int(key.split("_")[0].removeprefix("r")),
             )
-            bins = [{"key": key, "label": _rank_bin_label(key)} for key in sorted_rank_bins]
+            bins = [
+                {"key": key, "label": f"{key.split('_')[0][1:]}-{key.split('_')[1]}名次数"}
+                for key in sorted_rank_bins
+            ]
         elif meta["kind"] == "subject_grade_score":
             source_rows = (
                 db.query(SubjectScore)
@@ -332,14 +251,14 @@ def rank_frequency_stats(
                 .all()
             )
             bins = [
-                {"key": key, "label": label, "separator_after": separator_after}
-                for key, label, _score, separator_after in GRADE_SCORE_BINS
+                {"key": f"g{score}", "label": f"{score}分", "separator_after": score in defs.GRADE_SCORE_SEPARATOR_AFTER}
+                for score in defs.GRADE_SCORE_VALUES
             ]
             for row in source_rows:
                 profile = profiles.get((row.exam_id, row.student_id), {})
                 if class_num is not None and profile.get("class_num") != class_num:
                     continue
-                bin_key = _grade_score_bin(row.grade_score)
+                bin_key = defs.grade_score_bin(row.grade_score)
                 if not bin_key:
                     continue
                 entry = student_rows.setdefault(
@@ -359,12 +278,13 @@ def rank_frequency_stats(
                 .filter(SubjectScore.exam_id.in_(selected_ids), SubjectScore.subject == meta["key"])
                 .all()
             )
-            bins = [{"key": key, "label": label} for key, label, _, _ in PERCENTILE_BINS]
+            bins = [{"key": key, "label": label} for key, label, _, _ in defs.PERCENTILE_BINS]
             for row in source_rows:
                 profile = profiles.get((row.exam_id, row.student_id), {})
                 if class_num is not None and profile.get("class_num") != class_num:
                     continue
-                bin_key = _percentile_bin(row.grade_percentile)
+                # 百分位缺失（含缺考行）不入任何箱，绝不残留上次百分位
+                bin_key = defs.percentile_bin(row.grade_percentile)
                 if not bin_key:
                     continue
                 entry = student_rows.setdefault(

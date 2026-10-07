@@ -14,6 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { CardFoldToggle, useCardFold } from '@/components/dashboard/card-fold'
 import { MoreToggle } from '@/components/ui/more-toggle'
 import { Skeleton } from '@/components/ui/skeleton'
 
@@ -48,6 +49,8 @@ export default function WeeklyFocusCard({
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [showAllStudents, setShowAllStudents] = useState(false)
+  // 卡片级折叠（本地记忆）；该卡仅班主任工作台使用（端点固定 homeroom）
+  const { folded, toggle } = useCardFold('homeroom:weekly-focus')
 
   useEffect(() => {
     let active = true
@@ -116,10 +119,14 @@ export default function WeeklyFocusCard({
             合并成绩预警、连续缺交与待跟进事项
           </CardDescription>
         </div>
-        {weekLabel ? (
-          <span className="text-xs text-slate-400 tabular-nums">{weekLabel}</span>
-        ) : null}
+        <div className="flex items-center gap-1">
+          {weekLabel ? (
+            <span className="text-xs text-slate-400 tabular-nums">{weekLabel}</span>
+          ) : null}
+          <CardFoldToggle folded={folded} onToggle={toggle} />
+        </div>
       </CardHeader>
+      {folded ? null : (
       <CardContent>
         {loading ? (
           <div className="space-y-2.5 py-1" aria-label="正在加载本周关注">
@@ -183,6 +190,7 @@ export default function WeeklyFocusCard({
           </div>
         )}
       </CardContent>
+      )}
     </Card>
   )
 }

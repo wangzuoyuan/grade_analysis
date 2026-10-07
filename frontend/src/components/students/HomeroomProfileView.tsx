@@ -28,6 +28,7 @@ import {
   NotebookPen,
   Printer,
   Search,
+  Stethoscope,
   User,
   Users,
 } from 'lucide-react'
@@ -74,6 +75,8 @@ import {
 } from '@/components/ui/table'
 import HomeworkCard from '@/components/HomeworkCard'
 import StudentNotes from '@/components/StudentNotes'
+import InterventionCard from '@/components/student/InterventionCard'
+import { DiagnosisCard } from '@/components/student/DiagnosisCard'
 import { cn } from '@/lib/utils'
 
 const DASH = '—'
@@ -210,6 +213,9 @@ export function HomeroomProfileView() {
   )
 
   // 2. 加载选中学生的档案数据
+  // 学年口径与名册/诊断卡同源：优先用户所选学年 scopeQ.academic_year_id（loadRoster
+  // 解析行政班用的同一来源）；未选学年时不传参数，由后端按默认学年解析——否则后端
+  // 取最新学年，历史学年的成绩事实会整页查空（A2 修复）。
   useEffect(() => {
     if (!selectedPersonId) {
       setReport(null)
@@ -219,7 +225,7 @@ export function HomeroomProfileView() {
     setReportLoading(true)
     setReportError(null)
 
-    getStudentReport(Number(selectedPersonId))
+    getStudentReport(Number(selectedPersonId), scopeQ.academic_year_id)
       .then((data) => {
         if (req !== reportReqRef.current) return
         setReport(data)
@@ -231,7 +237,7 @@ export function HomeroomProfileView() {
         setReportError(apiErrorMessage(err))
         setReportLoading(false)
       })
-  }, [selectedPersonId, generation])
+  }, [selectedPersonId, generation, scopeQ.academic_year_id])
 
   // 过滤后的学生列表（按拼音/姓名/学号）
   const filteredStudents = useMemo(() => {
@@ -379,6 +385,14 @@ export function HomeroomProfileView() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {selectedPersonId && (
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/homeroom/students/${encodeURIComponent(selectedPersonId)}/diagnosis-report`} target="_blank">
+                <Stethoscope className="h-4 w-4" aria-hidden="true" />
+                诊断报告
+              </Link>
+            </Button>
+          )}
           {selectedPersonId && (
             <Button variant="outline" size="sm" asChild>
               <Link href={`/homeroom/students/${encodeURIComponent(selectedPersonId)}/report`} target="_blank">
@@ -557,6 +571,12 @@ export function HomeroomProfileView() {
 
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" asChild>
+                  <Link href={`/homeroom/students/${encodeURIComponent(selectedPersonId)}/diagnosis-report`}>
+                    <Stethoscope className="mr-1 h-3.5 w-3.5" />
+                    诊断报告
+                  </Link>
+                </Button>
+                <Button variant="outline" size="sm" asChild>
                   <Link href={`/homeroom/students/${encodeURIComponent(selectedPersonId)}/report`}>
                     <Printer className="mr-1 h-3.5 w-3.5" />
                     一览打印视图
@@ -626,6 +646,13 @@ export function HomeroomProfileView() {
               </CardContent>
             </Card>
           </div>
+
+          {/* P1-B4 诊断卡：主类型+次标签+证据+六类指标摘要（同一数据源：B1/B2 诊断端点） */}
+          <DiagnosisCard
+            mode="homeroom"
+            personId={Number(selectedPersonId)}
+            academicYearId={scopeQ.academic_year_id}
+          />
 
           {/* 总分走势折线图 */}
           {totalTrend.length > 0 && totalTrend.some((t) => t.score != null) && (
@@ -740,6 +767,15 @@ export function HomeroomProfileView() {
 
           {/* 班主任专属成长档案（谈话/家访/沟通管理） */}
           <StudentNotes
+            mode="homeroom"
+            personId={Number(selectedPersonId)}
+            scopeQ={{
+              academic_year_id: scopeQ.academic_year_id,
+            }}
+          />
+
+          {/* P2-C4 干预卡：轻量干预建档/复查对照/关闭（防重复录入提示） */}
+          <InterventionCard
             mode="homeroom"
             personId={Number(selectedPersonId)}
             scopeQ={{

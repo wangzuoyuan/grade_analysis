@@ -1543,10 +1543,19 @@ export interface StudentReportResponse {
   notes_summary: { count: number; recent: StudentReportNote[] }
 }
 
-/** GET /api/v1/homeroom/students/{person_id}/report（越界 → resource_out_of_scope 404）。 */
-export function getStudentReport(personId: PersonId): Promise<StudentReportResponse> {
+/**
+ * GET /api/v1/homeroom/students/{person_id}/report（越界 → resource_out_of_scope 404）。
+ * academicYearId 可选：不传由后端按最新学年解析；传入则拼 academic_year_id，
+ * 供档案页与同页其余请求（名册/诊断卡等）保持同一学年口径，避免历史学年查空。
+ */
+export function getStudentReport(
+  personId: PersonId,
+  academicYearId?: number,
+): Promise<StudentReportResponse> {
   return request<StudentReportResponse>(
-    `${API_V1_BASE}/homeroom/students/${encodeURIComponent(String(personId))}/report`,
+    withQuery(`${API_V1_BASE}/homeroom/students/${encodeURIComponent(String(personId))}/report`, {
+      academic_year_id: academicYearId,
+    }),
   )
 }
 
@@ -1712,6 +1721,27 @@ export interface StudentNote {
   follow_up_done?: number | boolean
   source?: string | null
   created_at?: string | null
+  /* ── P2-C4 干预扩展（全可空；普通/旧档案一律 null） ── */
+  problem?: string | null
+  subject_scope?: string | null
+  measures?: string | null
+  target_metric?: string | null
+  baseline_value?: BaselineValue | null
+  start_date?: string | null
+  review_date?: string | null
+  status?: 'open' | 'done' | 'dismissed' | null
+}
+
+/** 干预基线值+口径（后端 JSON 列；value 为指标数值，unit 见 ReviewContrast）。 */
+export interface BaselineValue {
+  metric?: string
+  value?: number | string | null
+  unit?: string | null
+  exam_name?: string | null
+  exam_date?: string | null
+  captured_as_of?: string | null
+  source?: 'auto' | 'teacher' | string | null
+  [key: string]: unknown
 }
 
 /** 档案作用域查询（班级/学年由后端解析；缺省按当前默认作用域）。 */
@@ -1744,6 +1774,103 @@ export function createNote(
   return request<StudentNote>(
     withQuery(`${API_V1_BASE}/${mode}/students/${encodeURIComponent(String(personId))}/notes`, { ...q }),
     { method: 'POST', body: JSON.stringify(req) },
+  )
+}
+
+/* ── P2-C4 轻量干预（契约 docs/diagnosis-roadmap/p2-contracts.md §5） ── */
+
+/** 干预建档请求：出现任一干预字段即按干预建档（后端 status=open）。 */
+export interface FollowUpCreateRequest {
+  date: string
+  category: string
+  content: string
+  follow_up?: string | null
+  problem?: string | null
+  subject_scope?: string | null
+  measures?: string | null
+  target_metric?: string | null
+  baseline_value?: BaselineValue | null
+  start_date?: string | null
+  review_date?: string | null
+  /** 教师确认知情（同人同科已有未关闭干预时，不带此标记后端 409）。 */
+  force?: boolean
+}
+
+/** POST 干预建档：同人同科未关闭干预 → 409 duplicate_follow_up（body.existing 携带明细）。 */
+export function createFollowUp(
+  mode: WorkspaceMode,
+  personId: PersonId,
+  req: FollowUpCreateRequest,
+  q: NoteScopeQuery = {},
+): Promise<StudentNote> {
+  return request<StudentNote>(
+    withQuery(`${API_V1_BASE}/${mode}/students/${encodeURIComponent(String(personId))}/notes`, { ...q }),
+    { method: 'POST', body: JSON.stringify(req) },
+  )
+}
+
+/** PATCH /api/v1/{mode}/notes/{note_id}（P2-C4：status 关闭路径 + 干预扩展列可编辑）。 */
+export function patchFollowUp(
+  mode: WorkspaceMode,
+  noteId: number,
+  req: {
+    status?: 'open' | 'done' | 'dismissed'
+    problem?: string | null
+    subject_scope?: string | null
+    measures?: string | null
+    target_metric?: string | null
+    baseline_value?: BaselineValue | null
+    start_date?: string | null
+    review_date?: string | null
+  },
+  q: NoteScopeQuery = {},
+): Promise<StudentNote> {
+  return request<StudentNote>(withQuery(`${API_V1_BASE}/${mode}/notes/${encodeURIComponent(String(noteId))}`, { ...q }), {
+    method: 'PATCH',
+    body: JSON.stringify(req),
+  })
+}
+
+/** 复查对照（契约 §5.2）：ready={baseline,latest,change,note}；pending+reason 绝不判定成败。 */
+export interface ReviewContrast {
+  calc_version: string
+  follow_up_id: number
+  person_id: number
+  as_of: string
+  status: 'ready' | 'pending'
+  metric?: string
+  unit?: string
+  baseline_source?: string | null
+  comparable_exams_n?: number
+  review: {
+    start_date: string | null
+    review_date: string | null
+    due: boolean
+    trigger?: 'new_comparable_exam' | 'both'
+  }
+  baseline?: { value: number; unit: string; exam_name: string | null; exam_date: string | null }
+  latest?: { value: number; unit: string; exam_name: string | null; exam_date: string | null }
+  change?: { value: number; smaller_is_better: boolean }
+  reason?: string
+  note?: string
+}
+
+/**
+ * GET /api/v1/{mode}/diagnosis/review-contrast?follow_up_id=
+ * （P2-C4 契约 §5.2，本波口径 p2-v1）：
+ * 到达 review_date 或 start_date 后有新可比考试才返回对照；
+ * 缺考/无可比 → {status:"pending", reason}，绝不自动标成功/失败。
+ */
+export function fetchReviewContrast(
+  mode: WorkspaceMode,
+  followUpId: number,
+  q: NoteScopeQuery = {},
+): Promise<ReviewContrast> {
+  return request<ReviewContrast>(
+    withQuery(`${API_V1_BASE}/${mode}/diagnosis/review-contrast`, {
+      follow_up_id: followUpId,
+      ...q,
+    }),
   )
 }
 
@@ -2066,6 +2193,78 @@ export interface HomeworkCorrelationResponse {
   caveats: string[]
 }
 
+// ────────────────────────── P2-C1 作业×成绩相关性（诊断） ──────────────────────────
+
+export interface DiagnosisCorrelationLayer {
+  key: string
+  label: string
+  /** 该层有成绩（可归段）的学生数。 */
+  eligible_n: number
+  /** 入样本配对数。 */
+  n: number
+  /** 有成绩但因作业分母不可得被排除的人数。 */
+  excluded_no_homework: number
+  /** excluded_no_homework / eligible_n；eligible_n=0 时为 null。 */
+  denominator_unknown_share: number | null
+  /** 不可计算层恒为 null（n<8 / 零方差 / 分母未知占比>50%），绝不编造。 */
+  r: number | null
+  rho: number | null
+  status: 'ok' | 'not_computable'
+  reason: string | null
+}
+
+export interface DiagnosisCorrelationPair {
+  person_id: PersonId
+  name: string | null
+  /** x = 窗口内作业提交率（0..1，例外登记口径）。 */
+  x: number
+  /** y = metric 对应成绩分数（缺考不转 0，缺考者不入样本）。 */
+  y: number
+  /** 该场学校段位（high_score/critical/weak）；名次不可得为 null。 */
+  band: string | null
+}
+
+export interface DiagnosisCorrelationResponse {
+  calc_version: string
+  metadata: ResponseMetadata
+  exam_name: string
+  exam_date: string | null
+  window_days: number
+  /** 窗口起止自然日：[window_start, window_end]（window_end=考试日−1）。 */
+  window_start: string | null
+  window_end: string | null
+  metric: string
+  metric_label: string
+  metric_kind: string
+  /** X 侧作业学科过滤；null = 作用域内全部作业。 */
+  homework_subject: string | null
+  status: 'ok' | 'not_computable'
+  /** exam_date_missing / no_valid_exam_score（结构性不可算）。 */
+  missing_reason: string | null
+  /** 全班层配对数（与 pairs.length 一致）。 */
+  n: number
+  r: number | null
+  rho: number | null
+  /** submit_up_score_up / submit_up_score_down；r 为 null 时为 null。 */
+  direction: string | null
+  pairs: DiagnosisCorrelationPair[]
+  /** all / high_score / critical / weak 四层（teaching 域段位层 band_unavailable）。 */
+  layers: Record<string, DiagnosisCorrelationLayer>
+  sample: {
+    roster_n: number
+    exam_score_n: number
+    paired_n: number
+    excluded_no_exam_score: number
+    excluded_no_homework: number
+    /** 应交快照为空被整批剔除的批次个数。 */
+    excluded_batches_denominator_unknown: number
+    layers: Record<string, Pick<DiagnosisCorrelationLayer, 'eligible_n' | 'n' | 'excluded_no_homework' | 'status' | 'reason'>>
+  }
+  caveats: string[]
+  /** 方向与指标含义解释 + 「相关性不构成因果或提分保证」。 */
+  note: string
+}
+
 export interface HomeworkSemesterEntry {
   /** auto 推导条目无 id（null）：只读展示，不可编辑/设当前。 */
   id: number | null
@@ -2264,6 +2463,27 @@ export function homeworkCorrelation(
   },
 ): Promise<HomeworkCorrelationResponse> {
   return request<HomeworkCorrelationResponse>(withQuery(`${API_V1_BASE}/homework/correlation`, { mode, ...q }))
+}
+
+/** GET /api/v1/{域}/diagnosis/correlation（P2-C1 作业×成绩 Pearson+Spearman 分层相关性；
+ *  考前窗口不含考后作业；note 含「不构成因果或提分保证」）。 */
+export function diagnosisCorrelation(
+  mode: WorkspaceMode,
+  q: HomeworkScopeQuery & {
+    exam_name: string
+    /** 14 | 30（后端 422 白名单）。 */
+    window_days: 14 | 30
+    /** homeroom 缺省 total:主三门（与 AI 工具统一，2026-09-29）；teaching 恒钉任教学科。 */
+    metric?: string
+    /** X 侧作业学科过滤（teaching 恒钉任教学科，可不传）。 */
+    subject?: string
+    homework_type?: string
+  },
+): Promise<DiagnosisCorrelationResponse> {
+  const domain = mode === 'teaching' ? 'teaching' : 'homeroom'
+  return request<DiagnosisCorrelationResponse>(
+    withQuery(`${API_V1_BASE}/${domain}/diagnosis/correlation`, { ...q }),
+  )
 }
 
 /** GET /api/v1/homework/semesters（auto=true 时条目为按学年日期二分的推导值，id=null）。 */

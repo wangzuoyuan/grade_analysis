@@ -41,6 +41,7 @@ import { useWorkspace, WorkspaceSwitcher } from '@/lib/workspace'
 import { analysisScopeQuery } from '@/components/scores/shared'
 import HomeworkCard from '@/components/HomeworkCard'
 import StudentNotes from '@/components/StudentNotes'
+import InterventionCard from '@/components/student/InterventionCard'
 import { cn } from '@/lib/utils'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -343,11 +344,18 @@ export default function StudentPage() {
           返回
         </Link>
         {personId != null && (
-          <Link href={`/student/${personId}/report`}>
-            <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
-              导出家长会一页纸
-            </span>
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href={`/student/${personId}/diagnosis-report`}>
+              <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
+                查看诊断报告
+              </span>
+            </Link>
+            <Link href={`/student/${personId}/report`}>
+              <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
+                导出家长会一页纸
+              </span>
+            </Link>
+          </div>
         )}
       </div>
 
@@ -436,6 +444,11 @@ export default function StudentPage() {
 
       {/* 成长 / 谈话档案 */}
       {personId != null && <StudentNotes mode="teaching" personId={personId} scopeQ={scopeQ} />}
+
+      {/* P2-C4 干预卡（教学域：任教学科口径的干预与复查对照） */}
+      {personId != null && (
+        <InterventionCard mode="teaching" personId={personId} scopeQ={scopeQ} />
+      )}
 
       {/* 单科趋势图 */}
       <Card>

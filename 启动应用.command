@@ -14,6 +14,16 @@ say() { printf '%s\n' "$*"; }
 
 port_busy() { lsof -iTCP:"$1" -sTCP:LISTEN -P -n >/dev/null 2>&1; }
 
+start_service() {
+  # 独立进程会话：关闭启动终端或自动化命令退出后，服务继续运行。
+  "$ROOT/.venv/bin/python" - "$@" <<'PY'
+import subprocess, sys
+with open(sys.argv[2], 'ab') as log:
+    subprocess.Popen(sys.argv[3:], cwd=sys.argv[1], stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+PY
+}
+
 listener_is_project() {
   local port="$1" expected_cwd="$2" pid cwd
   for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN -P -n 2>/dev/null); do
@@ -26,7 +36,7 @@ listener_is_project() {
 # wait_http <url> <最大秒数>；仅 2xx 响应视为就绪
 wait_http() {
   local url="$1" tries="$2" i=0
-  until curl -fs -o /dev/null --max-time 2 "$url"; do
+  until curl --noproxy '*' -fs -o /dev/null --max-time 2 "$url"; do
     i=$((i + 1))
     [ "$i" -ge "$tries" ] && return 1
     sleep 1
@@ -57,10 +67,10 @@ if port_busy 8000; then
     read -r -p "按回车关闭…" _ || true
     exit 1
   fi
-elif (cd "$ROOT/backend" &&
-  EXAM_TRACKER_DIR="$DATA_DIR" \
+elif EXAM_TRACKER_DIR="$DATA_DIR" \
   EXAM_TRACKER_BACKUP_DIR="$BACKUP_DIR" \
-  nohup "$ROOT/.venv/bin/uvicorn" app.main:app --port 8000 >>"$LOG_DIR/backend.log" 2>&1 &); then
+  start_service "$ROOT/backend" "$LOG_DIR/backend.log" \
+    "$ROOT/.venv/bin/uvicorn" app.main:app --port 8000; then
   if wait_http http://127.0.0.1:8000/api/health 30; then
     say "• 后端就绪：http://127.0.0.1:8000"
   else
@@ -83,8 +93,7 @@ if port_busy 3000; then
     read -r -p "按回车关闭…" _ || true
     exit 1
   fi
-elif (cd "$ROOT/frontend" &&
-  nohup npm run dev >>"$LOG_DIR/frontend.log" 2>&1 &); then
+elif start_service "$ROOT/frontend" "$LOG_DIR/frontend.log" npm run dev; then
   if wait_http http://127.0.0.1:3000 60; then
     say "• 前端就绪：http://localhost:3000"
   else

@@ -26,6 +26,7 @@ import {
   type StudentReportResponse,
 } from '@/lib/api-v1'
 import { apiErrorMessage, isApiErrorCode } from '@/components/link/error-text'
+import { analysisScopeQuery } from '@/components/scores/shared'
 import { useWorkspace } from '@/lib/workspace'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -98,9 +99,12 @@ function ScoreTable({
  */
 function NotesPanel({
   personId,
+  academicYearId,
   onChanged,
 }: {
   personId: string
+  /** 与页面其余请求同一学年口径（A2：不传则后端按最新学年解析，历史学年会查空/越界） */
+  academicYearId?: number
   onChanged: () => void
 }) {
   const [notes, setNotes] = useState<StudentNote[] | null>(null)
@@ -116,13 +120,13 @@ function NotesPanel({
   const load = useCallback(() => {
     setNotes(null)
     setLoadError(null)
-    listStudentNotes('homeroom', personId)
+    listStudentNotes('homeroom', personId, { academic_year_id: academicYearId })
       .then((r) => setNotes(r.notes ?? []))
       .catch((err: unknown) => {
         setNotes([])
         setLoadError(apiErrorMessage(err))
       })
-  }, [personId])
+  }, [personId, academicYearId])
 
   useEffect(() => {
     load()
@@ -149,7 +153,7 @@ function NotesPanel({
         category,
         content: content.trim(),
         follow_up: followUp.trim() === '' ? undefined : followUp.trim(),
-      })
+      }, { academic_year_id: academicYearId }) // 写入与读取同一学年口径（历史学年可读也须可写）
       resetForm()
       setNotice('已记录档案')
       load()
@@ -167,7 +171,7 @@ function NotesPanel({
     setFormError(null)
     setNotice(null)
     try {
-      await deleteNote('homeroom', noteId)
+      await deleteNote('homeroom', noteId, { academic_year_id: academicYearId })
       setNotice('已删除档案')
       load()
       onChanged()
@@ -274,7 +278,10 @@ export default function StudentReportPrintPage() {
   const params = useParams<{ id: string }>()
   const personId = Array.isArray(params?.id) ? params?.id[0] : params?.id
   // 世代号：工作台范围刷新（如名册/共享变化）后重拉画像，避免打印到过期数据
-  const { generation } = useWorkspace()
+  const { generation, filter } = useWorkspace()
+  // A2 口径一致：打印页与入口页（学生档案/诊断卡）同一学年来源，未选学年时
+  // 不传参、由后端按默认学年解析（历史学年成绩不因缺省最新学年而查空）
+  const academicYearId = analysisScopeQuery(filter).academic_year_id
 
   const [report, setReport] = useState<StudentReportResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -290,10 +297,10 @@ export default function StudentReportPrintPage() {
     setAllNotes(null)
     // 全量档案独立拉取：失败降级回退 notes_summary.recent，不阻塞报告主体；
     // 随 nonce（档案增删）/generation（作用域刷新）/personId 一起重拉。域隔离：恒 'homeroom'。
-    listStudentNotes('homeroom', personId)
+    listStudentNotes('homeroom', personId, { academic_year_id: academicYearId })
       .then((r) => setAllNotes(r.notes ?? []))
       .catch(() => setAllNotes(null))
-    getStudentReport(personId)
+    getStudentReport(personId, academicYearId)
       .then(setReport)
       .catch((err: unknown) => {
         setError(
@@ -302,7 +309,7 @@ export default function StudentReportPrintPage() {
             : apiErrorMessage(err),
         )
       })
-  }, [personId])
+  }, [personId, academicYearId])
 
   useEffect(() => {
     load()
@@ -327,10 +334,20 @@ export default function StudentReportPrintPage() {
           <ChevronLeft className="h-4 w-4" aria-hidden="true" />
           返回学生管理
         </Link>
-        <Button size="sm" onClick={() => window.print()}>
-          <Printer className="h-4 w-4" aria-hidden="true" />
-          打印 / 存为 PDF
-        </Button>
+        <div className="flex items-center gap-2">
+          {personId != null && (
+            <Link
+              href={`/homeroom/students/${encodeURIComponent(personId)}/diagnosis-report`}
+              className="inline-flex items-center rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              查看诊断版报告
+            </Link>
+          )}
+          <Button size="sm" onClick={() => window.print()}>
+            <Printer className="h-4 w-4" aria-hidden="true" />
+            打印 / 存为 PDF
+          </Button>
+        </div>
       </div>
 
       {error ? (
@@ -415,7 +432,11 @@ export default function StudentReportPrintPage() {
 
           {/* 成长档案编辑区：仅屏幕显示，档案新增/删除即时反映到上面的摘要 */}
           {personId != null && personId !== '' ? (
-            <NotesPanel personId={personId} onChanged={() => setNonce((n) => n + 1)} />
+            <NotesPanel
+              personId={personId}
+              academicYearId={academicYearId}
+              onChanged={() => setNonce((n) => n + 1)}
+            />
           ) : null}
         </>
       )}

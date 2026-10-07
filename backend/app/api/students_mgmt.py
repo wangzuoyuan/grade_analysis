@@ -49,6 +49,8 @@ from app.api.students_mgmt_schemas import (
     RolloverUndoResponse,
     RolloverYearInfo,
     NOTE_CATEGORIES,
+    NOTE_FOLLOW_UP_STATUSES,
+    NOTE_INTERVENTION_FIELDS,
     StudentAliasAppendRequest,
     StudentArchiveRequest,
     StudentArchiveResponse,
@@ -65,6 +67,7 @@ from app.api.students_mgmt_schemas import (
 )
 from app.core.context import WorkspaceContext, resolve_workspace_context
 from app.core.errors import (
+    DomainError,
     InvalidScopeParam,
     LinkVersionConflict,
     ResourceOutOfScope,
@@ -108,6 +111,15 @@ def _human_notes_filter():
 
 
 # ────────────────────────────── 通用助手 ──────────────────────────────
+
+
+def _exam_date_before(exam_date: str, anchor: date) -> bool:
+    """考试日期字符串是否严格早于锚点（月精度/不可解析 → False，
+    与 review._is_strictly_before 同一纪律）。"""
+    try:
+        return date.fromisoformat(exam_date) < anchor
+    except (ValueError, TypeError):
+        return False
 
 
 def _parse_iso_date(value, field_name: str) -> date:
@@ -314,8 +326,81 @@ def _note_item(note: WsStudentNote) -> NoteItem:
         content=note.content,
         follow_up=note.follow_up,
         follow_up_done=note.follow_up_done,
+        # ── P2-C4 干预扩展（全可空；普通/旧档案一律 null） ──
+        problem=note.problem,
+        subject_scope=note.subject_scope,
+        measures=note.measures,
+        target_metric=note.target_metric,
+        baseline_value=note.baseline_value,
+        start_date=note.start_date.isoformat() if note.start_date else None,
+        review_date=note.review_date.isoformat() if note.review_date else None,
+        status=note.status,
         created_at=note.created_at.isoformat() if note.created_at else None,
     )
+
+
+# ── P2-C4 轻量干预（契约 docs/diagnosis-roadmap/p2-contracts.md §5） ──
+
+
+class DuplicateFollowUp(DomainError):
+    """同人同科已有未关闭干预（契约 §5.1 防重复录入提示）。
+
+    非阻断式红线：教师确认知情后带 ``force=true`` 重发即可仍建；
+    existing 携带未关闭干预明细供前端提示卡展示。"""
+
+    status_code = 409
+    code = "duplicate_follow_up"
+
+
+def _is_intervention_request(req: NoteCreateRequest) -> bool:
+    """创建请求是否按干预建档：出现任一干预扩展列（显式传入，含 null）即算。"""
+    sent = req.model_fields_set
+    return any(name in sent for name in NOTE_INTERVENTION_FIELDS)
+
+
+def _open_duplicate_interventions(
+    db: Session, ctx: WorkspaceContext, person_id: int, subject_scope: Optional[str]
+) -> List[WsStudentNote]:
+    """同人同科（subject_scope 逐字相等，None=None 视为同科）未关闭干预。"""
+    rows = (
+        db.query(WsStudentNote)
+        .filter(
+            WsStudentNote.data_domain == ctx.mode,
+            WsStudentNote.person_id == person_id,
+            WsStudentNote.status == "open",
+            _human_notes_filter(),
+        )
+        .order_by(WsStudentNote.date.desc(), WsStudentNote.id.desc())
+        .all()
+    )
+    return [n for n in rows if n.subject_scope == subject_scope]
+
+
+def _sync_follow_up_close(note: WsStudentNote) -> None:
+    """干预行 status 与 follow_up_done 的收口同步（契约 §5.4 不碰旧列语义）。
+
+    - status 变更后调用：done/dismissed 为关闭态 → follow_up_done=1；
+      open → follow_up_done=0（B1 teacher_attention 只读 follow_up_done，
+      同步保证「未关闭干预」在特征层不重复计数）。
+    - 仅对干预行（status 非空）生效；旧档案（status=NULL）行为一律不变。
+    """
+    if note.status is None:
+        return
+    note.follow_up_done = 0 if note.status == "open" else 1
+
+
+def _apply_follow_up_done(note: WsStudentNote, value: int) -> None:
+    """旧关闭路径（follow_up_done 0/1）在干预行上的状态镜像。
+
+    follow_up_done 语义本身不变：1=跟进已关闭、0=未关闭。干预行额外把
+    status 镜像到 done/open，保证两条关闭路径殊途同归；旧档案不镜像。"""
+    note.follow_up_done = 1 if value else 0
+    if note.status is None:
+        return
+    if value and note.status == "open":
+        note.status = "done"
+    elif not value and note.status in ("done", "dismissed"):
+        note.status = "open"
 
 
 # ────────────────────────────── §3 教学班成员 ──────────────────────────────
@@ -2216,6 +2301,40 @@ def list_notes(
     return NotesResponse(notes=[_note_item(note) for note in rows])
 
 
+def _validate_manual_baseline(
+    db: Session, ctx, baseline: Optional[dict], metric: Optional[str]
+) -> None:
+    """手填数字基线的单位范围校验（与复查对照 _numeric_baseline_value 同口径）：
+    percentile 以 0–1 小数存储（前 40% = 0.4，不是 40）、rank 不小于 1；
+    越界 → 422，把「百分数当小数入库」挡在写入前。非数字/无指标不拦
+    （复查对照自然 pending/baseline_incomparable）。"""
+    if not isinstance(baseline, dict) or not metric:
+        return
+    value = baseline.get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return
+    from app.diagnosis.review import metric_meta_or_422, unit_of_metric
+
+    unit = unit_of_metric(metric_meta_or_422(db, ctx, metric))
+    if unit == "percentile" and not 0.0 <= float(value) <= 1.0:
+        raise InvalidScopeParam(
+            "baseline_value.value for percentile metrics must be a decimal fraction "
+            "in [0,1] (前 40% = 0.4，不是 40)",
+            details={"param": "baseline_value", "unit": unit, "value": value},
+        )
+    if unit == "rank" and float(value) < 1:
+        raise InvalidScopeParam(
+            "baseline_value.value for rank metrics must be >= 1",
+            details={"param": "baseline_value", "unit": unit, "value": value},
+        )
+    if unit == "rank" and float(value) != int(float(value)):
+        # 名次为整数：1.5 这类小数在写入前拦下（Codex 复审 #3）
+        raise InvalidScopeParam(
+            "baseline_value.value for rank metrics must be an integer（名次为整数，如 300）",
+            details={"param": "baseline_value", "unit": unit, "value": value},
+        )
+
+
 @router.post("/{mode}/students/{person_id}/notes", response_model=NoteItem)
 @domain_endpoint
 def create_note(
@@ -2248,6 +2367,49 @@ def create_note(
     content = (req.content or "").strip()
     if not content:
         raise InvalidScopeParam("content must be a non-empty string", details={"param": "content"})
+    # ── P2-C4 干预建档（契约 §5.1）：防重复录入 + target_metric 校验 +
+    # 基线自动捕获（复用 app.diagnosis.review 服务，成绩口径同源）。──
+    start_date = (
+        _parse_iso_date(req.start_date, "start_date") if req.start_date is not None else None
+    )
+    review_date = (
+        _parse_iso_date(req.review_date, "review_date") if req.review_date is not None else None
+    )
+    if review_date is not None and start_date is not None and review_date < start_date:
+        raise InvalidScopeParam(
+            "review_date must not be earlier than start_date",
+            details={"param": "review_date", "review_date": req.review_date},
+        )
+    baseline_value = None
+    target_metric = req.target_metric.strip() if req.target_metric else None
+    if _is_intervention_request(req):
+        if target_metric:
+            from app.diagnosis.review import capture_baseline, metric_meta_or_422
+
+            metric_meta_or_422(db, ctx, target_metric)  # 不支持的指标 → 422（唯一口径解析）
+            if req.baseline_value is not None:
+                # 教师手填基线：单位范围先校验（percentile 0–1 小数等，见
+                # _validate_manual_baseline），原样入库并标注来源；口径不符
+                # 由复查对照兜底（pending/baseline_incomparable，绝不硬算）。
+                _validate_manual_baseline(db, ctx, req.baseline_value, target_metric)
+                baseline_value = dict(req.baseline_value)
+                baseline_value.setdefault("metric", target_metric)
+                baseline_value.setdefault("source", "teacher")
+            else:
+                # 基线锚点 = 干预开始日（缺省回落档案日期）：只取锚点**之前**的
+                # 可比成绩——补录过去开始的干预不会把干预后成绩当基线。
+                anchor = start_date or note_date
+                baseline_value = capture_baseline(db, ctx, person_id, target_metric, anchor=anchor)
+        elif req.baseline_value is not None:
+            baseline_value = dict(req.baseline_value)
+            baseline_value.setdefault("source", "teacher")
+        if not req.force:
+            duplicates = _open_duplicate_interventions(db, ctx, person_id, req.subject_scope)
+            if duplicates:
+                raise DuplicateFollowUp(
+                    "该生已有未关闭的同科干预，请先关闭或选择继续创建",
+                    details={"existing": [_note_item(n).model_dump() for n in duplicates]},
+                )
     note = WsStudentNote(
         data_domain=mode,
         person_id=person_id,
@@ -2256,6 +2418,14 @@ def create_note(
         content=content,
         follow_up=req.follow_up,
         follow_up_done=0,
+        problem=req.problem,
+        subject_scope=req.subject_scope,
+        measures=req.measures,
+        target_metric=target_metric,
+        baseline_value=baseline_value,
+        start_date=start_date,
+        review_date=review_date,
+        status="open" if _is_intervention_request(req) else None,
     )
     db.add(note)
     db.commit()
@@ -2311,7 +2481,90 @@ def patch_note(
                 "follow_up_done must be 0 or 1",
                 details={"param": "follow_up_done", "follow_up_done": req.follow_up_done},
             )
-        note.follow_up_done = req.follow_up_done
+        _apply_follow_up_done(note, req.follow_up_done)
+    # ── P2-C4 干预扩展（契约 §5.1/§5.4）：status 关闭路径与旧列同步，
+    # 其余扩展列按编辑原样落库；旧档案（status=NULL）不受镜像影响。──
+    if "status" in fields and req.status is not None:
+        if req.status not in NOTE_FOLLOW_UP_STATUSES:
+            raise InvalidScopeParam(
+                "status must be one of open/done/dismissed",
+                details={"param": "status", "status": req.status},
+            )
+        note.status = req.status
+        _sync_follow_up_close(note)
+    if "problem" in fields:
+        note.problem = req.problem
+    if "subject_scope" in fields:
+        note.subject_scope = req.subject_scope
+    if "measures" in fields:
+        note.measures = req.measures
+    metric_changed = False
+    if "target_metric" in fields:
+        new_metric = req.target_metric.strip() if req.target_metric else None
+        metric_changed = new_metric != note.target_metric
+        if new_metric and note.status in ("open", "done", "dismissed"):
+            from app.diagnosis.review import metric_meta_or_422
+
+            metric_meta_or_422(db, ctx, new_metric)  # 与创建同口径：不支持 → 422
+        note.target_metric = new_metric
+    if "baseline_value" in fields:
+        # 手填基线单位校验与创建同口径（此时 target_metric 已更新为本请求值）
+        if (
+            req.baseline_value is not None
+            and note.target_metric
+            and note.status in ("open", "done", "dismissed")
+        ):
+            _validate_manual_baseline(db, ctx, req.baseline_value, note.target_metric)
+        note.baseline_value = req.baseline_value
+    if "start_date" in fields or "review_date" in fields:
+        # 生效值 = 请求值（None/空串=清空），先算出两侧结果、校验
+        # start<=review，再统一落库（部分更新时另一侧取现值）。
+        if "start_date" in fields:
+            new_start = _parse_iso_date(req.start_date, "start_date") if req.start_date else None
+        else:
+            new_start = note.start_date
+        if "review_date" in fields:
+            new_review = (
+                _parse_iso_date(req.review_date, "review_date") if req.review_date else None
+            )
+        else:
+            new_review = note.review_date
+        if new_start is not None and new_review is not None and new_review < new_start:
+            raise InvalidScopeParam(
+                "review_date must not be earlier than start_date",
+                details={"param": "review_date", "review_date": req.review_date,
+                         "start_date": req.start_date},
+            )
+        note.start_date = new_start
+        note.review_date = new_review
+    # ── 基线自动重取（干预行，C4 §5.1）：目标指标变更（旧基线口径不符）
+    # 或锚点（start_date，缺省回落档案 date）因 start_date/date 变更而移动、
+    # 基线不再早于新锚点时，按当前指标与锚点重取；重取不到 → None（复查
+    # 对照如实 pending/no_baseline，教师可手填）。同请求显式手填
+    # baseline_value 的以手填为准，不覆盖。旧档案（status=NULL）不动。──
+    if note.status in ("open", "done", "dismissed") and note.target_metric:
+        anchor = note.start_date or note.date
+        # start_date 为空时锚点随档案 date 移动：改 date 同样可能使既有
+        # 基线落在锚点之后（如补录过去开始的干预），须一并检查。
+        anchor_moved = "start_date" in fields or (
+            note.start_date is None and "date" in fields
+        )
+        needs_recapture = metric_changed
+        if not needs_recapture and anchor_moved:
+            baseline = (
+                dict(note.baseline_value) if isinstance(note.baseline_value, dict) else {}
+            )
+            exam_date = baseline.get("exam_date")
+            if baseline and (exam_date is None or not _exam_date_before(exam_date, anchor)):
+                needs_recapture = True
+        if needs_recapture and not (
+            "baseline_value" in fields and req.baseline_value is not None
+        ):
+            from app.diagnosis.review import capture_baseline
+
+            note.baseline_value = capture_baseline(
+                db, ctx, note.person_id, note.target_metric, anchor=anchor
+            )
     db.commit()
     return _note_item(note)
 

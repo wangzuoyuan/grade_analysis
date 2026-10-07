@@ -69,11 +69,37 @@ async def get_rank_frequency(
         raise HTTPException(400, str(exc))
 
 
+def _band_defaults() -> dict:
+    """出厂默认三段（学校传统口径：高分 1–80、临界 400–500、薄弱 501+）。
+
+    只读 app.analysis.config 的常量（该模块未改动），保证「默认值」只有
+    一份事实源。"""
+    from app.analysis.config import CRITICAL_RANGE, HIGH_SCORE_RANGE, WEAK_RANGE
+
+    return {
+        "high_score_max": HIGH_SCORE_RANGE[1],
+        "critical_min": CRITICAL_RANGE[0],
+        "critical_max": CRITICAL_RANGE[1],
+        "weak_min": WEAK_RANGE[0],
+    }
+
+
+def _with_default_flag(values: dict) -> dict:
+    """给配置响应附加 defaults 与 is_default（P0-A3）：新增键为追加，
+    既有消费端按原 4 键读取不受影响。"""
+    defaults = _band_defaults()
+    is_default = all(values.get(k) == v for k, v in defaults.items())
+    return {**values, "defaults": defaults, "is_default": is_default}
+
+
 @router.get("/analysis-config")
 async def get_analysis_config():
-    """返回当前重点关注段位阈值（供前端展示/编辑）。"""
+    """返回当前重点关注段位阈值（供前端展示/编辑）。
+
+    P0-A3：附带回 defaults（学校默认三段）与 is_default 标记，设置页
+    以此区分「学校默认」与「已自定义」。"""
     from app.analysis.config import get_band_config
-    return get_band_config()
+    return _with_default_flag(get_band_config())
 
 
 @router.put("/analysis-config")
@@ -100,14 +126,33 @@ async def update_analysis_config(payload: BandConfigPayload):
         cfg.weak_min = payload.weak_min
         cfg.updated_at = datetime.utcnow()
         db.commit()
-        return {
+        return _with_default_flag({
             "high_score_max": cfg.high_score_max,
             "critical_min": cfg.critical_min,
             "critical_max": cfg.critical_max,
             "weak_min": cfg.weak_min,
-        }
+        })
     finally:
         db.close()
+
+
+@router.delete("/analysis-config")
+async def reset_analysis_config():
+    """恢复学校默认三段（P0-A3）：删除自定义行（id=1），读取侧回落到
+    出厂默认值。这是唯一的「重置」入口，不改任何计算代码。"""
+    from app.db.models import SessionLocal, AnalysisConfig
+
+    db = SessionLocal()
+    try:
+        cfg = db.query(AnalysisConfig).filter(AnalysisConfig.id == 1).first()
+        if cfg:
+            db.delete(cfg)
+            db.commit()
+        else:
+            db.rollback()
+    finally:
+        db.close()
+    return {"ok": True, **_with_default_flag(_band_defaults())}
 
 
 @router.get("/band-trend")
@@ -115,6 +160,7 @@ async def get_band_trend(grade: int, class_num: Optional[int] = None):
     """某年级历次考试的三段（高分/临界/薄弱）人数趋势。
     class_num 为空时统计全年级；按当前 band_config 分段，改阈值后趋势同步变化。"""
     from app.db.models import SessionLocal, Exam, TotalScore, SubjectScore
+    from app.analysis.definitions import band_flags, resolve_year_rank
     from app.analysis.config import get_band_config
 
     db = SessionLocal()
@@ -161,15 +207,12 @@ async def get_band_trend(grade: int, class_num: Optional[int] = None):
             for t in totals:
                 if allowed is not None and t.student_id not in allowed:
                     continue
-                rank = t.xueji_rank or t.grade_rank
-                if rank is None:
-                    continue
-                if 1 <= rank <= cfg["high_score_max"]:
-                    high += 1
-                if cfg["critical_min"] <= rank <= cfg["critical_max"]:
-                    crit += 1
-                if rank >= cfg["weak_min"]:
-                    weak += 1
+                # 共享口径：学籍名次优先、其次年级名次；缺名次不落段
+                rank = resolve_year_rank(t.xueji_rank, t.grade_rank)
+                flags = band_flags(rank, cfg)
+                high += 1 if flags["high_score"] else 0
+                crit += 1 if flags["critical"] else 0
+                weak += 1 if flags["weak"] else 0
 
             series.append({
                 "exam_id": exam.id,
@@ -262,6 +305,11 @@ async def get_exam(exam_id: int):
     """获取考试详情 - Step 6"""
     from collections import Counter, defaultdict
 
+    from app.analysis.definitions import (
+        band_flags,
+        rank_bucket_start,
+        resolve_year_rank,
+    )
     from app.db.models import SessionLocal, Exam, ClassAverage, SubjectScore, Teacher, TotalScore
     db = SessionLocal()
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
@@ -329,7 +377,7 @@ async def get_exam(exam_id: int):
             },
         )
         student["total_score"] = total.total_score
-        student["grade_rank"] = total.xueji_rank or total.grade_rank
+        student["grade_rank"] = resolve_year_rank(total.xueji_rank, total.grade_rank)
 
     teacher = db.query(Teacher).first()
     target_class = None
@@ -365,14 +413,14 @@ async def get_exam(exam_id: int):
         )
         student["total_scores"][total.total_type] = {
             "score": total.total_score,
-            "rank": total.xueji_rank or total.grade_rank,
+            "rank": resolve_year_rank(total.xueji_rank, total.grade_rank),
             "percentile": total.grade_percentile,
             "xueji_rank": total.xueji_rank,
             "grade_rank": total.grade_rank,
         }
         if total.total_type == "主三门":
             student["total_score"] = total.total_score
-            student["grade_rank"] = total.xueji_rank or total.grade_rank
+            student["grade_rank"] = resolve_year_rank(total.xueji_rank, total.grade_rank)
 
     stat_totals = [t for t in main_totals if t.student_id in stat_student_ids]
     stat_totals_by_type = defaultdict(list)
@@ -384,7 +432,7 @@ async def get_exam(exam_id: int):
         scores = [t.total_score for t in rows if t.total_score is not None]
         ranks = [
             rank
-            for rank in ((t.xueji_rank or t.grade_rank) for t in rows)
+            for rank in (resolve_year_rank(t.xueji_rank, t.grade_rank) for t in rows)
             if rank is not None
         ]
         return {
@@ -404,7 +452,7 @@ async def get_exam(exam_id: int):
     valid_scores = [t.total_score for t in stat_totals if t.total_score is not None]
     valid_ranks = [
         rank
-        for rank in ((t.xueji_rank or t.grade_rank) for t in stat_totals)
+        for rank in (resolve_year_rank(t.xueji_rank, t.grade_rank) for t in stat_totals)
         if rank is not None
     ]
     avg_score = sum(valid_scores) / len(valid_scores) if valid_scores else None
@@ -422,16 +470,13 @@ async def get_exam(exam_id: int):
         class_num = student.get("class_num")
         if class_num is None:
             continue
-        rank = total.xueji_rank or total.grade_rank
-        if rank is None:
-            continue
+        # 共享口径：学籍名次优先、其次年级名次；缺名次不落段
+        rank = resolve_year_rank(total.xueji_rank, total.grade_rank)
+        flags = band_flags(rank, band_cfg)
         bands = rank_bands_by_class[(total.total_type, class_num)]
-        if 1 <= rank <= band_cfg["high_score_max"]:
-            bands["high_score"] += 1
-        if band_cfg["critical_min"] <= rank <= band_cfg["critical_max"]:
-            bands["critical"] += 1
-        if rank >= band_cfg["weak_min"]:
-            bands["weak"] += 1
+        bands["high_score"] += 1 if flags["high_score"] else 0
+        bands["critical"] += 1 if flags["critical"] else 0
+        bands["weak"] += 1 if flags["weak"] else 0
 
     students = sorted(
         all_students,
@@ -465,7 +510,10 @@ async def get_exam(exam_id: int):
     max_rank = max(
         (
             rank
-            for rank in ((row.xueji_rank or row.grade_rank) for row in distribution_rows)
+            for rank in (
+                resolve_year_rank(row.xueji_rank, row.grade_rank)
+                for row in distribution_rows
+            )
             if rank is not None
         ),
         default=0,
@@ -479,10 +527,11 @@ async def get_exam(exam_id: int):
         item["band"]: item for item in rank_distribution
     }
     for row in distribution_rows:
-        rank = row.xueji_rank or row.grade_rank
-        if rank is None or rank < 1:
+        # 共享口径：学籍名次优先、其次年级名次；40 名一档起点由共享定义给出
+        rank = resolve_year_rank(row.xueji_rank, row.grade_rank)
+        if rank is None:
             continue
-        start = ((rank - 1) // 40) * 40 + 1
+        start = rank_bucket_start(rank)
         band = f"{start}-{start + 39}名次数"
         if band not in distribution_index:
             distribution_index[band] = {
@@ -530,7 +579,12 @@ async def get_exam(exam_id: int):
 async def get_focus_list(exam_id: int, class_num: Optional[int] = None):
     """获取重点关注名单 - Step 5"""
     from app.db.models import SessionLocal, TotalScore, SubjectScore
-    from app.analysis.config import SUBJECT_WEAKNESS_PCT_DIFF, get_band_config
+    from app.analysis.definitions import (
+        band_issues,
+        resolve_year_rank,
+        subject_weakness_subjects,
+    )
+    from app.analysis.config import get_band_config
 
     db = SessionLocal()
     band_cfg = get_band_config(db)
@@ -556,7 +610,8 @@ async def get_focus_list(exam_id: int, class_num: Optional[int] = None):
 
     for t in all_totals:
         student_id = t.student_id
-        rank = t.xueji_rank or t.grade_rank or 9999
+        # P0-A1 共享口径：名次不可得 → None（不落段），绝不用哨兵名次冒充
+        rank = resolve_year_rank(t.xueji_rank, t.grade_rank)
 
         # 获取该生各科成绩用于偏科检测
         subject_scores = db.query(SubjectScore).filter(
@@ -575,24 +630,15 @@ async def get_focus_list(exam_id: int, class_num: Optional[int] = None):
             if name != student_id and class_num_value is not None:
                 break
 
-        issues = []
+        # 临界段/薄弱段（用户可自定义；名次不可得 → 不落段）
+        issues = band_issues(rank, band_cfg)
 
-        # 临界段（用户可自定义）
-        if band_cfg["critical_min"] <= rank <= band_cfg["critical_max"]:
-            issues.append("临界段")
-
-        # 薄弱段（用户可自定义）
-        if rank >= band_cfg["weak_min"]:
-            issues.append("薄弱段")
-
-        # 严重偏科检测（单科百分位 vs 主三门百分位差>=0.20）
-        if t.grade_percentile is not None:
-            main_pct = t.grade_percentile
-            for ss in subject_scores:
-                if ss.grade_percentile is not None:
-                    diff = ss.grade_percentile - main_pct
-                    if diff >= SUBJECT_WEAKNESS_PCT_DIFF:
-                        issues.append(f"严重偏科({ss.subject})")
+        # 严重偏科检测（共享口径：单科百分位 vs 主三门百分位差>=0.20）
+        weak_subjects = subject_weakness_subjects(
+            [(s.subject, s.grade_percentile) for s in subject_scores],
+            t.grade_percentile,
+        )
+        issues.extend(f"严重偏科({subject})" for subject in weak_subjects)
 
         if issues:
             focus_list.append({
@@ -604,8 +650,8 @@ async def get_focus_list(exam_id: int, class_num: Optional[int] = None):
                 "issues": issues,
             })
 
-    # 按名次排序
-    focus_list.sort(key=lambda x: x["xueji_rank"])
+    # 按名次排序（名次不可得的排最后）
+    focus_list.sort(key=lambda x: (x["xueji_rank"] is None, x["xueji_rank"] or 0))
 
     db.close()
     return {"focus_list": focus_list[:50]}
@@ -630,6 +676,7 @@ async def get_student(student_id: str):
         Teacher,
     )
     from app.analysis.identity import person_ids, identity_of, aliases_of
+    from app.analysis.definitions import min_ranks
 
     db = SessionLocal()
     try:
@@ -769,7 +816,7 @@ async def get_student(student_id: str):
                 class_rank_by_exam[t.exam_id] = None
                 continue
             peer_totals = (
-                db.query(TotalScore.total_score)
+                db.query(TotalScore.student_id, TotalScore.total_score)
                 .filter(
                     TotalScore.exam_id == t.exam_id,
                     TotalScore.total_type == "主三门",
@@ -778,9 +825,9 @@ async def get_student(student_id: str):
                 )
                 .all()
             )
-            peer_scores = [row[0] for row in peer_totals]
-            # 排名 = 严格高于本人的人数 + 1
-            class_rank_by_exam[t.exam_id] = sum(1 for s in peer_scores if s > t.total_score) + 1
+            # 共享口径：同分同名次 min-rank（1,2,2,4），NULL 不参与
+            class_ranks = min_ranks(list(peer_totals))
+            class_rank_by_exam[t.exam_id] = class_ranks.get(t.student_id)
 
         # 班级 / 学籍：取该生历次记录中出现最多的取值（前端头部展示与学籍徽章用）
         # 按年级分别取众数班级：class_by_grade[grade] = 该年级出现最多的 class_num
@@ -1358,7 +1405,7 @@ async def compare_classes(exam_id: Optional[int] = None):
 async def subject_weakness(exam_id: int, class_num: Optional[int] = None):
     """单科薄弱名单 - Step 5"""
     from app.db.models import SessionLocal, SubjectScore, TotalScore
-    from app.analysis.config import SUBJECT_WEAKNESS_PCT_DIFF
+    from app.analysis.definitions import subject_weakness_subjects
 
     db = SessionLocal()
 
@@ -1391,23 +1438,29 @@ async def subject_weakness(exam_id: int, class_num: Optional[int] = None):
         if main_pct is None:
             continue
 
+        # 共享口径：单科百分位 − 主三门百分位 ≥ 0.20；百分位缺失不判
+        weak_subjects = subject_weakness_subjects(
+            [(s.subject, s.grade_percentile) for s in subjects],
+            main_pct,
+        )
+        if not weak_subjects:
+            continue
+        weak_set = set(weak_subjects)
+        name = student_id
+        for sub in subjects:
+            if sub.name:
+                name = sub.name
+                break
         for s in subjects:
-            if s.grade_percentile is not None:
-                diff = s.grade_percentile - main_pct
-                if diff >= SUBJECT_WEAKNESS_PCT_DIFF:
-                    name = student_id
-                    for sub in subjects:
-                        if sub.name:
-                            name = sub.name
-                            break
-                    weakness_list.append({
-                        "student_id": student_id,
-                        "name": name,
-                        "subject": s.subject,
-                        "raw_score": s.raw_score,
-                        "grade_percentile": s.grade_percentile,
-                        "diff": round(diff, 3),
-                    })
+            if s.subject in weak_set and s.grade_percentile is not None:
+                weakness_list.append({
+                    "student_id": student_id,
+                    "name": name,
+                    "subject": s.subject,
+                    "raw_score": s.raw_score,
+                    "grade_percentile": s.grade_percentile,
+                    "diff": round(s.grade_percentile - main_pct, 3),
+                })
 
     weakness_list.sort(key=lambda x: x["grade_percentile"])
 

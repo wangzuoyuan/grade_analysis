@@ -1,4 +1,5 @@
 import { SemesterSettingsCard } from '@/components/homework/SemesterSettingsCard'
+import { RankBandsSettingsCard } from '@/components/settings/RankBandsSettingsCard'
 
 export default function SemesterSettingsPage() {
   return (
@@ -8,6 +9,7 @@ export default function SemesterSettingsPage() {
         <p className="mt-1 text-sm text-slate-500">班主任和教学工作台共用同一套学期日期与当前学期。</p>
       </div>
       <SemesterSettingsCard />
+      <RankBandsSettingsCard />
     </div>
   )
 }

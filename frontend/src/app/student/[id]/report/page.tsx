@@ -202,13 +202,23 @@ export default function StudentReportPage() {
           <ChevronLeft className="h-4 w-4" />
           返回学生页
         </Link>
-        <button
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-sm text-white hover:bg-brand-700"
-        >
-          <Printer className="h-4 w-4" />
-          打印 / 存为 PDF
-        </button>
+        <div className="flex items-center gap-2">
+          {personId != null && (
+            <Link
+              href={`/student/${personId}/diagnosis-report`}
+              className="inline-flex items-center rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              查看诊断版报告
+            </Link>
+          )}
+          <button
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-sm text-white hover:bg-brand-700"
+          >
+            <Printer className="h-4 w-4" />
+            打印 / 存为 PDF
+          </button>
+        </div>
       </div>
 
       {/* 抬头 */}
