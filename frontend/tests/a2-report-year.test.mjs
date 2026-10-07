@@ -6,9 +6,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import ts from 'typescript'
 
-// api-v1.ts 无运行时依赖且仅用可擦除类型，node 22 起可直接导入真模块验证真实请求 URL
-const { getStudentReport } = await import('../src/lib/api-v1.ts')
+// 编译真实源码后导入，兼容 CI 的 Node 20，同时验证实际请求 URL。
+const compiledApi = ts.transpileModule(
+  readFileSync(new URL('../src/lib/api-v1.ts', import.meta.url), 'utf8'),
+  { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 } },
+).outputText
+const { getStudentReport } = await import(
+  `data:text/javascript;base64,${Buffer.from(compiledApi).toString('base64')}`
+)
 
 const profileView = readFileSync(
   new URL('../src/components/students/HomeroomProfileView.tsx', import.meta.url),
