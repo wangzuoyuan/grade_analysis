@@ -18,10 +18,10 @@ resolve_scope_snapshot 同源机制）；``academic_year_id`` 必须与 scope �
   ``definitions.resolve_year_rank``、段位 ``definitions.band_flags``、偏科
   ``definitions.subject_weakness_subjects``、百分位归一化
   ``definitions.normalized_percentile`` 全部复用共享定义，本模块不重新实现。
-- 作业行为完全复用 app/api/homework.py 既有查询与按天连缺算法
-  （``_person_events``/``_streak_lines_of``/``_is_pure_missing``/``_forgot_of``/
-  ``_evaluation_tone``，班主任按学科分线、教学按班单线、考勤批次不参与），
-  不改作业代码、不自建第二套口径；无有效批次时 trend="无数据"，只给计数特征。
+- 作业行为复用 app/api/homework.py 的事件读取与按天连缺算法
+  （整班 ``_person_events_for_members``、单生 ``_person_events`` 与共用
+  ``_streak_lines_of`` 等），班主任按学科分线、教学按班单线；无有效批次
+  时 trend="无数据"，只给计数特征。
 - 教师关注读 ws_student_note（N01 域隔离：只读本域；_human_notes_filter
   排除作业考勤/预警解除/迁移等系统辅助行），空数据如实输出 null。
 - 时间窗口（7/30 天）按自然日回溯、窗口边界含当日（§0.7），锚点为
@@ -53,6 +53,7 @@ from app.api.homework import (
     _line_key_of,
     _parse_expected_ids,
     _person_events,
+    _person_events_for_members,
     _streak_lines_of,
 )
 from app.core.context import WorkspaceContext
@@ -176,8 +177,9 @@ def class_features_at_anchors(
     # 当前行为」两种时点。直接复用 None 桶装配，不重复计算。
     unresolved = {name for name, info in anchor_dates.items() if info["date"] is None}
     compute_buckets = [name for name in buckets if name not in unresolved]
+    bases = _fetch_class_bases(db, scope, members)
     for person_id in members:
-        base = _fetch_student_base(db, scope, person_id)  # 锚点间共用（一次取数）
+        base = bases[person_id]  # 班内及锚点间共用（一次取数）
         for anchor in compute_buckets:
             info = anchor_dates.get(anchor) if anchor is not None else None
             anchor_date = info["date"] if info else None
@@ -305,6 +307,35 @@ def _fetch_student_base(db: Session, scope: WorkspaceContext, person_id: int):
         .all()
     )
     return exams, ordered, events, line_axis_map, note_rows
+
+
+def _fetch_class_bases(db: Session, scope: WorkspaceContext, members: List[int]):
+    """整班基础事实一次读取，按人装配成 _compute_student 的原有入参。"""
+    if not members:
+        return {}
+    facts_by_person = defaultdict(list)
+    for entry in q.readable_facts(db, scope, member_ids=members):
+        facts_by_person[entry.person_id].append(entry)
+    events_by_person = _person_events_for_members(db, scope, members, scope.academic_year_id)
+
+    from app.api.students_mgmt import _human_notes_filter
+
+    notes_by_person = defaultdict(list)
+    for start in range(0, len(members), 400):
+        notes = db.query(WsStudentNote).filter(
+            WsStudentNote.data_domain == scope.data_domain,
+            WsStudentNote.person_id.in_(members[start:start + 400]),
+            _human_notes_filter(),
+        ).all()
+        for note in notes:
+            notes_by_person[note.person_id].append(note)
+
+    bases = {}
+    for pid in members:
+        exams = _group_exams(facts_by_person[pid])
+        events, line_axis = events_by_person[pid]
+        bases[pid] = (exams, _ordered_exam_names(exams), events, line_axis, notes_by_person[pid])
+    return bases
 
 
 def _compute_student(

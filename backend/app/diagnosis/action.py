@@ -193,7 +193,6 @@ def _priority_persons(cls: dict, excluded_ids: set) -> List[dict]:
         if row.get("person_id") in excluded_ids:
             features = _homework_suppressed_features(features)
         types = classify_student(features)
-        types = classify_student(features)
         ranks = _qualifying_ranks(types)
         if not ranks:
             continue  # 无优先关注理由 → 不进列表（不凑数）
@@ -370,6 +369,11 @@ def action_summary(db: Session, scope, academic_year_id: int) -> dict:
         "calc_version": CALC_VERSION,
         "as_of": as_of.isoformat() if isinstance(as_of, date) else as_of,
         "priority_persons": _priority_persons(cls, excluded_ids),
+        # 首页类型分布复用本次 B1 结果；保持 B2 原始判定，与单生类型端点同源。
+        "class_types": [
+            {"person_id": row["person_id"], "types": classify_student(row["features"])}
+            for row in cls["students"]
+        ],
         "sections": {
             "trend_changes": _trend_changes(cls),
             "structure": _structure(cls),

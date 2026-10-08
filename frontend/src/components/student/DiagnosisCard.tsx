@@ -49,6 +49,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { useSharedActionSummary } from '@/app/homeroom/action-summary'
 
 /* ------------------------------------------------------------------ */
 /* 契约形状 mock 类型（docs/diagnosis-roadmap/p1-contracts.md §2/§3）  */
@@ -662,8 +663,6 @@ export function DiagnosisCard({
 /* 班主任首页类型分布卡                                                */
 /* ------------------------------------------------------------------ */
 
-const TYPES_BATCH_SIZE = 8
-
 /** 数据不足桶的展开键（类型名均为中文，用英文哨兵避免冲突）。 */
 const INSUFFICIENT_BUCKET_KEY = '__insufficient__'
 
@@ -690,10 +689,7 @@ function OverviewCardSkeleton() {
 
 export function HomeroomDiagnosisOverviewCard() {
   const { mode, filter, scope, generation } = useWorkspace()
-  const [typesList, setTypesList] = useState<Array<DiagnosisTypes | null> | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [failed, setFailed] = useState<number | null>(null)
-  const reqRef = useRef(0)
+  const { summary, loading } = useSharedActionSummary()
   // A5 下钻：本班名册 person_id→姓名（拉一次并缓存；失败置空映射走编号兜底）
   const [rosterNames, setRosterNames] = useState<Map<number, string> | null>(null)
   const [rosterFailed, setRosterFailed] = useState(false)
@@ -751,54 +747,13 @@ export function HomeroomDiagnosisOverviewCard() {
     }
   }, [mode, filter.academic_year_id, filter.class_id, generation])
 
-  useEffect(() => {
-    if (mode !== 'homeroom') return
-    const memberIds = scope?.member_person_ids ?? []
-    const req = ++reqRef.current
-    if (memberIds.length === 0) {
-      setTypesList([])
-      setFailed(null)
-      setLoading(false)
-      return
-    }
-    setLoading(true)
-    setFailed(null)
-    setTypesList(null)
-    const q: DiagnosisScopeQuery = {}
-    if (typeof filter.academic_year_id === 'number') q.academic_year_id = filter.academic_year_id
-
-    async function load() {
-      // 逐生取 B2 types 端点（班级 types 分布 = 每生 classify 结果聚合，
-      // 同一数据源、绝不在前端复算类型）；分批并发控请求量；单人失败
-      // 记为缺失（null），不阻塞整卡。
-      const results: Array<DiagnosisTypes | null> = []
-      let failures = 0
-      for (let i = 0; i < memberIds.length; i += TYPES_BATCH_SIZE) {
-        const batch = memberIds.slice(i, i + TYPES_BATCH_SIZE)
-        const batchResults = await Promise.all(
-          batch.map((pid) =>
-            fetchDiagnosisTypes('homeroom', Number(pid), q)
-              .then((t) => t as DiagnosisTypes)
-              .catch(() => {
-                failures += 1
-                return null
-              }),
-          ),
-        )
-        if (req !== reqRef.current) return
-        results.push(...batchResults)
-      }
-      if (req !== reqRef.current) return
-      setTypesList(results)
-      setFailed(failures)
-      setLoading(false)
-    }
-
-    void load()
-    return () => {
-      reqRef.current += 1
-    }
-  }, [mode, filter.academic_year_id, scope, generation])
+  // 与行动卡共用一次班级 B1/B2 响应，依名册 ID 对齐；缺行如实记为缺失。
+  const typesList = useMemo(() => {
+    if (!Array.isArray(summary?.class_types)) return null
+    const byPerson = new Map(summary.class_types.map((row) => [row.person_id, row.types]))
+    return (scope?.member_person_ids ?? []).map((pid) => byPerson.get(Number(pid)) ?? null)
+  }, [summary, scope])
+  const failed = typesList?.filter((item) => item === null).length ?? null
 
   const distribution = useMemo(() => aggregateTypeDistribution(typesList ?? []), [typesList])
   const priority = useMemo(() => pickPriorityAttention(typesList ?? []), [typesList])
@@ -820,7 +775,7 @@ export function HomeroomDiagnosisOverviewCard() {
   }
 
   // 数据缺失态：全员失败（端点未部署/请求失败）→ 如实显示，绝不伪造分布
-  const allMissing = typesList != null && typesList.length > 0 && failed === typesList.length
+  const allMissing = cohortSize > 0 && (typesList == null || failed === cohortSize)
 
   if (mode !== 'homeroom') return null
 
@@ -846,7 +801,7 @@ export function HomeroomDiagnosisOverviewCard() {
               <Skeleton key={i} className="h-8 w-full" />
             ))}
           </div>
-        ) : cohortSize === 0 || typesList!.length === 0 ? (
+        ) : cohortSize === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center">
             <p className="text-sm text-slate-500">当前范围暂无学生，无法生成类型分布</p>
             <p className="mt-1 text-xs text-slate-400">数据缺失态如实显示，不做任何估算。</p>
@@ -858,7 +813,7 @@ export function HomeroomDiagnosisOverviewCard() {
               诊断数据暂不可用（数据缺失）
             </span>
             <span className="text-xs text-slate-400">
-              诊断类型端点（/diagnosis/types）尚未部署或当前范围暂无有效数据；不做估算填充。
+              行动摘要中的班级类型数据暂不可用；不做估算填充。
             </span>
           </div>
         ) : (

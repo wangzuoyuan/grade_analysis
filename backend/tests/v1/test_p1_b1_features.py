@@ -644,6 +644,18 @@ def test_endpoint_matches_service_output(client, p1b1_seed):
 # ────────────── 班级特征汇总 ──────────────
 
 
+@pytest.mark.parametrize("mode", ["homeroom", "teaching"])
+def test_batched_class_features_match_single_student_endpoints(client, p1b1_seed, mode):
+    """整班批量读取与单生读端点逐生一致，覆盖成绩、作业例外及共享投影。"""
+    year_id = p1b1_seed.seed.ay_id
+    body = _get(client, f"/{mode}/diagnosis/features/class", academic_year_id=year_id).json()
+    for row in body["students"]:
+        single = _get(client, f"/{mode}/diagnosis/features",
+                      person_id=row["person_id"], academic_year_id=year_id)
+        assert single.status_code == 200, single.text
+        assert row["features"] == single.json()
+
+
 def test_class_features_homeroom(client, p1b1_seed):
     """班级级汇总：每生 features + type_inputs（main_type 原始字段集合）+
     缺失统计（考试时点成员口径：缺行/缺考/缺主三门、零数据学生）。"""

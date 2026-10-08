@@ -17,7 +17,7 @@
  * （后端 action.py 同一口径注释）。
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { CardFoldToggle, useCardFold } from '@/components/dashboard/card-fold'
 import { MoreToggle } from '@/components/ui/more-toggle'
@@ -34,6 +34,7 @@ import type { WorkspaceMode } from '@/lib/api-v1'
 import { useWorkspace } from '@/lib/workspace'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import type { DiagnosisTypes } from '@/components/student/DiagnosisCard'
 
 /* ------------------------------------------------------------------ */
 /* 契约 §3 JSON 形状                                                    */
@@ -50,6 +51,7 @@ export interface ActionSummary {
     reasons: string[]
     evidence_ref: { types: boolean; features: boolean }
   }>
+  class_types?: Array<{ person_id: number; types: DiagnosisTypes }>
   sections: {
     trend_changes: { improving_n: number; declining_n: number }
     structure: { band_counts: { high_score: number; critical: number; weak: number } }
@@ -60,15 +62,31 @@ export interface ActionSummary {
 
 export const ACTION_SUMMARY_ENDPOINT = '/api/v1/homeroom/diagnosis/action-summary'
 
+interface SharedActionSummary {
+  summary: ActionSummary | null
+  loading: boolean
+  error: string | null
+}
+
+const ActionSummaryContext = createContext<SharedActionSummary | null>(null)
+
+export function useSharedActionSummary(): SharedActionSummary {
+  const value = useContext(ActionSummaryContext)
+  if (!value) throw new Error('首页诊断卡必须位于行动摘要数据容器内')
+  return value
+}
+
 /** 取数助手（同源唯一入口；失败抛错由调用方如实显示缺失态）。 */
 export async function fetchActionSummary(
   q: { academic_year_id?: number; class_id?: number } = {},
+  signal?: AbortSignal,
 ): Promise<ActionSummary> {
   const params = new URLSearchParams()
   if (typeof q.academic_year_id === 'number') params.set('academic_year_id', String(q.academic_year_id))
   if (typeof q.class_id === 'number') params.set('class_id', String(q.class_id))
   const res = await fetch(`${ACTION_SUMMARY_ENDPOINT}?${params.toString()}`, {
     headers: { Accept: 'application/json' },
+    signal,
   })
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null
   if (!res.ok) {
@@ -77,6 +95,64 @@ export async function fetchActionSummary(
     )
   }
   return body as unknown as ActionSummary
+}
+
+export function HomeroomActionSummaryProvider({ children }: { children: ReactNode }) {
+  const { mode, filter, scope, scopeLoading, scopeError, generation } = useWorkspace()
+  const [summary, setSummary] = useState<ActionSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [loadedKey, setLoadedKey] = useState<string | null>(null)
+  const reqRef = useRef(0)
+  const requestKey = `${mode}:${filter.academic_year_id ?? ''}:${filter.class_id ?? ''}:${generation}:${scope?.as_of ?? ''}:${scope?.member_person_ids.join(',') ?? ''}`
+
+  useEffect(() => {
+    if (mode !== 'homeroom') return
+    const req = ++reqRef.current
+    setLoading(true)
+    setError(null)
+    setSummary(null)
+    setLoadedKey(null)
+    if (!scope || scopeLoading) {
+      if (scopeError) {
+        setError(scopeError.message)
+        setLoadedKey(requestKey)
+        setLoading(false)
+      }
+      return () => { reqRef.current += 1 }
+    }
+    const q: { academic_year_id?: number; class_id?: number } = {}
+    if (typeof filter.academic_year_id === 'number') q.academic_year_id = filter.academic_year_id
+    if (typeof filter.class_id === 'number') q.class_id = filter.class_id
+    const controller = new AbortController()
+    fetchActionSummary(q, controller.signal)
+      .then((data) => {
+        if (req !== reqRef.current) return
+        setSummary(data)
+        setLoadedKey(requestKey)
+        setLoading(false)
+      })
+      .catch((reason: unknown) => {
+        if (req !== reqRef.current) return
+        setError(reason instanceof Error ? reason.message : '行动摘要加载失败')
+        setLoadedKey(requestKey)
+        setLoading(false)
+      })
+    return () => {
+      controller.abort()
+      reqRef.current += 1
+    }
+  }, [mode, filter.academic_year_id, filter.class_id, scope, scopeLoading, scopeError, generation, requestKey])
+
+  return (
+    <ActionSummaryContext.Provider value={{
+      summary: loadedKey === requestKey ? summary : null,
+      loading: loading || loadedKey !== requestKey,
+      error: loadedKey === requestKey ? error : null,
+    }}>
+      {children}
+    </ActionSummaryContext.Provider>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -154,38 +230,8 @@ function ActionSummarySkeleton() {
 }
 
 export function HomeroomActionSummaryCard() {
-  const { mode, filter, scope, generation } = useWorkspace()
-  const [summary, setSummary] = useState<ActionSummary | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const reqRef = useRef(0)
-
-  useEffect(() => {
-    if (mode !== 'homeroom') return
-    const req = ++reqRef.current
-    setLoading(true)
-    setError(null)
-    setSummary(null)
-    const q: { academic_year_id?: number; class_id?: number } = {}
-    if (typeof filter.academic_year_id === 'number') q.academic_year_id = filter.academic_year_id
-    if (typeof filter.class_id === 'number') q.class_id = filter.class_id
-    fetchActionSummary(q)
-      .then((data) => {
-        if (req !== reqRef.current) return
-        setSummary(data)
-        setLoading(false)
-      })
-      .catch((reason: unknown) => {
-        if (req !== reqRef.current) return
-        setError(reason instanceof Error ? reason.message : '行动摘要加载失败')
-        setLoading(false)
-      })
-    return () => {
-      reqRef.current += 1
-    }
-  }, [mode, filter.academic_year_id, filter.class_id, scope, generation])
-
-  if (mode !== 'homeroom') return null
+  const { mode, scope } = useWorkspace()
+  const { summary, loading, error } = useSharedActionSummary()
 
   const rows = actionSectionRows(summary?.sections ?? null)
   const priority = summary?.priority_persons ?? []
@@ -193,6 +239,8 @@ export function HomeroomActionSummaryCard() {
   // 卡片级折叠（状态本地记忆）；优先关注列表默认 4 条，超出走 MoreToggle
   const { folded, toggle } = useCardFold('homeroom:action-summary')
   const [priorityExpanded, setPriorityExpanded] = useState(false)
+
+  if (mode !== 'homeroom') return null
 
   return (
     <Card>

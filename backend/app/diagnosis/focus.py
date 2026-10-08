@@ -42,7 +42,7 @@ def focus_cohorts(db, ctx):
     """当前名单一次提供；历史日期不可证明时不生成伪历史队列。"""
     exams = q.readable_exam_summaries(db, ctx)
     anchored = class_features_at_anchors(db, ctx, ctx.academic_year_id, [e["exam_name"] for e in exams])
-    current = class_features(db, ctx, ctx.academic_year_id)
+    current = anchored[None]  # 多锚点读取已包含当前桶，无须再次查询整班事实
     suppressed = _stats_excluded_ids(db, ctx.data_domain, ctx.class_ids)
     cohorts = []
     for basis, anchor, cls in [("current_time_point", None, current)] + [

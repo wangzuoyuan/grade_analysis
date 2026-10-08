@@ -85,11 +85,13 @@ test('P2-C2：数据缺失态如实显示（不伪造、不估算）', () => {
 })
 
 test('P2-C2：homeroom 首页装配行动卡且置顶（优先关注列表在页首）', () => {
-  assert.match(homeroomPage, /import \{ HomeroomActionSummaryCard \} from '\.\/action-summary'/, '行动卡导入')
+  assert.match(homeroomPage, /import \{ HomeroomActionSummaryCard, HomeroomActionSummaryProvider \} from '\.\/action-summary'/, '行动卡与共享数据容器导入')
   assert.match(homeroomPage, /<HomeroomActionSummaryCard \/>/, '行动卡装配')
   const summaryIdx = homeroomPage.indexOf('<HomeroomActionSummaryCard />')
   const overviewIdx = homeroomPage.indexOf('<HomeroomOverview />')
   const diagnosisIdx = homeroomPage.indexOf('<HomeroomDiagnosisOverviewCard />')
   assert.ok(summaryIdx !== -1 && summaryIdx < overviewIdx, '行动卡在总览卡之前（置顶）')
   assert.ok(diagnosisIdx === -1 || summaryIdx < diagnosisIdx, '行动卡在类型分布卡之前（置顶）')
+  assert.match(homeroomPage, /<HomeroomActionSummaryProvider>/, '首页两张诊断卡共用一次摘要请求')
+  assert.match(card, /class_types\?/, '摘要携带班级类型分布原始 B2 判定')
 })

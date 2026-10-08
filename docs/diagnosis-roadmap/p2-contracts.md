@@ -56,6 +56,8 @@ def exam_homework_correlation(db, scope, exam_name, window_days=14, metric="tota
 
 排序：综合风险型 > 持续下滑型 > 临界下滑型 > 作业风险（次标签）> 短期下滑型；同级按 evidence 数与最近变化幅度。摘要全部从 B1 `class_features` + B2 `classify_student` 生成（同源，禁止另算）；前端首页改造：优先关注列表置顶（姓名+理由+直达学生页），随后趋势/结构/作业/待办摘要；数据缺失态如实显示。
 
+2026-10-08 性能扩展：响应追加 `class_types: [{person_id, types}]`，其中 `types` 为同一班级 B1 特征经 B2 `classify_student` 得到的完整类型对象。首页的行动卡与类型分布卡共用本次请求；既有四个顶层字段和单生 `/diagnosis/types` 端点保持兼容。缺少追加字段时，分布卡显示数据缺失态。
+
 ## 4. C3 诊断版学生报告
 
 `GET /api/v1/{域}/diagnosis/report?person_id=&academic_year_id=&exam_name=<可选，缺省最近一场>`

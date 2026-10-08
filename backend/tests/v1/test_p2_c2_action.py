@@ -221,7 +221,7 @@ def test_action_summary_shape_and_priority_order(client, p2c2_seed):
     assert resp.status_code == 200, resp.text
     body = resp.json()
 
-    assert set(body) == {"calc_version", "as_of", "priority_persons", "sections"}
+    assert set(body) == {"calc_version", "as_of", "priority_persons", "class_types", "sections"}
     assert body["calc_version"] == "p2-v1"
     assert body["as_of"] == p2c2_seed.today.isoformat()
     assert set(body["sections"]) == {"trend_changes", "structure", "homework", "follow_ups"}
@@ -298,6 +298,9 @@ def test_action_summary_homogeneous_with_b1_b2(client, p2c2_seed):
 
     types = _get(client, "/homeroom/diagnosis/types",
                  person_id=p2c2_seed.geng_id, academic_year_id=s.ay_id).json()
+    class_types = {row["person_id"]: row["types"] for row in body["class_types"]}
+    assert len(class_types) == len(body["class_types"])
+    assert class_types[p2c2_seed.geng_id] == types
     assert "综合风险型" in ([types["main_type"]] + types["secondary_tags"])
     assert "综合风险型" in geng["reasons"]
 
