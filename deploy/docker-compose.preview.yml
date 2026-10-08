@@ -1,0 +1,45 @@
+# 分支后端候选；前端由 Vercel Preview 托管。
+# 先以 SQLite Backup API 取得正式库的独立副本；禁止使用正式数据挂载。
+# 环境变量须在当前 shell 或私有 --env-file 中设置，凭据文件不入 Git。
+name: grade_analysis_preview
+
+services:
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: grade-analysis-preview-backend:${PREVIEW_IMAGE_TAG:?Set a branch commit tag}
+    restart: unless-stopped
+    env_file:
+      - path: ${PREVIEW_ENV_FILE:?Set a private candidate credential file}
+        required: true
+    environment:
+      EXAM_TRACKER_DIR: /data
+      EXAM_TRACKER_BACKUP_DIR: /backups
+      # 候选须对所有请求鉴权，不沿用按正式入口 Host 放行的语义。
+      PUBLIC_HOST: ""
+    command:
+      - sh
+      - -c
+      - >-
+        test -n "$$APP_PASSWORD" || { echo 'Candidate APP_PASSWORD is required'; exit 1; };
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    volumes:
+      - ${PREVIEW_DATA_DIR:?Set an independent data directory}:/data
+      - ${PREVIEW_BACKUP_DIR:?Set an independent backup directory}:/backups
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${PREVIEW_BIND_HOST:-127.0.0.1}:${PREVIEW_API_PORT:-8082}:8080"
+    volumes:
+      - ./Caddyfile.preview:/etc/caddy/Caddyfile:ro

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/diagnosis-roadmap]
   pull_request:
   workflow_dispatch:
 
@@ -71,3 +71,43 @@ jobs:
 
       - name: 生产构建
         run: npm run build
+
+  deployment:
+    name: 部署器备份与回退验证（仅合成数据）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+      - run: python -m unittest discover -s deploy/tests -p 'test_*.py' -v
+      - run: node --test deploy/tests/backend-gate.test.cjs
+
+  release:
+    name: 受控后端发布包（不含数据与凭据）
+    needs: [backend, frontend, deployment]
+    if: >-
+      github.repository == 'wangzuoyuan/grade_analysis' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/diagnosis-roadmap')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: 打包固定构建文件与提交摘要
+        run: python deploy/package_backend.py --output .release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-release
+          path: |
+            .release/backend.tar.gz
+            .release/release.json
+          retention-days: 7
+          if-no-files-found: error

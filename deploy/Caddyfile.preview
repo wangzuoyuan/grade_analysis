@@ -1,0 +1,10 @@
+:8080 {
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
+        }
+    }
+    handle {
+        respond "Branch backend; open the frontend on Vercel" 404
+    }
+}
