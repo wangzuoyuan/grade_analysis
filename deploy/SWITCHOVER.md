@@ -115,3 +115,43 @@ NAS 与后端宿主不在同一台机器时，显式设置 `PREVIEW_BIND_HOST` �
 公网独立反代与 TLS 就绪、未登录业务 API 返回 401 后，再把该地址设置到对应
 Vercel Preview 分支。主线前端部署不代表 NAS 后端自动发布；合并含后端变更时，
 仍需备份、迁移验证、后端发布及回退检查。PR 测试继续在 GitHub 的独立合成数据上运行。
+
+## 7. 受控后端自动发布
+
+`CI` 对 `main` 和 `codex/diagnosis-roadmap` 的 push 运行后端、前端和部署器测试。
+仅本仓库的这两个分支在全部测试通过后产生 `backend-release` artifact（保留7天），
+内容只有允许的后端构建源码、Git SHA 和 SHA256，不包含数据库、env、备份或部署凭据。
+其他 PR 只测试，不产生可上线发布包。
+
+实际后端宿主运行 `deploy/auto_backend.py`，使用已登录的 `gh` 获取当前分支SHA对应的
+成功CI发布包。它校验仓库、workflow、事件、ref、SHA、摘要和解包路径，再本地构建
+固定SHA镜像；不执行发布包里的部署脚本，不需要公网SSH或GitHub自托管runner。
+`deploy/package_backend.py` 与部署器需一同安装；宿主配置在私有目录，包含明确的
+compose路径、项目名、backend容器、数据目录及Caddy容器，不入Git。
+
+每次更新先在独立一致性副本上运行迁移、鉴权和配置读取。通过后Caddy返回API维护503，
+确认停写门生效后停止旧backend，再备份SQLite和相关文件。新backend启动及验证成功，
+先持久化提交点再开放入口；失败则在入口开放前恢复原镜像和备份。`journal.json`
+支持进程中断后的恢复；提交点之后不能再自动还原数据库，避免覆盖用户新写入。
+恢复失败时保留维护入口，按journal与备份人工处理，不能绕过门直接恢复写入。
+
+`/api/deployment` 由Caddy提供已部署SHA和ready状态，不返回业务数据或凭据。
+Vercel构建先运行 `node scripts/wait-for-backend.cjs`，对这两个分支等待同SHA的
+后端就绪，最长20分钟，超时停止新版前端发布。仅前端变化且构建指纹不变时，
+后端验证后推进SHA标记，不重启容器。Caddy重启后控制器下一次检查会恢复标记。
+
+Mac mini 用户态LaunchAgent每120秒运行一次控制器，要求机器在线、Docker正常，
+当前用户已用gh登录且可以下载本仓库Actions artifact。Docker启动及机器唤醒后会
+在后续检查中补发；测试失败不会上线。部署器运行时文件与日志均在私有宿主目录，
+数据库备份仅保留本机，需按现场备份策略定期转存和清理。
+
+本地验证：
+```bash
+python3 -m unittest discover -s deploy/tests -p 'test_*.py' -v
+node --test deploy/tests/backend-gate.test.cjs
+python3 deploy/auto_backend.py --config /absolute/private/config.json
+```
+
+安装后的控制器代码独立于开发工作树；修改它需完成部署器测试及合成Docker演练后
+再更新宿主副本。更新后端不会自动覆盖候选数据库为新正式快照，也不会更新旧NAS
+入口所用的Docker前端；主要网页入口使用Vercel。不同后端版本仍使用独立数据库。
