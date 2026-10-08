@@ -200,6 +200,56 @@ class ReleaseTests(unittest.TestCase):
         stack.enter_context(patch.object(deploy, 'run', return_value='[{"Id":"old-image"}]'))
         return stack
 
+    def diagnosis_config(self, target, values=None):
+        with sqlite3.connect(target.data / 'db.sqlite') as db:
+            db.execute('CREATE TABLE diagnosis_threshold_config ('
+                       'id INTEGER PRIMARY KEY, direction_rank_change INTEGER NOT NULL, '
+                       'streak_rank_change INTEGER NOT NULL, updated_at TEXT)')
+            if values is not None:
+                db.execute('INSERT INTO diagnosis_threshold_config '
+                           '(id,direction_rank_change,streak_rank_change) VALUES (1,?,?)', values)
+
+    def read_diagnosis_config(self, target):
+        with sqlite3.connect(target.data / 'db.sqlite') as db:
+            return db.execute('SELECT direction_rank_change,streak_rank_change '
+                              'FROM diagnosis_threshold_config WHERE id=1').fetchone()
+
+    def test_refresh_keeps_latest_preview_diagnosis_setting_only(self):
+        source, target = self.refresh_targets()
+        self.diagnosis_config(source, (150, 90))
+        self.diagnosis_config(target, (95, 55))
+
+        def late_edit(image=None, args=()):
+            if args and args[0] == 'run':
+                with sqlite3.connect(target.data / 'db.sqlite') as db:
+                    db.execute('UPDATE diagnosis_threshold_config '
+                               'SET direction_rank_change=110, streak_rank_change=70 WHERE id=1')
+
+        with self.refresh_mocks(source, target, compose=late_edit):
+            self.assertEqual(target.refresh_data(source), 'refreshed')
+        self.assertEqual(self.read_diagnosis_config(target), (110, 70))
+        with sqlite3.connect(target.data / 'db.sqlite') as db:
+            self.assertEqual(db.execute('SELECT * FROM sample').fetchall(), [(1, 'synthetic')])
+        self.assertEqual(self.read_diagnosis_config(source), (150, 90))
+
+    def test_refresh_keeps_preview_default_even_if_source_has_custom_setting(self):
+        source, target = self.refresh_targets()
+        self.diagnosis_config(source, (150, 90))
+        self.diagnosis_config(target)
+        with self.refresh_mocks(source, target):
+            self.assertEqual(target.refresh_data(source), 'refreshed')
+        self.assertIsNone(self.read_diagnosis_config(target))
+
+    def test_refresh_failure_restores_preview_diagnosis_setting(self):
+        source, target = self.refresh_targets()
+        self.diagnosis_config(source)
+        self.diagnosis_config(target, (95, 55))
+        with self.refresh_mocks(source, target, smoke=[RuntimeError('Synthetic startup failure'), None]):
+            with self.assertRaises(RuntimeError):
+                target.refresh_data(source)
+        self.assertEqual(self.read_diagnosis_config(target), (95, 55))
+        self.assertFalse(target.journal_path.exists())
+
     def test_refresh_applies_source_inserts_updates_deletes_and_keeps_old_preview_backup(self):
         source, target = self.refresh_targets()
         (source.data / 'raw').mkdir()

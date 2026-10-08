@@ -97,6 +97,36 @@ def restore(data, backup):
     db_check(data / 'db.sqlite')
 
 
+def retain_preview_diagnosis_thresholds(backup, replacement):
+    """Preserve only the preview's global diagnosis setting across a source refresh.
+
+    The caller has stopped the preview writer and captured ``backup``. A missing row
+    is meaningful (factory defaults), so it also clears any source-side row.
+    """
+    backup_db = Path(backup) / 'db.sqlite'
+    replacement_db = Path(replacement) / 'db.sqlite'
+    table = 'diagnosis_threshold_config'
+    with sqlite3.connect(backup_db.as_uri() + '?mode=ro', uri=True) as old:
+        if old.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?', (table,)).fetchone() is None:
+            return  # old preview release predates migration 0018
+        row = old.execute(
+            'SELECT id,direction_rank_change,streak_rank_change,updated_at '
+            'FROM diagnosis_threshold_config WHERE id=1'
+        ).fetchone()
+    with sqlite3.connect(replacement_db) as new:
+        if new.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?', (table,)).fetchone() is None:
+            raise RuntimeError('Migrated preview database is missing diagnosis settings')
+        new.execute('DELETE FROM diagnosis_threshold_config')
+        if row is not None:
+            if row[1] < 1 or row[2] < 1:
+                raise RuntimeError('Preview diagnosis settings are invalid')
+            new.execute(
+                'INSERT INTO diagnosis_threshold_config '
+                '(id,direction_rank_change,streak_rank_change,updated_at) VALUES (?,?,?,?)', row
+            )
+    db_check(replacement_db)
+
+
 def data_digest(directory):
     """Fingerprint a completed immutable snapshot, including uploaded source files."""
     digest = hashlib.sha256()
@@ -349,6 +379,8 @@ class Target:
             journal['phase'] = 'backup_complete'
             atomic_json(self.journal_path, journal)
             if replacement is not None:
+                if self.cfg.get('data_refresh'):
+                    retain_preview_diagnosis_thresholds(backup, replacement)
                 restore(self.data, replacement)
             self.start(image)
             self.validate_mount()
