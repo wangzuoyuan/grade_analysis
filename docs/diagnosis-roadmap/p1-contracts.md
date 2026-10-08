@@ -129,13 +129,16 @@ def classify_student(features: dict) -> dict   # 输入= B1 单生 features JSON
 STABILITY_WINDOW_N = 5            # 稳定性窗口场次
 STABILITY_MIN_POINTS = 3
 STABILITY_RANGE_LABELS = ((0.10, "稳定"), (0.25, "中等波动"))  # 极差>0.25→高波动
-TREND_DIRECTION_MIN_CHANGE = 20   # 名次变化≥20 名才算 进步/退步 方向
+TREND_DIRECTION_MIN_CHANGE = 80   # 最近三次相邻考试的名次净变化默认阈值；回看名次同口径
+TREND_STREAK_MIN_CHANGE = 50      # 连续进退步要求每次相邻考试均达到的默认阈值
 HOMEWORK_RISK_30D = 3             # 30 天缺交次数阈值
 HOMEWORK_RISK_STREAK_DAYS = 2     # 当前连缺天数阈值
 IMBALANCE_MIN_CONSECUTIVE = 2     # 偏科连续场数
 CHANGE_DECOMPOSITION_TOP_N = 3    # B3 主要变化科目数
 CLASS_GROUP_MIN_SIZE = 3          # B3 班级分组最小样本
 ```
+
+以上两个名次阈值可在全局设置中分别调整，持久化于 `diagnosis_threshold_config`；未配置时使用 80/50。诊断特征、学生类型、关注回看与教研名次三段统计读取同一配置。百分点和等级分展示阈值仍分别为 5 和 3。
 
 ## 5. B3 变化分解：`changes.py`
 

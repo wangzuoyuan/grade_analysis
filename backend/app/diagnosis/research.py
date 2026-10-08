@@ -10,8 +10,7 @@
 
 同源红线（契约 §2 / 铁律 1，违反即返工）：
 - 每人变化一律复用 B3 ``changes.student_change_decomposition``（禁止另算
-  第二口径）；三段计数的阈值复用 B1 ``thresholds.TREND_DIRECTION_MIN_CHANGE``
-  同一常量（不自带副本）；
+  第二口径）；名次三段计数读取 B1 全局方向阈值（不自带副本）；
 - 类型队列复用 B2 ``types.classify_student``（输入 = B1 ``features`` 单生
   特征，与 types 端点/行动首页同一管道：``class_features`` 每生行 +
   ``classify_student``）；
@@ -152,7 +151,7 @@ def rules_version_combined() -> str:
     return f"{th.CALC_VERSION}/{REVIEW_CALC_VERSION}/{CALC_VERSION}"
 
 
-def _metric_direction_note(unit: str) -> str:
+def _metric_direction_note(unit: str, rank_threshold: int) -> str:
     base = {
         "rank": _DIRECTION_NOTE_RANK,
         "percentile": _DIRECTION_NOTE_PERCENTILE,
@@ -160,8 +159,8 @@ def _metric_direction_note(unit: str) -> str:
     }.get(unit, _DIRECTION_NOTE_PERCENTILE)
     return (
         base
-        + f"三段计数的持平阈值复用趋势方向常量 TREND_DIRECTION_MIN_CHANGE="
-        f"{th.TREND_DIRECTION_MIN_CHANGE}（按指标自身单位计，|变化| 低于阈值计为持平）。"
+        + f"三段计数的持平阈值为{rank_threshold if unit == 'rank' else 20}"
+        f"（按指标自身单位计，|变化| 低于阈值计为持平）。"
         + _NO_CAUSAL_NOTE
     )
 
@@ -170,10 +169,10 @@ def _smaller_is_better(unit: str) -> bool:
     return unit in ("rank", "percentile")
 
 
-def _direction_of(change: float, unit: str) -> str:
-    """三段计数判定（阈值 = TREND_DIRECTION_MIN_CHANGE 同一常量，按指标
+def _direction_of(change: float, unit: str, rank_threshold: Optional[int] = None) -> str:
+    """三段计数判定（名次阈值与全局诊断方向同口径，按指标
     自身单位；方向含义随「越小越好/越大越好」切换）。"""
-    t = th.TREND_DIRECTION_MIN_CHANGE
+    t = (rank_threshold or th.TREND_DIRECTION_MIN_CHANGE) if unit == "rank" else 20
     improved_is = change <= -t if _smaller_is_better(unit) else change >= t
     declined_is = change >= t if _smaller_is_better(unit) else change <= -t
     if improved_is:
@@ -583,6 +582,7 @@ def outcome_aggregate(
     _ensure_exams_readable(db, ctx, [from_exam, to_exam])
     meta = metric_meta_or_422(db, ctx, metric)  # 非法指标 → 422（唯一口径）
     unit = unit_of_metric(meta)
+    rank_threshold = th.get_trend_thresholds(db)["direction_rank_change"]
 
     members, transferred, extra = _members_of(db, ctx, parsed, academic_year_id)
     names = q.names_for(db, sorted(set(members) | set(transferred)))
@@ -608,7 +608,7 @@ def outcome_aggregate(
             excluded[bucket]["person_ids"].append(pid)
             excluded[bucket]["n"] += 1
             continue
-        direction = _direction_of(change, unit)
+        direction = _direction_of(change, unit, rank_threshold)
         if direction == DIRECTION_PROGRESS:
             improved += 1
         elif direction == DIRECTION_DECLINE:
@@ -674,8 +674,8 @@ def outcome_aggregate(
         "from_exam_date": from_date.isoformat() if from_date else None,
         "to_exam": to_exam,
         "to_exam_date": to_date.isoformat() if to_date else None,
-        "direction_note": _metric_direction_note(unit),
-        "threshold": th.TREND_DIRECTION_MIN_CHANGE,
+        "direction_note": _metric_direction_note(unit, rank_threshold),
+        "threshold": rank_threshold if unit == "rank" else 20,
         "status": "ok" if members else "empty",
         "missing_reason": None if members else "该队列在本范围内没有成员（空队列如实返回零计数）",
         "comparable_n": len(changes),

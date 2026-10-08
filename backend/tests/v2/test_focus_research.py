@@ -10,12 +10,14 @@ import pytest
 
 @pytest.fixture(scope="module")
 def demo(isolated_module_schema):
-    from app.db.models import SessionLocal
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
     script = Path(__file__).resolve().parents[3] / "scripts/seed_research_demo.py"
     spec = importlib.util.spec_from_file_location("focus_demo", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with SessionLocal() as db:
+        db.add(DiagnosisThresholdConfig(id=1, direction_rank_change=20, streak_rank_change=20))
+        db.flush()
         return module.seed_demo(db)
 
 
@@ -89,7 +91,7 @@ def test_scalar_values_units_and_changes_match_b3(sample):
             assert improved["change"] == -24 and improved["direction"] == "进步"
 
 
-@pytest.mark.parametrize("change,unit,direction", [(-20,"rank","进步"),(19,"rank","未达变化阈值"),
+@pytest.mark.parametrize("change,unit,direction", [(-80,"rank","进步"),(79,"rank","未达变化阈值"),
     (5,"percentile","退步"),(-4.9,"percentile","未达变化阈值"),(3,"grade_score","进步"),(-3,"grade_score","退步")])
 def test_display_thresholds_keep_different_units(change, unit, direction):
     from app.diagnosis.focus import _direction

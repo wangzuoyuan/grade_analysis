@@ -34,10 +34,13 @@ EXAM_OLD = "2024期末"  # AY2 旧学年（2025-01-10）
 def p1b1_seed(v1_seed):
     """在 v1_seed 基础上补种诊断场景（ORM 直种，不走导入链路）。"""
     from app.db import workspace_models as wm
-    from app.db.models import SessionLocal
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
 
     s = v1_seed
     db = SessionLocal()
+    # 旧场景的 12/20 名变化断言专门验证自定义阈值；出厂默认另测。
+    db.add(DiagnosisThresholdConfig(id=1, direction_rank_change=20, streak_rank_change=20))
+    db.flush()
     today = date.today()
 
     def d(days_ago: int) -> date:
@@ -278,7 +281,8 @@ def test_thresholds_constants_match_contract():
     assert th.STABILITY_WINDOW_N == 5
     assert th.STABILITY_MIN_POINTS == 3
     assert th.STABILITY_RANGE_LABELS == ((0.10, "稳定"), (0.25, "中等波动"))
-    assert th.TREND_DIRECTION_MIN_CHANGE == 20
+    assert th.TREND_DIRECTION_MIN_CHANGE == 80
+    assert th.TREND_STREAK_MIN_CHANGE == 50
     assert th.HOMEWORK_RISK_30D == 3
     assert th.HOMEWORK_RISK_STREAK_DAYS == 2
     assert th.IMBALANCE_MIN_CONSECUTIVE == 2

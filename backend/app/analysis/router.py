@@ -13,6 +13,62 @@ class BandConfigPayload(BaseModel):
     weak_min: int
 
 
+class DiagnosisThresholdPayload(BaseModel):
+    direction_rank_change: int
+    streak_rank_change: int
+
+
+@router.get("/diagnosis-threshold-config")
+async def get_diagnosis_threshold_config():
+    from app.db.models import SessionLocal
+    from app.diagnosis.thresholds import get_trend_thresholds
+
+    db = SessionLocal()
+    try:
+        return get_trend_thresholds(db)
+    finally:
+        db.close()
+
+
+@router.put("/diagnosis-threshold-config")
+async def update_diagnosis_threshold_config(payload: DiagnosisThresholdPayload):
+    from datetime import datetime
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
+    from app.diagnosis.thresholds import get_trend_thresholds
+
+    if not 1 <= payload.direction_rank_change <= 1000 or not 1 <= payload.streak_rank_change <= 1000:
+        raise HTTPException(400, "进退步阈值须为 1–1000 的整数")
+    db = SessionLocal()
+    try:
+        row = db.get(DiagnosisThresholdConfig, 1)
+        if row is None:
+            row = DiagnosisThresholdConfig(id=1)
+            db.add(row)
+        row.direction_rank_change = payload.direction_rank_change
+        row.streak_rank_change = payload.streak_rank_change
+        row.updated_at = datetime.utcnow()
+        db.commit()
+        return get_trend_thresholds(db)
+    finally:
+        db.close()
+
+
+@router.delete("/diagnosis-threshold-config")
+async def reset_diagnosis_threshold_config():
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
+    from app.diagnosis.thresholds import get_trend_thresholds
+
+    db = SessionLocal()
+    try:
+        row = db.get(DiagnosisThresholdConfig, 1)
+        if row is not None:
+            db.delete(row)
+            db.commit()
+        return get_trend_thresholds(db)
+    finally:
+        db.close()
+
+
 @router.get("/rank-metrics")
 async def get_rank_metrics(grade: int, mode: str = "frequency"):
     """返回指定年级在排名区间筛选/排名频次统计中可选的指标。"""

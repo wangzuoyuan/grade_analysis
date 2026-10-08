@@ -100,7 +100,7 @@ def test_thresholds_match_contract_section4():
     assert types.STABILITY_WINDOW_N == 5
     assert types.STABILITY_MIN_POINTS == 3
     assert types.STABILITY_RANGE_LABELS == ((0.10, "稳定"), (0.25, "中等波动"))
-    assert types.TREND_DIRECTION_MIN_CHANGE == 20
+    assert types.TREND_DIRECTION_MIN_CHANGE == 80
     assert types.HOMEWORK_RISK_30D == 3
     assert types.HOMEWORK_RISK_STREAK_DAYS == 2
     assert types.IMBALANCE_MIN_CONSECUTIVE == 2
@@ -468,10 +468,13 @@ def b2_seed(v1_seed):
     - 跨域：秦甲（H 域 3 场临界稳定）↔ 秦甲·T（T 域物理 + T6 连缺）
     """
     from app.db import workspace_models as wm
-    from app.db.models import SessionLocal
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
 
     s = v1_seed
     db = SessionLocal()
+    # 既有合成样本按旧 20 名口径设计，保留为手动配置的回归验证。
+    db.add(DiagnosisThresholdConfig(id=1, direction_rank_change=20, streak_rank_change=20))
+    db.flush()
 
     ay2 = wm.AcademicYear(
         name="2024-2025", start_date=date(2024, 9, 1), end_date=date(2025, 7, 15)

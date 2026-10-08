@@ -108,7 +108,7 @@ def student_features(db: Session, scope, person_id: int, academic_year_id: int) 
         raise ResourceOutOfScope(
             "person not in current scope", details={"person_id": person_id}
         )
-    return _compute_student(db, scope, person_id, get_band_config(db))
+    return _compute_student(db, scope, person_id, get_band_config(db), th.get_trend_thresholds(db))
 
 
 def _parse_anchor_date(anchor_date_str):
@@ -145,6 +145,7 @@ def class_features_at_anchors(
         scope = _ScopeShim(scope)
     _check_year(scope, academic_year_id)
     band_config = get_band_config(db)
+    trend_thresholds = th.get_trend_thresholds(db)
     anchors: List[Optional[str]] = list(anchor_exams or [])
     if None in anchors:
         raise InvalidScopeParam(
@@ -193,6 +194,7 @@ def class_features_at_anchors(
                 scope,
                 person_id,
                 band_config,
+                trend_thresholds,
                 anchor_exam=anchor,
                 anchor_key=anchor_key,
                 anchor_date=anchor_date,
@@ -343,6 +345,7 @@ def _compute_student(
     scope: WorkspaceContext,
     person_id: int,
     band_config: dict,
+    trend_thresholds: Optional[dict] = None,
     anchor_exam: Optional[str] = None,
     anchor_key=None,
     anchor_date: Optional[date] = None,
@@ -357,7 +360,7 @@ def _compute_student(
         ordered = _truncate_at_anchor(exams, full_ordered, anchor_exam, anchor_key)
 
     current_level, notes = _current_level_indicator(exams, ordered, band_config)
-    trend = _trend_indicator(exams, ordered)
+    trend = _trend_indicator(exams, ordered, trend_thresholds)
     stability = _stability_indicator(exams, ordered)
     imbalance = _imbalance_indicator(exams, ordered)
     homework = _homework_from(scope.mode, events, line_axis_map, as_of)
@@ -524,7 +527,13 @@ def _main3_rank_points(exams: Dict[str, dict], ordered: List[str]) -> List[Tuple
     return points
 
 
-def _trend_indicator(exams: Dict[str, dict], ordered: List[str]) -> dict:
+def _trend_indicator(exams: Dict[str, dict], ordered: List[str], thresholds: Optional[dict] = None) -> dict:
+    thresholds = thresholds or {
+        "direction_rank_change": th.TREND_DIRECTION_MIN_CHANGE,
+        "streak_rank_change": th.TREND_STREAK_MIN_CHANGE,
+    }
+    direction_min = thresholds["direction_rank_change"]
+    streak_min = thresholds["streak_rank_change"]
     has_main3_rows = any(
         exams[name]["totals"].get(DEFAULT_TOTAL_TYPE) is not None for name in ordered
     )
@@ -537,6 +546,8 @@ def _trend_indicator(exams: Dict[str, dict], ordered: List[str]) -> dict:
             "streak": {"kind": None, "count": 0},
             "long_term": "数据不足",
             "valid_exam_count": 0,
+            "direction_threshold": direction_min,
+            "streak_threshold": streak_min,
         }
     points = _main3_rank_points(exams, ordered)
     # 名次差 = 上一次名次 − 本次名次（共享口径：正数 = 进步）——仅供下方
@@ -557,20 +568,20 @@ def _trend_indicator(exams: Dict[str, dict], ordered: List[str]) -> dict:
     if changes:
         window = changes[-th.TREND_DIRECTION_RECENT_N :]
         net = sum(window)
-        if net >= th.TREND_DIRECTION_MIN_CHANGE:
+        if net >= direction_min:
             direction = "进步"
-        elif net <= -th.TREND_DIRECTION_MIN_CHANGE:
+        elif net <= -direction_min:
             direction = "退步"
         else:
             direction = "持平"
     else:
         direction = "数据不足"
-    streak_kind, streak_count = _streak_of(changes)
+    streak_kind, streak_count = _streak_of(changes, streak_min)
     if len(points) >= 2:
         span = points[-1][1] - points[0][1]  # 末 − 首；负 = 名次变小 = 上升
-        if span <= -th.TREND_DIRECTION_MIN_CHANGE:
+        if span <= -direction_min:
             long_term = "上升"
-        elif span >= th.TREND_DIRECTION_MIN_CHANGE:
+        elif span >= direction_min:
             long_term = "下降"
         else:
             long_term = "平稳"
@@ -584,19 +595,23 @@ def _trend_indicator(exams: Dict[str, dict], ordered: List[str]) -> dict:
         "streak": {"kind": streak_kind, "count": streak_count},
         "long_term": long_term,
         "valid_exam_count": len(points),
+        "direction_threshold": direction_min,
+        "streak_threshold": streak_min,
     }
 
 
-def _streak_of(changes: List[int]) -> Tuple[Optional[str], int]:
-    """尾部连续同向变化的（kind, count）；单次变化 < TREND_DIRECTION_MIN_CHANGE
+def _streak_of(changes: List[int], min_change: Optional[int] = None) -> Tuple[Optional[str], int]:
+    """尾部连续同向变化的（kind, count）；单次变化 < streak threshold
     不构成方向、中断连续。"""
+    if min_change is None:
+        min_change = th.TREND_STREAK_MIN_CHANGE
     if not changes:
         return None, 0
 
     def _direction(change: int) -> Optional[str]:
-        if change >= th.TREND_DIRECTION_MIN_CHANGE:
+        if change >= min_change:
             return "进步"
-        if change <= -th.TREND_DIRECTION_MIN_CHANGE:
+        if change <= -min_change:
             return "退步"
         return None
 

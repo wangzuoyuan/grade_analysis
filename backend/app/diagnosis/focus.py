@@ -21,6 +21,12 @@ from app.diagnosis.types import classify_student
 CALC_VERSION = "p3-focus-v1"
 # 仅用于本页变化展示；不修改诊断类型。百分点/等级分阈值为待校准的暂定值。
 DISPLAY_THRESHOLDS = {"rank": th.TREND_DIRECTION_MIN_CHANGE, "percentile": 5, "grade_score": 3}
+
+
+def _display_thresholds(db):
+    return {**DISPLAY_THRESHOLDS, "rank": th.get_trend_thresholds(db)["direction_rank_change"]}
+
+
 PROBLEMS = ("明显偏科型", "持续下滑型", "短期下滑型", "临界下滑型", "稳定临界型", "临界上升型", "作业风险型", "综合风险型", "持续进步型", "稳定优秀型", "高位波动型")
 
 
@@ -62,7 +68,7 @@ def focus_cohorts(db, ctx):
             "exams": [{"exam_name": e["exam_name"], "exam_date": e["exam_date"],
                        "historical_available": bool((anchored[e["exam_name"]].get("anchor") or {}).get("date_resolved"))} for e in exams],
             "cohorts": cohorts, "metric_options": _metric_options(db, ctx),
-            "display_thresholds": DISPLAY_THRESHOLDS, "limitations": [LIMITATIONS_RETROSPECTIVE]}
+            "display_thresholds": _display_thresholds(db), "limitations": [LIMITATIONS_RETROSPECTIVE]}
 
 
 def _selection(db, ctx, cohort, from_exam):
@@ -83,8 +89,8 @@ def _selection(db, ctx, cohort, from_exam):
     return problem, _rows(cls, problem, suppressed), "exam_anchor" if anchor else "current_time_point"
 
 
-def _direction(change, unit):
-    t = DISPLAY_THRESHOLDS[unit]
+def _direction(change, unit, display_thresholds=None):
+    t = (display_thresholds or DISPLAY_THRESHOLDS)[unit]
     oriented = change if unit == "grade_score" else -change
     return "进步" if oriented >= t else "退步" if oriented <= -t else "未达变化阈值"
 
@@ -186,6 +192,7 @@ def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
         raise InvalidScopeParam("作业指标仅适用于作业风险关注名单")
     meta = metric_meta_or_422(db, ctx, metric) if not problem_metric else None
     unit = unit_of_metric(meta) if meta else "percentile" if metric == "problem:imbalance" else "count"
+    display_thresholds = _display_thresholds(db)
     notes = _intervention_notes(db, ctx)
     note_counts = {}
     for note in notes:
@@ -213,7 +220,7 @@ def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
             change, reason = _metric_change_of(decomposition, meta, unit)
             sides = _metric_sides(decomposition, meta, unit)
             row.update(change=change, from_value=sides["from"], to_value=sides["to"], comparable=change is not None,
-                       missing_reason=reason, direction=_direction(change, unit) if change is not None else "暂不可比")
+                       missing_reason=reason, direction=_direction(change, unit, display_thresholds) if change is not None else "暂不可比")
             points = metric_points(db, ctx, pid, metric)
             ordered = list(reversed(names))
             lo, hi = ordered.index(from_exam), ordered.index(to_exam)
@@ -228,7 +235,7 @@ def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
     return {"calc_version": CALC_VERSION, "as_of": ctx.as_of.isoformat(), "cohort": cohort, "problem": problem,
             "membership_basis": basis, "from_exam": from_exam, "to_exam": to_exam,
             "from_exam_date": from_day.isoformat() if from_day else None, "to_exam_date": to_day.isoformat() if to_day else None,
-            "metric": metric, "metric_unit": unit, "threshold": DISPLAY_THRESHOLDS.get(unit),
+            "metric": metric, "metric_unit": unit, "threshold": display_thresholds.get(unit),
             "threshold_provisional": unit in ("percentile", "grade_score"),
             "selected_n": len(members), "comparable_n": len(students), "excluded_n": len(excluded),
             "students": students, "excluded_students": excluded,

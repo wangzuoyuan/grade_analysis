@@ -44,10 +44,12 @@ def _d(days_offset: int) -> date:
 def p3d1_seed(v1_seed):
     """P3-D1 场景：三名 v1 学生补两场带名次考试 + 四名新学生 + 干预建档。"""
     from app.db import workspace_models as wm
-    from app.db.models import SessionLocal
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
 
     s = v1_seed
     db = SessionLocal()
+    db.add(DiagnosisThresholdConfig(id=1, direction_rank_change=20, streak_rank_change=20))
+    db.flush()
 
     def person(name, seat, *, valid_to=None):
         ident = wm.WsStudentIdentity(data_domain="homeroom", display_name=name)

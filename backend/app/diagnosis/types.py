@@ -37,7 +37,7 @@ except ModuleNotFoundError:  # B1 未合并的分支：占位值与契约 §4 �
     STABILITY_WINDOW_N = 5            # 稳定性窗口场次
     STABILITY_MIN_POINTS = 3
     STABILITY_RANGE_LABELS = ((0.10, "稳定"), (0.25, "中等波动"))  # 极差>0.25→高波动
-    TREND_DIRECTION_MIN_CHANGE = 20   # 名次变化≥20 名才算 进步/退步 方向
+    TREND_DIRECTION_MIN_CHANGE = 80   # 近三次净名次变化默认阈值
     HOMEWORK_RISK_30D = 3             # 30 天缺交次数阈值
     HOMEWORK_RISK_STREAK_DAYS = 2     # 当前连缺天数阈值
     IMBALANCE_MIN_CONSECUTIVE = 2     # 偏科连续场数

@@ -53,10 +53,13 @@ def p2c2_seed(v1_seed):
     + d1 已关闭（本周已关闭不进 due_this_week）。
     """
     from app.db import workspace_models as wm
-    from app.db.models import SessionLocal
+    from app.db.models import DiagnosisThresholdConfig, SessionLocal
 
     s = v1_seed
     db = SessionLocal()
+    # 本模块的行动优先级样本按历史 20 名阈值设计，验证自定义值可贯穿 B1/B2/C2。
+    db.add(DiagnosisThresholdConfig(id=1, direction_rank_change=20, streak_rank_change=20))
+    db.flush()
     today = date.today()
 
     def d(days_ago: int) -> date:
