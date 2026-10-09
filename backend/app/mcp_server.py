@@ -1,22 +1,28 @@
 """只读 MCP 服务端（Streamable HTTP，stateless JSON，挂载 /mcp）。
 
 作为现有 FastAPI 应用的子挂载运行，供笔记本上的 Hermes 等 MCP 客户端
-经公网 HTTPS 调用。班主任版视角：行政班 / 全科 / 总分 / 综合画像 / 作业
-与谈话档案。设计约束：
+经公网 HTTPS 调用。P0-A2 起 MCP 与应用内 AI 共用同一注册表与同一受控
+执行路径，设计约束：
 
-- 单一注册源：tools/list 由 chat/tools.py 的 TOOL_REGISTRY 中带
-  read_only=True 元数据的条目派生（旧 20 工具），并追加 P6 ws 四工具
-  （chat_tools 注册表的稳定子集，mode 必填，见 §P6 追加段）；tools/call
-  一律经 execute_tool() / execute_session_tool() 分发。本模块不 import
-  数据库模型、不拼 SQL、不复制业务查询，也不绕开既有安全边界。
-- 只读目录语义：未显式标记 read_only 的工具（含未来新增写入/删除工具）
-  既不出现在 MCP 目录中，也无法通过 MCP 调用。
-- 不污染聊天助手：MCP 元数据只存在于注册表；公开 TOOLS 是投影，
-  发往 Anthropic/OpenAI 的 schema 与引入 MCP 前完全一致。
-- 命名：本服务端用独立名称 exam-performance-analysis-mcp，不给工具名加
-  前缀、不建别名。Hermes 端两个应用（班主任版 homeroom_grade_tracker 与
-  任课教师版 grade_tracker）靠连接 key 区分命名空间，那是客户端约定，
-  不需要服务端改工具名。
+- 单一注册源（P0-A2）：tools/list 与 tools/call 只认
+  app/api/chat_tools.py 的 TOOL_REGISTRY（24 个 WsToolSpec，与应用内 AI
+  完全同一注册表，目录以注册表实际内容为准）。每个 MCP 调用必传 mode
+  （homeroom|teaching），服务端以 mode + scope 参数重新解析
+  WorkspaceContext（绝不信任客户端成员/学科），会话落
+  ChatSession(type='mcp')，执行走 execute_session_tool —— 与应用内 AI
+  同一作用域解析、同一范围校验、同一结果结构（同范围请求同结果）。
+  本模块不 import 数据库模型、不拼 SQL、不复制业务查询，也不绕开既有
+  安全边界。
+- 旧工具退出主链（P0-A2）：旧 app/chat/tools.py 的 20 工具默认不出现在
+  MCP 目录、也无法经 MCP 调用。确需兼容时以 MCP_LEGACY_TOOLS=1 显式
+  开启，目录条目显式标注 deprecated（description 前缀 + _meta.deprecated），
+  调用仍走旧 execute_tool（独立兼容路径，绝不混入新注册表链路）。
+- 只读语义：TOOL_REGISTRY 本身全只读（handler 只做 /api/v1 service 薄
+  封装，不触发表写入）；目录与调用只认 TOOL_REGISTRY，其余名称一律
+  拒绝（默认含旧工具）。
+- 不污染应用内 AI：mode 注入只发生在本模块的 MCP 目录视图里，
+  chat_tools.TOOL_REGISTRY 原样不动，发往应用内模型的 schema 与引入
+  MCP 前完全一致。
 - 认证：独立 Bearer Token（MCP_BEARER_TOKEN），hmac 恒定时间比较，
   401 带 WWW-Authenticate: Bearer。token 只从环境变量读取，绝不写日志、
   绝不出现在任何响应里。
@@ -30,6 +36,9 @@
   应用完全不受影响。
 - MCP_BEARER_TOKEN：启用时必填；空白/弱占位符/短于 32 字符 → 启动失败。
 - MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS：逗号分隔；缺省 localhost 系列。
+- MCP_LEGACY_TOOLS：默认 false。true 时旧 20 工具以 deprecated 兼容入口
+  追加进 tools/list（追加在 24 个新工具之后），并可经旧路径调用；false
+  （默认）时旧工具不可见也不可调用——绝不作为默认暴露路径。
 """
 
 from __future__ import annotations
@@ -63,6 +72,12 @@ class MCPConfigError(RuntimeError):
 
 def mcp_enabled() -> bool:
     return os.environ.get("MCP_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def legacy_tools_enabled() -> bool:
+    """旧工具 deprecated 兼容入口开关（默认关闭）。只有显式
+    MCP_LEGACY_TOOLS=1 才把旧 20 工具追加进目录并允许旧路径调用。"""
+    return os.environ.get("MCP_LEGACY_TOOLS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_bearer_token() -> str:
@@ -145,72 +160,126 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-# ────────────────────── 只读目录（由单一注册源派生） ──────────────────────
+# ────────────────────── 只读目录（由 chat_tools 注册表派生，P0-A2） ──────────────────────
 
-# 班主任版当前注册表中的全部 20 个只读工具（成绩 16 + 作业 3 + 档案 1）。
-# 防止注册表意外回退导致 MCP 目录缺工具；新增只读工具不必改这里。
-REQUIRED_READONLY_TOOLS: tuple[str, ...] = (
-    "list_exams",
-    "student_lookup",
-    "student_identity_lookup",
-    "student_exam_detail",
-    "student_trend",
-    "student_learning_profile",
-    "class_trend",
-    "compare_classes",
-    "focus_list",
-    "subject_weakness",
-    "subject_progress_ranking",
-    "multi_exam_progress_ranking",
-    "band_trend",
-    "custom_rank_band_trend",
-    "rank_range_filter",
-    "rank_frequency_stat",
-    "student_homework_summary",
-    "class_homework_ranking",
-    "homework_grade_correlation",
-    "student_notes",
+# mode 参数的 JSON Schema（每个 MCP 工具调用必传 mode；tools/list 的
+# inputSchema 注入必填 mode 与语义说明）
+_WS_MODE_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "enum": ["homeroom", "teaching"],
+    "description": (
+        "必填：数据域。homeroom=班主任行政班视角（全科+总分）；"
+        "teaching=任课教师教学班视角（仅任教学科）。成员/学科/班级范围"
+        "由服务端解析，客户端不可提交成员名单。"
+    ),
+}
+
+# 追加到每个工具 description 的 MCP 调用说明（Q09：tools/list 注明 mode
+# 必填与 scope 参数语义）
+_MCP_DESC_SUFFIX = (
+    "（MCP 调用必传 mode=homeroom|teaching；可选 academic_year_id/"
+    "class_id/teaching_class_id/subject 由服务端重新解析作用域，"
+    "subject 同时作为工具层学科过滤参数）"
 )
 
 
-def mcp_tool_catalog() -> list[dict[str, Any]]:
-    """MCP 工具目录：TOOL_REGISTRY 中 read_only 条目的 MCP 形状视图。
+def ws_tool_catalog() -> list[dict[str, Any]]:
+    """MCP 默认工具目录：chat_tools.TOOL_REGISTRY 全量 WsToolSpec 的 MCP
+    形状视图（P0-A2 起与应用内 AI 唯一注册表，目录以注册表实际内容为准）。
 
-    description / input_schema 原样沿用注册表，不改写。每次调用都重新
-    读取注册表，因此注册表变化（含测试 monkeypatch）即时生效。
+    - description = 注册表 description 原文 + MCP mode/scope 调用说明；
+    - inputSchema = 注册表 schema 深拷贝后注入必填 mode，其余原样；
+    - 每次调用都重新读取注册表，注册表变化（含测试 monkeypatch）即时生效。
     """
+    from mcp.types import ToolAnnotations
+
+    from app.api.chat_tools import TOOL_REGISTRY
+
+    catalog = []
+    for spec in TOOL_REGISTRY:
+        schema = json.loads(json.dumps(spec.input_schema))  # 深拷贝注册表条目
+        properties = {"mode": dict(_WS_MODE_SCHEMA)}
+        properties.update(schema.get("properties") or {})
+        schema["properties"] = properties
+        schema["required"] = ["mode", *list(schema.get("required") or [])]
+        catalog.append(
+            {
+                "name": spec.name,
+                "description": spec.description + _MCP_DESC_SUFFIX,
+                "inputSchema": schema,
+                "annotations": ToolAnnotations(
+                    read_only_hint=True,
+                    destructive_hint=False,
+                    idempotent_hint=True,
+                    open_world_hint=False,
+                ),
+            }
+        )
+    return catalog
+
+
+def legacy_tool_catalog() -> list[dict[str, Any]]:
+    """旧工具 deprecated 兼容目录（仅 MCP_LEGACY_TOOLS=1 时由
+    mcp_tool_catalog 追加）：app/chat/tools.py 旧注册表中 read_only=True
+    的条目，显式标注 deprecated（description 前缀 + deprecated 标记，
+    list_tools 落为 _meta.deprecated）。"""
     from mcp.types import ToolAnnotations
 
     from app.chat.tools import readonly_tool_catalog
 
-    return [
-        {
-            "name": entry["name"],
-            "description": entry.get("description", ""),
-            "inputSchema": entry.get("input_schema", {"type": "object", "properties": {}}),
-            "annotations": ToolAnnotations(
-                read_only_hint=True,
-                destructive_hint=False,
-                idempotent_hint=True,
-                open_world_hint=False,
-            ),
-        }
-        for entry in readonly_tool_catalog()
-    ]
+    catalog = []
+    for entry in readonly_tool_catalog():
+        catalog.append(
+            {
+                "name": entry["name"],
+                "description": (
+                    "[deprecated] " + entry.get("description", "")
+                    + "（旧版工具体系兼容入口，仅 MCP_LEGACY_TOOLS=1 时暴露，"
+                    "P7 前下线；新集成请使用同目录的 chat_tools 注册表工具）"
+                ),
+                "inputSchema": entry.get(
+                    "input_schema", {"type": "object", "properties": {}}
+                ),
+                "annotations": ToolAnnotations(
+                    read_only_hint=True,
+                    destructive_hint=False,
+                    idempotent_hint=True,
+                    open_world_hint=False,
+                ),
+                "deprecated": True,
+            }
+        )
+    return catalog
+
+
+def mcp_tool_catalog() -> list[dict[str, Any]]:
+    """tools/list 的完整目录：默认 = ws_tool_catalog()（24 个新注册表
+    工具，与应用内 AI 同一注册表）；仅当 MCP_LEGACY_TOOLS=1 时追加
+    legacy_tool_catalog()（deprecated 兼容入口，绝不进入默认暴露路径）。"""
+    catalog = ws_tool_catalog()
+    if legacy_tools_enabled():
+        catalog = catalog + legacy_tool_catalog()
+    return catalog
 
 
 def validate_required_tools() -> None:
-    """确保班主任版必须暴露的 20 个只读工具都在目录中（防止注册表意外回退）。"""
-    names = {t["name"] for t in mcp_tool_catalog()}
-    missing = [n for n in REQUIRED_READONLY_TOOLS if n not in names]
-    if missing:
+    """确保 MCP 默认目录与应用内 AI 注册表（chat_tools.TOOL_REGISTRY）
+    完全一致（名称与顺序逐项相等，P0-A2 单一注册源）——防止目录生成
+    被意外过滤/回退导致 MCP 缺工具或漂移。不一致即 MCPConfigError，
+    启动失败 fail closed。"""
+    from app.api.chat_tools import TOOL_NAMES
+
+    names = [t["name"] for t in ws_tool_catalog()]
+    if names != list(TOOL_NAMES):
         raise MCPConfigError(
-            "MCP 工具目录缺少必须暴露的只读工具: " + ", ".join(missing)
+            "MCP 工具目录必须与应用内 AI 注册表（chat_tools.TOOL_REGISTRY）"
+            "完全一致：目录=" + ", ".join(names)
+            + "；注册表=" + ", ".join(TOOL_NAMES)
         )
 
 
 def build_mcp_server():
-    """构建 low-level MCP Server（list/call 均走注册表与 execute_tool）。"""
+    """构建 low-level MCP Server（list/call 均走注册表派生目录）。"""
     from mcp.server import Server
     from mcp.types import (
         CallToolRequestParams,
@@ -220,57 +289,60 @@ def build_mcp_server():
         Tool,
     )
 
-    from app.chat import tools as chat_tools
-
     async def list_tools(ctx, params):
-        # tools/list 必须发布 P6 ws 四工具（完整
-        # name/description/inputSchema，mode 必填），正常 MCP 客户端才能
-        # 发现并使用合并版能力；旧 20 工具的目录形状零改动。
+        # tools/list 发布 chat_tools 注册表全量工具（name/description/
+        # inputSchema，mode 必填注入），正常 MCP 客户端即可发现并使用与
+        # 应用内 AI 完全一致的能力；MCP_LEGACY_TOOLS=1 时追加 deprecated
+        # 旧工具（显式标注）。
         tools = [
             Tool(
                 name=t["name"],
                 description=t["description"],
                 input_schema=t["inputSchema"],
                 annotations=t["annotations"],
+                **({"meta": {"deprecated": True}} if t.get("deprecated") else {}),
             )
-            for t in mcp_tool_catalog() + p6_ws_mcp_catalog()
+            for t in mcp_tool_catalog()
         ]
         return ListToolsResult(tools=tools)
 
     async def call_tool(ctx, params: CallToolRequestParams) -> CallToolResult:
-        # ── P6 追加分支（契约 docs/contracts/p6-ai-mcp.md §4）：ws 域工具
-        #    走 chat_tools 同一注册表（mode 必传，服务端重新解析 scope，
-        #    会话落 ChatSession(type='mcp')）；本分支之下的既有只读目录
-        #    分发逻辑零改动。──
-        if params.name in P6_WS_TOOL_NAMES:
-            return _p6_call_ws_tool(params.name, dict(params.arguments or {}))
-        allowed = {t["name"] for t in mcp_tool_catalog()}
-        if params.name not in allowed:
-            # 未列入只读目录的工具一律不可经 MCP 调用（含未来新增写工具）。
-            return CallToolResult(
-                content=[TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {"error": "未知或不可经 MCP 调用的工具: " + params.name},
-                        ensure_ascii=False,
-                    ),
-                )],
-                is_error=True,
-            )
-        # 参数原样透传给 execute_tool —— MCP 层不改写、不过滤。
-        args = dict(params.arguments or {})
-        result = chat_tools.execute_tool(params.name, args)
-        if isinstance(result, (str, int, float, bool)):
-            text = json.dumps({"result": result}, ensure_ascii=False, default=str)
-        else:
-            text = json.dumps(result, ensure_ascii=False, default=str)
-        return CallToolResult(content=[TextContent(type="text", text=text)])
+        from app.api.chat_tools import TOOL_REGISTRY
+
+        # 每次调用重新读取注册表（与目录同一来源，注册表变化即时生效）。
+        ws_names = {spec.name for spec in TOOL_REGISTRY}
+        # ── 新注册表主链（P0-A2）：chat_tools 注册表工具一律走与应用内
+        #    AI 相同的受控路径（mode 必传 → 服务端重新解析 scope → 落
+        #    ChatSession(type='mcp') → execute_session_tool，作用域解析/
+        #    范围校验/结果结构一致）。──
+        if params.name in ws_names:
+            return _call_ws_tool(params.name, dict(params.arguments or {}))
+        # ── deprecated 兼容入口（仅 MCP_LEGACY_TOOLS=1）：旧工具走旧
+        #    execute_tool 独立路径，绝不混入新注册表链路。──
+        if legacy_tools_enabled():
+            legacy_names = {t["name"] for t in legacy_tool_catalog()}
+            if params.name in legacy_names:
+                return _call_legacy_tool(params.name, dict(params.arguments or {}))
+        # 未列入目录的工具一律不可经 MCP 调用（默认含旧工具与未来新增
+        # 的任何非注册表名称）。
+        return _error_result(
+            {"error": "未知或不可经 MCP 调用的工具: " + params.name}
+        )
 
     return Server(
         "exam-performance-analysis-mcp",
         version="1.0.0",
         on_list_tools=list_tools,
         on_call_tool=call_tool,
+    )
+
+
+def _error_result(payload: dict[str, Any]):
+    from mcp.types import CallToolResult, TextContent
+
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, default=str))],
+        is_error=True,
     )
 
 
@@ -287,10 +359,11 @@ class MCPMount:
 
 
 def mount_mcp() -> MCPMount:
-    """构建完整 MCP 挂载（认证 + 传输防护 + 只读目录校验）。
+    """构建完整 MCP 挂载（认证 + 传输防护 + 目录一致性校验）。
 
-    任何配置错误（token 缺失/弱、必须工具缺失）在此抛出，应用启动失败。
-    挂载后规范 URL 为 /mcp/（FastAPI mount 会把 /mcp 以 307 重定向到 /mcp/）。
+    任何配置错误（token 缺失/弱、目录与注册表不一致）在此抛出，应用
+    启动失败。挂载后规范 URL 为 /mcp/（FastAPI mount 会把 /mcp 以 307
+    重定向到 /mcp/）。
     """
     from mcp.server.transport_security import TransportSecuritySettings
 
@@ -311,104 +384,23 @@ def mount_mcp() -> MCPMount:
     return MCPMount(BearerAuthMiddleware(inner, token), server)
 
 
-# ══════════ P6 追加：ws 域只读工具（契约 docs/contracts/p6-ai-mcp.md §4/§0.1） ══════════
+# ══════════ 主链：chat_tools 注册表工具的受控执行路径（P0-A2） ══════════
 #
-# 与既有 20 个旧表只读工具的关系：
-# - 不动旧工具、旧 20 工具的目录条目零改动；ws 四工具经 tools/list 发布
-#   （Q09：正常 MCP 客户端必须能发现），追加在旧目录之后。
-# - ws 工具清单 = app/api/chat_tools.py 注册表的稳定子集（契约 §4 首版
-#   四个）；每个调用必传 mode（缺省 422 invalid_scope_param 语义）。
+# MCP 与应用内 AI（app/api/chat.py）共用同一套约定（契约
+# docs/contracts/p6-ai-mcp.md §0/§2/§4）：
+# - 每个调用必传 mode（缺省 422 invalid_scope_param 语义错误结果）；
 # - 服务端以 mode + scope 参数重新解析 WorkspaceContext（绝不信任客户端
-#   成员/学科），会话落 ChatSession(type='mcp')，执行走 execute_session_tool
-#   与 AI 聊天完全同源（A01 同查询同结果）。
-
-# MCP 稳定子集（契约 §4 首版；写操作工具一律不注册，域投影在
-# execute_session_tool 内仍按会话域裁剪）
-P6_WS_TOOL_NAMES: tuple[str, ...] = (
-    "search_students",
-    "get_student_profile",
-    "get_exam_stats",
-    "get_scores_table",
-)
-
-# mode 参数的 JSON Schema（Q09：tools/list 必须注明 mode 必填与语义）
-_WS_MODE_SCHEMA: dict[str, Any] = {
-    "type": "string",
-    "enum": ["homeroom", "teaching"],
-    "description": (
-        "必填：数据域。homeroom=班主任行政班视角（全科+总分）；"
-        "teaching=任课教师教学班视角（仅任教学科）。成员/学科/班级范围"
-        "由服务端解析，客户端不可提交成员名单。"
-    ),
-}
+#   成员/学科），快照冻结后落 ChatSession(type='mcp')；
+# - 执行走 execute_session_tool：域投影校验 + 每轮快照重验（Q02）+ 入参
+#   作用域校验 + DomainError/异常兜底转模型可读错误文本，与应用内 AI
+#   完全同源（A01 同查询同结果）。
+# - 结果体 = 工具结果本身（无 MCP 侧注入键），同范围请求同结果。
 
 
-def p6_ws_mcp_catalog() -> list[dict[str, Any]]:
-    """tools/list 用的 ws 工具目录（Q09）：chat_tools 注册表条目 + 必填
-    mode 注入 inputSchema、调用说明并入 description。返回形状与
-    mcp_tool_catalog() 一致（name/description/inputSchema/annotations）。"""
-    from mcp.types import ToolAnnotations
-
-    catalog = []
-    for entry in p6_ws_tool_catalog():
-        schema = json.loads(json.dumps(entry["input_schema"]))  # 深拷贝注册表条目
-        properties = {"mode": dict(_WS_MODE_SCHEMA)}
-        properties.update(schema.get("properties") or {})
-        schema["properties"] = properties
-        schema["required"] = ["mode", *list(schema.get("required") or [])]
-        catalog.append(
-            {
-                "name": entry["name"],
-                "description": (
-                    entry["description"]
-                    + "（MCP 调用必传 mode=homeroom|teaching；可选 academic_year_id/"
-                    "class_id/teaching_class_id/subject 由服务端重新解析作用域）"
-                ),
-                "inputSchema": schema,
-                "annotations": ToolAnnotations(
-                    read_only_hint=True,
-                    destructive_hint=False,
-                    idempotent_hint=True,
-                    open_world_hint=False,
-                ),
-            }
-        )
-    return catalog
-
-
-def p6_ws_tool_catalog() -> list[dict[str, Any]]:
-    """P6 ws 工具目录（供调用侧/测试发现；注册表缺失即配置错误 fail closed）。"""
-    from app.api.chat_tools import TOOL_REGISTRY as WS_REGISTRY
-
-    by_name = {spec.name: spec for spec in WS_REGISTRY}
-    catalog = []
-    for name in P6_WS_TOOL_NAMES:
-        spec = by_name.get(name)
-        if spec is None:
-            raise MCPConfigError(f"P6 ws 工具在 chat_tools 注册表中缺失: {name}")
-        catalog.append(
-            {
-                "name": spec.name,
-                "description": spec.description,
-                "input_schema": spec.input_schema,
-                "domains": list(spec.domains),
-            }
-        )
-    return catalog
-
-
-def _p6_ws_error_result(payload: dict[str, Any]):
-    from mcp.types import CallToolResult, TextContent
-
-    return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, default=str))],
-        is_error=True,
-    )
-
-
-def _p6_call_ws_tool(name: str, args: dict[str, Any]):
-    """ws 工具调用入口：mode 必传（缺省 422 语义错误结果）→ 服务端重新
-    解析 scope → 落 ChatSession(type='mcp') → 走 chat_tools 注册表执行。"""
+def _call_ws_tool(name: str, args: dict[str, Any]):
+    """注册表工具调用入口（与应用内 AI 同一受控路径）：mode 必传（缺省
+    422 语义错误结果）→ 服务端重新解析 scope → 落 ChatSession(type='mcp')
+    → 走 chat_tools 注册表 execute_session_tool 执行。"""
     from mcp.types import CallToolResult, TextContent
 
     from app.api import current_teacher_id
@@ -424,7 +416,7 @@ def _p6_call_ws_tool(name: str, args: dict[str, Any]):
 
     mode = args.get("mode")
     if not mode:
-        return _p6_ws_error_result(
+        return _error_result(
             {
                 "error": "invalid_scope_param",
                 "status": 422,
@@ -432,7 +424,7 @@ def _p6_call_ws_tool(name: str, args: dict[str, Any]):
             }
         )
     if mode not in VALID_MODES:
-        return _p6_ws_error_result(
+        return _error_result(
             {
                 "error": "invalid_scope_param",
                 "status": 422,
@@ -440,10 +432,16 @@ def _p6_call_ws_tool(name: str, args: dict[str, Any]):
             }
         )
 
-    # scope 类参数只用于服务端重新解析作用域；其余参数透传给工具层
+    # scope 类参数只用于服务端重新解析作用域；其余参数透传给工具层。
+    # subject 双重语义（与应用内 AI 同参同果）：既参与作用域解析
+    # （teaching 钉任教学科），又是工具层的学科过滤参数（homeroom 全科
+    # 视角按学科收窄输出）——因此同时透传给工具层；academic_year_id/
+    # class_id/teaching_class_id 仍为作用域专用（应用内会话锚点语义）。
     scope_keys = ("academic_year_id", "class_id", "teaching_class_id", "subject")
     scope_args = {key: args.get(key) for key in scope_keys}
     tool_args = {key: value for key, value in args.items() if key != "mode" and key not in scope_keys}
+    if args.get("subject") is not None:
+        tool_args["subject"] = args["subject"]
 
     db = SessionLocal()
     try:
@@ -452,7 +450,7 @@ def _p6_call_ws_tool(name: str, args: dict[str, Any]):
             snapshot = resolve_scope_snapshot(db, teacher_id, mode, **scope_args)
         except DomainError as exc:
             status, payload = exc.to_http()
-            return _p6_ws_error_result(
+            return _error_result(
                 {"error": exc.code, "status": status, **payload}
             )
         session = ChatSession(
@@ -467,23 +465,44 @@ def _p6_call_ws_tool(name: str, args: dict[str, Any]):
         except ScopeDriftError:
             # Q02：MCP 单次调用路径同样受每轮重验保护（本入口刚解析的
             # 快照正常不会漂移；防御并发状态竞态，统一转范围失效错误结果）
-            return _p6_ws_error_result(
+            return _error_result(
                 {
                     "error": "scope_drifted",
                     "detail": "会话范围已变化（关联撤销/版本变化/成员变化），请重新发起调用",
                 }
             )
         db.commit()  # 工具全部只读；此处仅归位事务，便于同会话复用连接
-        body: dict[str, Any] = {"session_id": session.id}
-        if isinstance(result, dict):
-            body.update(result)
-        else:
-            body["result"] = result
+        body: dict[str, Any] = dict(result) if isinstance(result, dict) else {
+            "result": result
+        }
         return CallToolResult(
             content=[
                 TextContent(type="text", text=json.dumps(body, ensure_ascii=False, default=str))
             ],
-            is_error=isinstance(result, dict) and "error" in result,
+            is_error="error" in body,
         )
     finally:
         db.close()
+
+
+# ══════════ deprecated 兼容入口：旧工具体系（仅 MCP_LEGACY_TOOLS=1） ══════════
+#
+# 旧 app/chat/tools.py 20 工具退出 MCP 主链（P0-A2）：默认不暴露、不可
+# 调用；显式开启 MCP_LEGACY_TOOLS 后经本独立路径兼容调用（目录条目标注
+# deprecated，见 legacy_tool_catalog / list_tools）。旧路径与应用内旧聊天
+# 助手（/api/chat）同一 execute_tool 分发，保持既有行为零改动，P7 前下线。
+
+
+def _call_legacy_tool(name: str, args: dict[str, Any]):
+    """旧工具兼容调用：原样透传给 chat/tools.py execute_tool（与 P6 引入
+    MCP 前的 MCP 分发完全一致）。"""
+    from mcp.types import CallToolResult, TextContent
+
+    from app.chat import tools as chat_tools
+
+    result = chat_tools.execute_tool(name, args)
+    if isinstance(result, (str, int, float, bool)):
+        text = json.dumps({"result": result}, ensure_ascii=False, default=str)
+    else:
+        text = json.dumps(result, ensure_ascii=False, default=str)
+    return CallToolResult(content=[TextContent(type="text", text=text)])

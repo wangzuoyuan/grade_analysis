@@ -57,12 +57,12 @@ export function assignmentStatusLabel(status: string): string {
 }
 
 /**
- * 相关性方向文案（契约 §4：Y 是名次，数值越小名次越好；
- * r<0 → submit_up_rank_up，r>0 → submit_up_rank_down）。
+ * 相关性方向文案（P2-C1 起 y=成绩分数：r/rho>0 → submit_up_score_up，
+ * <0 → submit_up_score_down；详见 /diagnosis/correlation 响应的 note 字段）。
  */
 export function correlationDirectionLabel(direction: string | null): string {
-  if (direction === 'submit_up_rank_up') return '提交率越高，名次越好（r 为负）'
-  if (direction === 'submit_up_rank_down') return '提交率越高，名次越差（r 为正）'
+  if (direction === 'submit_up_score_up') return '提交率越高，成绩越高（r 为正）'
+  if (direction === 'submit_up_score_down') return '提交率越高，成绩越低（r 为负）'
   return '—'
 }
 

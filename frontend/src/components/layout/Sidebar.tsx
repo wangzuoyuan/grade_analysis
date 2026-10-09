@@ -14,6 +14,7 @@ import {
   NotebookPen,
   GraduationCap,
   Contact,
+  FlaskConical,
   Pencil,
   Check,
   X,
@@ -99,6 +100,13 @@ const NAV_ITEMS: NavItem[] = [
     label: '学生档案',
     icon: Contact,
     match: (p) => p.startsWith('/homeroom/profile'),
+    modes: ['homeroom'],
+  },
+  {
+    href: '/homeroom/research',
+    label: '关注回看',
+    icon: FlaskConical,
+    match: (p) => p.startsWith('/homeroom/research'),
     modes: ['homeroom'],
   },
   {
@@ -196,9 +204,8 @@ export function SidebarContent({ teacher, onNameChange }: SidebarContentProps) {
         </span>
         <div>
           <div className="text-[15px] font-semibold tracking-wide text-[#16324a]">学情追踪</div>
-          <div className="mt-px text-[9px] uppercase tracking-[0.22em] text-[#9cc4e8]">
-            Performance Analysis
-          </div>
+          {/* 副标题汉化（A7）：英文大写转换类对中文无效，已去掉以免布局异常；字号/字距保持 */}
+          <div className="mt-px text-[9px] tracking-[0.22em] text-[#9cc4e8]">学情数据分析</div>
         </div>
         <span
           aria-hidden="true"

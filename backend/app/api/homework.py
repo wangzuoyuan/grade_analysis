@@ -1834,6 +1834,98 @@ def _person_events(
     return events, line_axis_map
 
 
+def _person_events_for_members(
+    db: Session,
+    ctx: WorkspaceContext,
+    person_ids: Sequence[int],
+    academic_year_id: int,
+) -> Dict[int, Tuple[List[Tuple[HomeworkAssignment, HomeworkSubmission]], Dict[LineKey, List[HomeworkAssignment]]]]:
+    """B1 整班读取作业事件；口径沿用 _person_events，请求内共用批次与例外行。
+
+    每个批次的应交名单只解析一次，旧迁移批次的事件日成员也只恢复一次。
+    跨域映射仍经 G01 事件时点门，并按 link+日期复用同日结果。
+    """
+    ids = set(person_ids) & set(ctx.member_person_ids)
+    result = {pid: ([], {}) for pid in ids}
+    if not ids or not ctx.class_ids:
+        return result
+
+    direct_query = db.query(HomeworkAssignment).filter(
+        HomeworkAssignment.data_domain == ctx.data_domain,
+        HomeworkAssignment.class_ref_id.in_(list(ctx.class_ids)),
+        HomeworkAssignment.academic_year_id == academic_year_id,
+        HomeworkAssignment.status == "active",
+    )
+    if ctx.mode == "teaching":
+        direct_query = direct_query.filter(HomeworkAssignment.subject == ctx.subject)
+    direct = direct_query.all()
+
+    cross: List[Tuple[HomeworkAssignment, Dict[int, int]]] = []
+    other_domain = "teaching" if ctx.mode == "homeroom" else "homeroom"
+    for link in _homework_share_links(db, ctx):
+        other_class = link.teaching_class_id if ctx.mode == "homeroom" else link.admin_class_id
+        assignments = db.query(HomeworkAssignment).filter(
+            HomeworkAssignment.data_domain == other_domain,
+            HomeworkAssignment.class_ref_id == other_class,
+            HomeworkAssignment.academic_year_id == academic_year_id,
+            HomeworkAssignment.subject == link.subject,
+            HomeworkAssignment.status == "active",
+        ).all()
+        mapping_by_date: Dict[date, Optional[Dict[int, int]]] = {}
+        for a in assignments:
+            if a.assigned_date not in mapping_by_date:
+                mapping_by_date[a.assigned_date] = _event_time_mapping(db, link, ctx, a)
+            mapping = mapping_by_date[a.assigned_date]
+            if mapping is not None:
+                cross.append((a, mapping))
+
+    assignment_ids = [a.id for a in direct] + [a.id for a, _ in cross]
+    rows_by_assignment: Dict[int, Dict[int, HomeworkSubmission]] = {}
+    # SQLite 的 IN 参数有上限；批次规模增长时仍保持查询数随批次数线性增长。
+    for start in range(0, len(assignment_ids), 400):
+        rows = db.query(HomeworkSubmission).filter(
+            HomeworkSubmission.assignment_id.in_(assignment_ids[start:start + 400])
+        ).all()
+        for row in rows:
+            rows_by_assignment.setdefault(row.assignment_id, {})[row.person_id] = row
+
+    expected_by_assignment = {
+        a.id: set(_effective_expected_ids(db, a))
+        for a in [*direct, *(a for a, _ in cross)]
+    }
+    for a in direct:
+        key = _line_key_of(ctx.mode, a)
+        rows = rows_by_assignment.get(a.id, {})
+        for pid in ids:
+            events, axis = result[pid]
+            axis.setdefault(key, []).append(a)
+            row = rows.get(pid)
+            if row is not None or pid in expected_by_assignment[a.id]:
+                events.append((a, row or HomeworkSubmission(
+                    assignment_id=a.id, person_id=pid, submission_status="submitted",
+                )))
+
+    for a, mapping in cross:
+        key = _line_key_of(ctx.mode, a)
+        rows = rows_by_assignment.get(a.id, {})
+        expected = expected_by_assignment[a.id]
+        # 发起域 ID → 读域 ID；未在事件日交集中的学生不能得到该批次事件。
+        for source_id, reader_id in mapping.items():
+            if reader_id not in ids:
+                continue
+            events, axis = result[reader_id]
+            axis.setdefault(key, []).append(a)
+            row = rows.get(source_id)
+            if row is not None or source_id in expected:
+                events.append((a, row or HomeworkSubmission(
+                    assignment_id=a.id, person_id=source_id, submission_status="submitted",
+                )))
+
+    for events, _axis in result.values():
+        events.sort(key=lambda item: (item[0].assigned_date, item[0].id))
+    return result
+
+
 def _line_key_of(mode: str, a: HomeworkAssignment) -> LineKey:
     """批次所属连缺线的键：班主任按学科分线，教学按班单线（不分种类）。"""
     return (a.data_domain, a.class_ref_id, a.subject if mode == "homeroom" else None)

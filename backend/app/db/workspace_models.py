@@ -642,6 +642,22 @@ class WsStudentNote(Base):
     content = Column(Text, nullable=False)
     follow_up = Column(Text, nullable=True)
     follow_up_done = Column(Integer, nullable=False, default=0)
+    # ── P2-C4 轻量干预扩展（契约 docs/diagnosis-roadmap/p2-contracts.md §5.1）──
+    # 既有 follow_up/follow_up_done 之上新增可选列；全可空 → 旧数据完全兼容
+    # （status 为 NULL 的行 = 旧档案/非干预记录，行为与语义一律不变）。
+    # status='open' 的行即「未关闭干预」；done/dismissed 为关闭态（与
+    # follow_up_done 同步，见 app/api/students_mgmt.py 的收口规则）。
+    # 取值合法性（open/done/dismissed）由 API 层校验——迁移走 ALTER ADD
+    # COLUMN（不重建表、不动 ck_ws_note_domain），故此处不设 CHECK 约束，
+    # 保持 create_all 新库与迁移旧库 schema 一致。
+    problem = Column(Text, nullable=True)             # 问题
+    subject_scope = Column(String(32), nullable=True)  # 任教学科（空=不区分学科）
+    measures = Column(Text, nullable=True)            # 措施
+    target_metric = Column(String(64), nullable=True)  # 目标指标，如 total:主三门 / subject:数学
+    baseline_value = Column(JSON, nullable=True)      # 基线值+口径 {"value","unit","exam_name",...}
+    start_date = Column(Date, nullable=True)          # 干预开始日（复查对照锚点）
+    review_date = Column(Date, nullable=True)         # 计划复查日
+    status = Column(String(16), nullable=True)        # open/done/dismissed；NULL=非干预
     source = Column(String(32), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # Q06 回退增量依赖 updated_at 越界发现"已存在行的修改"；档案 PATCH
@@ -657,6 +673,7 @@ class WsStudentNote(Base):
         ),
         Index("idx_ws_note_person", "data_domain", "person_id"),
         Index("idx_ws_note_date", "date"),
+        Index("idx_ws_note_status", "status"),
     )
 
 

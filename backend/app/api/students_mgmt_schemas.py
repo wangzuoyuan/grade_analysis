@@ -271,6 +271,21 @@ class StudentReportResponse(BaseModel):
 # 契约 §4 枚举：谈话/观察/家访/家长沟通/奖惩/其他（写入侧校验依据）
 NOTE_CATEGORIES = ("谈话", "观察", "家访", "家长沟通", "奖惩", "其他")
 
+# P2-C4 干预状态枚举（p2-contracts.md §5.1；NULL=非干预旧档案）
+NOTE_FOLLOW_UP_STATUSES = ("open", "done", "dismissed")
+
+# P2-C4 干预扩展列（创建请求出现任一列 → 该档案按干预建档：status=open、
+# 防重复校验、target_metric 合法性校验 + 基线自动捕获）
+NOTE_INTERVENTION_FIELDS = (
+    "problem",
+    "subject_scope",
+    "measures",
+    "target_metric",
+    "baseline_value",
+    "start_date",
+    "review_date",
+)
+
 
 class NoteItem(BaseModel):
     id: int
@@ -280,6 +295,15 @@ class NoteItem(BaseModel):
     content: str
     follow_up: Optional[str] = None
     follow_up_done: int = 0
+    # ── P2-C4 干预扩展（全可空；旧档案/普通档案一律 null） ──
+    problem: Optional[str] = None
+    subject_scope: Optional[str] = None
+    measures: Optional[str] = None
+    target_metric: Optional[str] = None
+    baseline_value: Optional[Dict] = None
+    start_date: Optional[str] = None
+    review_date: Optional[str] = None
+    status: Optional[str] = None
     created_at: Optional[str] = None
 
     model_config = ConfigDict(
@@ -308,6 +332,17 @@ class NoteCreateRequest(BaseModel):
     category: str
     content: str
     follow_up: Optional[str] = None
+    # ── P2-C4 干预扩展（全可空；出现任一列按干预建档） ──
+    problem: Optional[str] = None
+    subject_scope: Optional[str] = None
+    measures: Optional[str] = None
+    target_metric: Optional[str] = None
+    baseline_value: Optional[Dict] = None
+    start_date: Optional[str] = None
+    review_date: Optional[str] = None
+    # 防重复录入（契约 §5.1）：同人同科已有未关闭干预时返回 409
+    # duplicate_follow_up；教师确认知情后带 force=true 可仍建。
+    force: bool = False
 
 
 class NotePatchRequest(BaseModel):
@@ -316,6 +351,15 @@ class NotePatchRequest(BaseModel):
     content: Optional[str] = None
     follow_up: Optional[str] = None
     follow_up_done: Optional[int] = None
+    # ── P2-C4 干预扩展（status 关闭路径：open/done/dismissed） ──
+    problem: Optional[str] = None
+    subject_scope: Optional[str] = None
+    measures: Optional[str] = None
+    target_metric: Optional[str] = None
+    baseline_value: Optional[Dict] = None
+    start_date: Optional[str] = None
+    review_date: Optional[str] = None
+    status: Optional[str] = None
 
 
 class NoteDeleteResponse(BaseModel):

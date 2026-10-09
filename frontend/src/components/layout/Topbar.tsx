@@ -16,6 +16,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   teaching: '教学工作台',
   scores: '成绩分析',
   profile: '学生档案',
+  research: '关注回看',
   students: '学生信息',
   rollover: '换届',
   members: '班级信息',

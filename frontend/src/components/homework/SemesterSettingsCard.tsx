@@ -206,6 +206,10 @@ export function SemesterSettingsCard() {
               : data == null
                 ? '加载中…'
                 : `手工模式：${data.academic_year_name} 的学期由手工维护；删除全部手工学期可回自动推导。`}
+            {/* A8-2：作用范围澄清——学期只影响作业侧学期窗口，避免误以为能改成绩/诊断页 */}
+            <span className="mt-0.5 block">
+              学期设置仅作用于作业学期窗口（作业看板、相关性考前窗口等）；成绩与诊断类页面跟随顶栏学年选择器。
+            </span>
           </CardDescription>
         </div>
         <div className="flex items-center gap-2 print:hidden">

@@ -25,7 +25,6 @@
 """
 
 import logging
-import math
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -84,6 +83,7 @@ from app.db.workspace_models import (
     TeachingClass,
     WorkspaceClassAverage,
 )
+from app.analysis import definitions as defs
 from app.analysis.config import (
     PROGRESS_RANK_THRESHOLD,
     SUBJECT_WEAKNESS_PCT_DIFF,
@@ -95,18 +95,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["analysis"])
 
-BASE_SUBJECTS = ["语文", "数学", "英语"]
-ELECTIVE_SUBJECTS = ["物理", "化学", "生物", "政治", "历史", "地理"]
-ALL_SUBJECTS = BASE_SUBJECTS + ELECTIVE_SUBJECTS
-PERCENTILE_BINS = [
-    ("p0_20", "前20%", 0.0, 0.2),
-    ("p20_40", "20%-40%", 0.2, 0.4),
-    ("p40_60", "40%-60%", 0.4, 0.6),
-    ("p60_80", "60%-80%", 0.6, 0.8),
-    ("p80_100", "后20%", 0.8, 1.0),
-]
-GRADE_SCORE_VALUES = [70, 67, 64, 61, 58, 55, 52, 49, 46, 43, 40]
-GRADE_SCORE_SEPARATOR_AFTER = {67, 58, 49, 43}
+# P0-A1：学科/分箱常量与概念判定统一来自 app.analysis.definitions；
+# 下方保留旧名字的薄委托，供测试与本模块既有调用点使用。
+BASE_SUBJECTS = defs.BASE_SUBJECTS
+ELECTIVE_SUBJECTS = defs.ELECTIVE_SUBJECTS
+ALL_SUBJECTS = defs.ALL_SUBJECTS
+PERCENTILE_BINS = defs.PERCENTILE_BINS
+GRADE_SCORE_VALUES = defs.GRADE_SCORE_VALUES
+GRADE_SCORE_SEPARATOR_AFTER = defs.GRADE_SCORE_SEPARATOR_AFTER
 
 
 class BandsNotComputable(DomainError):
@@ -155,17 +151,6 @@ def _avg(values: List[float]) -> Optional[float]:
     if not values:
         return None
     return round(sum(values) / len(values), 2)
-
-
-def _rank_map(pairs: List[Tuple[int, Optional[float]]]) -> Dict[int, Optional[int]]:
-    """min-rank 同分同名次（如 1,2,2,4）：名次 = 1 + 严格更高分人数。
-    NULL 不参与名次（该 key 的 rank 为 None）；只对传入的成员集合计算，
-    绝不外扩到年级。"""
-    scores = [s for _, s in pairs if s is not None]
-    return {
-        key: (None if s is None else 1 + sum(1 for other in scores if other > s))
-        for key, s in pairs
-    }
 
 
 def _exam_exists_in_domain(
@@ -278,81 +263,49 @@ def _homeroom_grade(db: Session, ctx: WorkspaceContext) -> int:
     return int(row[0])
 
 
+def _rank_map(pairs: List[Tuple[int, Optional[float]]]) -> Dict[int, Optional[int]]:
+    """班内（成员集内）名次：共享定义 min_ranks 的薄委托
+    （同分同名次 1,2,2,4；NULL 不参与名次；只对传入成员计算）。"""
+    return defs.min_ranks(pairs)
+
+
 def _rank_metric_options(grade: int, mode: str) -> List[dict]:
-    if grade == 1:
-        return [
-            *[
-                {"value": f"subject:{subject}", "label": subject, "kind": "subject_percentile"}
-                for subject in ALL_SUBJECTS
-            ],
-            *[
-                {"value": f"total:{total_type}", "label": f"{total_type}总分", "kind": "total_rank"}
-                for total_type in ("主三门", "五门")
-            ],
-        ]
-    options = [
-        {"value": f"subject:{subject}", "label": subject, "kind": "subject_percentile"}
-        for subject in BASE_SUBJECTS
-    ]
-    if mode == "frequency":
-        options.extend(
-            {
-                "value": f"subject_grade:{subject}",
-                "label": f"{subject}等级分",
-                "kind": "subject_grade_score",
-            }
-            for subject in ELECTIVE_SUBJECTS
-        )
-    options.extend(
-        {"value": f"total:{total_type}", "label": f"{total_type}总分", "kind": "total_rank"}
-        for total_type in ("主三门", "3+3")
-    )
-    return options
+    """排名指标选项：共享定义（与旧 /api/rank-metrics 同一口径）。"""
+    return defs.metric_options(grade, mode)
 
 
 def _rank_metric_meta(grade: int, metric: str, mode: str) -> dict:
-    for option in _rank_metric_options(grade, mode):
-        if option["value"] == metric:
-            source, key = metric.split(":", 1)
-            return {**option, "source": source, "key": key}
-    raise InvalidScopeParam(
-        "unsupported rank metric for grade", details={"metric": metric, "grade": grade}
-    )
+    try:
+        return defs.metric_meta(grade, metric, mode)
+    except ValueError:
+        raise InvalidScopeParam(
+            "unsupported rank metric for grade", details={"metric": metric, "grade": grade}
+        )
 
 
 def _normalized_percentile(value: Optional[float]) -> Optional[float]:
-    if value is None:
-        return None
-    number = float(value)
-    if number > 1:
-        number /= 100
-    return min(max(number, 0), 1)
+    """百分位归一化：共享定义薄委托。"""
+    return defs.normalized_percentile(value)
 
 
 def _percentile_bin(value: Optional[float]) -> Optional[str]:
-    percentile = _normalized_percentile(value)
-    if percentile is None:
-        return None
-    for key, _label, lower, upper in PERCENTILE_BINS:
-        if percentile <= upper and (percentile > lower or lower == 0):
-            return key
-    return PERCENTILE_BINS[-1][0]
+    """年级百分位五等分箱：共享定义薄委托（缺失 → None，不落箱）。"""
+    return defs.percentile_bin(value)
 
 
 def _rank_bin(rank: Optional[int]) -> Optional[str]:
-    if rank is None or rank < 1:
-        return None
-    start = ((int(rank) - 1) // 40) * 40 + 1
-    return f"r{start}_{start + 39}"
+    """名次 40 名一档分箱：共享定义薄委托（缺失 → None）。"""
+    return defs.rank_bin(rank)
 
 
 def _rank_bin_label(key: str) -> str:
-    start, end = key.removeprefix("r").split("_")
-    return f"{start}–{end}名"
+    """名次分箱展示文案：共享定义薄委托。"""
+    return defs.rank_bin_label(key)
 
 
 def _distribution_total_types(grade: int) -> Tuple[str, ...]:
-    return ("主三门", "五门", "九门") if grade == 1 else ("主三门", "3+3")
+    """名次分布图例口径：共享定义薄委托。"""
+    return defs.distribution_total_types(grade)
 
 
 # ────────────────────── homeroom：单场统计（§2.1） ──────────────────────
@@ -413,7 +366,7 @@ def homeroom_exam_stats(
         if len(valid) < 5:
             small_sample = True
         ranks = [
-            f.xueji_rank if f.xueji_rank is not None else f.grade_rank
+            defs.resolve_year_rank(f.xueji_rank, f.grade_rank)
             for f in by_total[total_type]
             if f.score is not None
         ]
@@ -700,7 +653,7 @@ def homeroom_rank_frequency(
             fact = entry.fact
             key = None
             if meta["kind"] == "total_rank" and fact.total_type == meta["key"]:
-                rank = fact.xueji_rank if fact.xueji_rank is not None else fact.grade_rank
+                rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
                 key = _rank_bin(rank)
                 if key:
                     rank_keys.add(key)
@@ -781,15 +734,6 @@ def homeroom_rank_range(
     meta = _rank_metric_meta(_homeroom_grade(db, ctx), metric, "range")
     member_ids = _exam_member_ids(db, ctx, exam_name)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
-    cohort_size = max(
-        (
-            fact.xueji_rank if fact.xueji_rank is not None else fact.grade_rank
-            for fact in (entry.fact for entry in entries)
-            if fact.total_type == "主三门"
-            and (fact.xueji_rank is not None or fact.grade_rank is not None)
-        ),
-        default=None,
-    )
     matched = []
     scores = []
     for entry in entries:
@@ -797,14 +741,12 @@ def homeroom_rank_range(
         if meta["kind"] == "total_rank":
             if fact.total_type != meta["key"]:
                 continue
-            year_rank = fact.xueji_rank if fact.xueji_rank is not None else fact.grade_rank
         else:
             if fact.subject != meta["key"]:
                 continue
-            year_rank = fact.grade_rank
-            if year_rank is None and cohort_size:
-                percentile = _normalized_percentile(fact.grade_percentile)
-                year_rank = max(1, math.ceil(percentile * cohort_size)) if percentile is not None else None
+        # P0-A1 名次语义（共享口径）：只认真实学籍/年级名次；名次不可得
+        # 即缺失（该生不进名单），绝不按「百分位 × 人数」推算名次。
+        year_rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
         scores.append((entry.person_id, fact.score))
         if year_rank is not None and rank_min <= year_rank <= rank_max:
             matched.append((entry.person_id, fact.score, year_rank))
@@ -834,7 +776,10 @@ def homeroom_rank_range(
         rank_min=rank_min,
         rank_max=rank_max,
         students=students,
-        metric_note="总分使用已有学籍/年级名次；单科使用年级百分位按该场主三门名次范围换算。",
+        metric_note=(
+            "只按真实学籍/年级名次筛选；名次不可得的学生不进名单"
+            "（不按百分位推算名次），可靠百分位见排名频次的百分位分箱。"
+        ),
     )
 
 
@@ -867,7 +812,7 @@ def homeroom_rank_distribution(
         fact = entry.fact
         if fact.total_type not in counts:
             continue
-        rank = fact.xueji_rank if fact.xueji_rank is not None else fact.grade_rank
+        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
         key = _rank_bin(rank)
         if key is None:
             continue
@@ -933,7 +878,8 @@ def homeroom_exam_focus(
         total = next((f for f in facts if f.total_type == "主三门"), None)
         if total is None:
             continue
-        rank = total.xueji_rank if total.xueji_rank is not None else total.grade_rank
+        # P0-A1 共享口径：学籍名次优先、其次年级名次；不可得 → None 不落段
+        rank = defs.resolve_year_rank(total.xueji_rank, total.grade_rank)
         issues: List[str] = []
 
         historical_totals = {
@@ -955,8 +901,10 @@ def homeroom_exam_focus(
         )
         if selected_index is not None:
             ordered_totals = ordered_totals[: selected_index + 1]
+        # 名次缺失（缺考/未导入）的那一场不进名次序列：不转 0、不残留
+        # 上次名次、不伪造连续性（共享口径与 trends 一致）
         ranks = [
-            fact.xueji_rank if fact.xueji_rank is not None else fact.grade_rank
+            defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
             for fact in ordered_totals
         ]
         ranks = [value for value in ranks if value is not None]
@@ -964,34 +912,22 @@ def homeroom_exam_focus(
         rank_change = previous_rank - rank if previous_rank is not None and rank is not None else None
         rank_range = max(ranks) - min(ranks) if ranks else None
 
-        if rank_change is not None and rank_change >= PROGRESS_RANK_THRESHOLD:
-            issues.append("明显进步")
-        if rank_change is not None and rank_change <= -PROGRESS_RANK_THRESHOLD:
-            issues.append("明显退步")
-        if (
-            len(ranks) >= 3
-            and rank_range is not None
-            and rank_range >= VOLATILITY_RANK_THRESHOLD
-        ):
-            issues.append("波动风险")
-        if rank is not None and band["critical_min"] <= rank <= band["critical_max"]:
-            issues.append("临界段")
-        if rank is not None and rank >= band["weak_min"]:
-            issues.append("薄弱段")
+        # 进退步/波动/段位判定：统一走 app.analysis.definitions
+        change_issue = defs.progress_issue(rank_change)
+        if change_issue is not None:
+            issues.append(change_issue)
+        if defs.volatility_issue(ranks) is not None:
+            issues.append(defs.ISSUE_VOLATILE)
+        issues.extend(defs.band_issues(rank, band))
 
-        weak_subjects: List[str] = []
-        if total.grade_percentile is not None:
-            weak_subjects = sorted(
-                {
-                    f.subject
-                    for f in facts
-                    if f.subject
-                    and f.total_type is None
-                    and f.grade_percentile is not None
-                    and f.grade_percentile - total.grade_percentile
-                    >= SUBJECT_WEAKNESS_PCT_DIFF
-                }
-            )
+        weak_subjects: List[str] = defs.subject_weakness_subjects(
+            [
+                (f.subject, f.grade_percentile)
+                for f in facts
+                if f.subject and f.total_type is None
+            ],
+            total.grade_percentile,
+        )
         issues.extend(f"严重偏科（{subject}）" for subject in weak_subjects)
         if (
             rank is not None
@@ -1089,10 +1025,13 @@ def homeroom_trends(
 
     def _point(f: ScoreFact) -> TrendExamPoint:
         if f.total_type is not None:
-            rank = f.xueji_rank if f.xueji_rank is not None else f.grade_rank
+            # 总分：真实学籍/年级名次（共享口径 resolve_year_rank）；缺失 → null
+            rank = defs.resolve_year_rank(f.xueji_rank, f.grade_rank)
             rank_basis = "school" if rank is not None else None
         else:
-            percentile = _normalized_percentile(f.grade_percentile)
+            # 单科：百分位的百分数表示（0–100），明确标注 grade_percentile
+            # 依据；缺失 → null，不残留上次百分位、不用分数推算（P0-A1 保留）
+            percentile = defs.normalized_percentile(f.grade_percentile)
             rank = round(percentile * 100, 2) if percentile is not None else None
             rank_basis = "grade_percentile" if rank is not None else None
         return TrendExamPoint(
@@ -1182,7 +1121,8 @@ def homeroom_bands(
         fact = entry.fact
         if fact.total_type != subject:
             continue
-        rank = fact.xueji_rank if fact.xueji_rank is not None else fact.grade_rank
+        # 共享口径：学籍名次优先、其次年级名次；缺名次不落段
+        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
         if rank is not None:
             ranked.append((entry.person_id, rank))
     if not ranked:
@@ -1191,13 +1131,16 @@ def homeroom_bands(
         )
 
     config = get_band_config(db)
+    flags_by_person = {
+        person_id: defs.band_flags(rank, config) for person_id, rank in ranked
+    }
     definitions = [
-        (f"高分段（1–{config['high_score_max']}名）", lambda rank: rank <= config["high_score_max"]),
+        (f"高分段（1–{config['high_score_max']}名）", "high_score"),
         (
             f"临界段（{config['critical_min']}–{config['critical_max']}名）",
-            lambda rank: config["critical_min"] <= rank <= config["critical_max"],
+            "critical",
         ),
-        (f"薄弱段（{config['weak_min']}名起）", lambda rank: rank >= config["weak_min"]),
+        (f"薄弱段（{config['weak_min']}名起）", "weak"),
     ]
     bands = [
         {
@@ -1205,8 +1148,10 @@ def homeroom_bands(
             "count": len(students),
             "students": students,
         }
-        for label, matches in definitions
-        for students in [[person_id for person_id, rank in ranked if matches(rank)]]
+        for label, key in definitions
+        for students in [
+            [person_id for person_id, _rank in ranked if flags_by_person[person_id][key]]
+        ]
     ]
     return BandsResponse(
         metadata=_analysis_metadata(

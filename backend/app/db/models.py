@@ -126,6 +126,15 @@ class AnalysisConfig(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DiagnosisThresholdConfig(Base):
+    """诊断名次变化阈值（全局单行，与长期名次分段独立）。"""
+    __tablename__ = "diagnosis_threshold_config"
+    id = Column(Integer, primary_key=True)
+    direction_rank_change = Column(Integer, nullable=False)
+    streak_rank_change = Column(Integer, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ────────────────────────────── 作业跟踪 ──────────────────────────────
 # 由原独立 Flask 应用「作业跟踪」合并而来。成绩库原本无花名册（学生从
 # SubjectScore 派生），ClassRoster 补齐作业侧需要的座号/性别/排除标记，

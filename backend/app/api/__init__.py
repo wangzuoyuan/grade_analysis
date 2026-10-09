@@ -71,6 +71,14 @@ def create_api_router() -> APIRouter:
     from app.api import imports as imports_module
     from app.api import canonical as canonical_module
     from app.api import scores, shared, students, students_mgmt
+    from app.diagnosis import router as diagnosis_router_module
+    from app.diagnosis import changes_router  # P1-B3 变化分解
+    from app.diagnosis import types_router  # P1-B2 类型引擎（仅追加本行 include）
+    from app.diagnosis import correlation_router  # P2-C1 作业×成绩相关性（仅追加本行 include）
+    from app.diagnosis import action_router  # P2-C2 行动首页（仅追加本行 include）
+    from app.diagnosis import report_router  # P2-C3 诊断版学生报告（仅追加本行 include）
+    from app.diagnosis import review_router  # P2-C4 干预复查对照（仅追加本行 include）
+    from app.diagnosis import research_router  # P3-D1 教研统计（仅追加本行 include）
 
     router = APIRouter(prefix="/api/v1")
     router.include_router(shared.router)
@@ -82,4 +90,12 @@ def create_api_router() -> APIRouter:
     router.include_router(students_mgmt.router)
     router.include_router(homework_module.router)
     router.include_router(chat_module.router)
+    router.include_router(diagnosis_router_module.router)
+    router.include_router(changes_router.router)
+    router.include_router(types_router.router)
+    router.include_router(correlation_router.router)
+    router.include_router(action_router.router)
+    router.include_router(report_router.router)
+    router.include_router(review_router.router)
+    router.include_router(research_router.router)
     return router

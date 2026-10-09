@@ -1166,14 +1166,24 @@ def _tool_get_homework_student(db, snapshot: dict, args: dict) -> dict:
 
 
 def _tool_get_homework_correlation(db, snapshot: dict, args: dict) -> dict:
-    """成绩 × 作业提交率皮尔逊相关（p5-homework §4；A01 薄封装 correlation
-    service，绝不另写查询）。
+    """成绩 × 作业提交率相关性（P2-C1 起改调 app.diagnosis.correlation
+    同源模块：Pearson r + Spearman rho 双指标、考前窗口 [考试日−N, 考试日)
+    不含考后作业、学校段位分层 + 全班；契约 docs/diagnosis-roadmap/
+    p2-contracts.md §2.5）。
 
-    - homeroom：Y = total_type 总分名次（total_type 缺省主三门）；X = 指定
-      subject 学科的作业提交率（学科必传——总分与哪科作业的关系需明确）。
-    - teaching：Y = 任教学科单科班内名次；subject 钉住会话任教学科
-      （模型传什么都不扩大范围）。
-    - r=null（n<5 或零方差）时 caveats 注明，响应自然带"不构成因果"。
+    对外参数与错误语义保持（p6 契约）：
+    - exam_name 必传（支持部分名称模糊匹配）；homeroom 缺 subject →
+      invalid_scope_param（subject 指定哪科作业，X 侧过滤保持）；
+      teaching 钉住任教学科（模型传什么都不扩大范围）。
+    - total_type（homeroom 缺省主三门）映射为 metric=total:{total_type}
+      （definitions.metric_meta 词表校验）。
+    - 跨年参数照旧透传：按目标学年重建同源快照（homeroom 恒钉快照行政班；
+      teaching 跨年改解析该学年同学科班集合，Q01 同约束）。
+    返回体只加不删：旧键 metadata/pairs/n/r/direction/caveats 保留
+    （y 由此前的名次改为成绩分数、direction 值域随之改为
+    submit_up_score_up/submit_up_score_down——P2 契约 §2.2 y=成绩指标），
+    新增 rho/layers/sample/window_days/window_start/window_end/note/
+    calc_version="p2-v1" 等。
     """
     year_id, err = _exam_year_id_of(db, snapshot, args)
     if err:
@@ -1189,30 +1199,53 @@ def _tool_get_homework_correlation(db, snapshot: dict, args: dict) -> dict:
             "error": "invalid_scope_param",
             "detail": "subject 必填（如 物理）；teaching 会话默认用任教学科",
         }
-    from app.api.homework import homework_correlation
+    try:
+        window_days = int(args.get("window_days") or 14)
+    except (TypeError, ValueError):
+        return {
+            "error": "invalid_scope_param",
+            "detail": "window_days 必须是 14 或 30",
+        }
+    if window_days not in (14, 30):
+        return {
+            "error": "invalid_scope_param",
+            "detail": "window_days 必须是 14 或 30",
+        }
+    from app.api import current_teacher_id
+    from app.diagnosis.correlation import exam_homework_correlation
 
-    result = _call_service(
-        homework_correlation,
-        mode=snapshot["mode"],
+    # 与旧 service 取数同一作用域（同源 resolve_scope_snapshot 重建）：
+    # homeroom 恒钉快照行政班；teaching 同年钉单班（Q01 绝不扩大成并集）、
+    # 跨年改传 None 并钉住任教学科（service 按该学年同学科班集合解析）。
+    scope = resolve_scope_snapshot(
+        db,
+        current_teacher_id(db),
+        snapshot["mode"],
+        academic_year_id=year_id,
         class_id=(
             snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
         ),
-        # Q01：teaching 单班会话钉住该班（并集会话缺省语义一致）；跨年时
-        # 改传 None 并保留钉住的 subject（service 按该学年同学科班集合解析）
         teaching_class_id=(
             _single_class_id(snapshot)
             if snapshot["mode"] == "teaching"
             and year_id == snapshot["academic_year_id"]
             else None
         ),
-        academic_year_id=year_id,
-        subject=subject,
-        homework_type=(args.get("homework_type") or "").strip() or None,
-        exam_name=exam_name,
-        total_type=(args.get("total_type") or "").strip() or "主三门",
-        db=db,
+        subject=snapshot.get("subject"),
     )
-    data = _dump(result)
+    if snapshot["mode"] == "homeroom":
+        metric = f"total:{(args.get('total_type') or '').strip() or '主三门'}"
+    else:
+        metric = f"subject:{subject}"
+    data = exam_homework_correlation(
+        db,
+        scope,
+        exam_name,
+        window_days=window_days,
+        metric=metric,
+        homework_subject=subject,
+        homework_type=(args.get("homework_type") or "").strip() or None,
+    )
     if resolved:
         data["exam_resolved"] = resolved
     return data
@@ -1826,6 +1859,86 @@ def _tool_get_exam_students(db, snapshot: dict, args: dict) -> dict:
     return data
 
 
+def _tool_get_diagnosis_summary(db, snapshot: dict, args: dict) -> dict:
+    """诊断摘要（P1-B4，契约 docs/diagnosis-roadmap/p1-contracts.md §6.3）：
+    「学生页诊断卡 / 班主任首页类型分布卡 / AI 工具」三处同源——AI 侧薄封装，
+    数据 = B1 诊断特征层（app.diagnosis.features）+ B2 类型引擎
+    （app.diagnosis.types），与页面端点完全同一 service，绝不另写计算。
+
+    - person_id 传 → 单生汇总：features（六类指标）+ types（主类型/次标签/
+      证据）；person_id 先过会话快照成员守卫。
+    - person_id 缺省 → 班级汇总：class_features（每生 features 列表 + 班级级
+      汇总）+ 每生 classify 结果（类型分布由此聚合）。
+    - B1/B2 端点未部署（P1-B4 分支）→ 返回 not_available 可读引导（模型改用
+      既有工具）；合并后 import 成立即自动接线，本 handler 无需再改。
+    只读；scope 语义照契约 §0.2——快照即已解析作用域，homeroom 全科+总分、
+    teaching 仅任教学科，绝不跨域取数；输出携带口径版本 calc_version=p1-v1。
+    """
+    person_id, err = _optional_int(args, "person_id")
+    if err:
+        return err
+    if person_id is not None:
+        guard = _member_guard(snapshot, person_id)
+        if guard:
+            return guard
+    year_id, err = _year_id_of(db, snapshot, args)
+    if err:
+        return err
+    try:
+        from app.diagnosis.features import class_features, student_features
+        from app.diagnosis.types import classify_student
+    except ImportError:
+        # 待接线点：P1-B1/B2 合并后此分支自然失效（import 成立即走下方
+        # 真实数据路径），主控接线时无需改动本工具。
+        return {
+            "error": "not_available",
+            "detail": (
+                "诊断摘要暂不可用：诊断特征层（P1-B1/B2 端点）尚未部署到当前"
+                "环境。可先用 get_student_profile / get_exam_focus / "
+                "get_weekly_focus / get_homework_warnings 等既有工具查看成绩与"
+                "关注名单；诊断端点上线后本工具将自动提供同源 features/types"
+                "（只读，口径版本 p1-v1）。"
+            ),
+        }
+    if person_id is not None:
+        features = student_features(db, snapshot, person_id, year_id)
+        return {
+            "summary_kind": "student",
+            "academic_year_id": year_id,
+            "calc_version": "p1-v1",
+            "features": features,
+            "types": classify_student(features),
+        }
+    cls = class_features(db, snapshot, year_id)
+    # class_features 每生列表键名契约注释未冻结（§2 仅写「每生 features 的
+    # 列表 + 班级级汇总」）：主读 students，兼容 features 键（接线时如实际
+    # 键名不同，只改这一行）。
+    rows = (
+        (cls.get("students") if isinstance(cls, dict) else None)
+        or (cls.get("features") if isinstance(cls, dict) else None)
+        or []
+    )
+    return {
+        "summary_kind": "class",
+        "academic_year_id": year_id,
+        "calc_version": "p1-v1",
+        "class_features": cls,
+        "types_by_person": [
+            {
+                "person_id": (row or {}).get("person_id"),
+                # B1 class_features 的行为 {person_id, name, features} 包装；
+                # 裸 features dict（无 features 键）按原样传入。
+                "types": classify_student(
+                    (row or {}).get("features")
+                    if isinstance((row or {}).get("features"), dict)
+                    else (row or {})
+                ),
+            }
+            for row in rows
+        ],
+    }
+
+
 # ────────────────────── 注册表（domains 声明 + 域投影） ──────────────────────
 
 
@@ -1974,13 +2087,16 @@ TOOL_REGISTRY: List[WsToolSpec] = [
     WsToolSpec(
         name="get_homework_correlation",
         description=(
-            "计算「作业提交率 × 考试名次」的皮尔逊相关，回答"
-            "“交作业越勤的学生名次是否越靠前”“缺交和成绩有没有关系”。"
-            "homeroom 口径 Y=指定总分口径名次（total_type 默认主三门，需传 subject "
-            "指定哪科作业）；teaching 口径 Y=任教学科单科班内名次（固定会话学科）。"
-            "X=作业提交率，可按 homework_type 过滤。exam_name 必传"
-            "（支持部分名称模糊匹配，如“期中”）。相关仅描述统计关联、"
-            "不构成因果；n<5 或零方差时 r 为 null。"
+            "计算「作业提交率 × 成绩」的 Pearson r 与 Spearman rho 相关，回答"
+            "“交作业越勤的学生成绩是否更好”“缺交和成绩有没有关系”。"
+            "X=考前窗口（window_days=14|30，不含考试当日与考后作业）内的作业"
+            "提交率（忘带/请假/出勤不计入分子分母）；Y=成绩分数：homeroom 口径"
+            "为指定总分口径分数（total_type 默认主三门，需传 subject 指定哪科"
+            "作业），teaching 口径为任教学科单科分数（固定会话学科）。输出按"
+            "该场学校段位（高分/临界/薄弱）+ 全班分层给出 r/rho 与样本数，"
+            "n<8、零方差或分母未知占比>50% 的层不可计算。exam_name 必传"
+            "（支持部分名称模糊匹配，如“期中”）。相关仅描述统计关联，"
+            "不构成因果或提分保证。"
         ),
         input_schema=_schema_with_year_args(
             {
@@ -1988,6 +2104,11 @@ TOOL_REGISTRY: List[WsToolSpec] = [
                 "subject": {
                     "type": "string",
                     "description": "作业学科（homeroom 必填如 物理；teaching 固定任教学科）",
+                },
+                "window_days": {
+                    "type": "integer",
+                    "enum": [14, 30],
+                    "description": "可选，考前窗口天数（默认 14；不含考试当日与考后作业）",
                 },
                 "homework_type": {
                     "type": "string",
@@ -2287,6 +2408,33 @@ TOOL_REGISTRY: List[WsToolSpec] = [
         ),
         domains=("homeroom",),
         handler=_tool_get_exam_students,
+    ),
+    # ────────────────── P1-B4：诊断摘要（第 25 个工具） ──────────────────
+    WsToolSpec(
+        name="get_diagnosis_summary",
+        description=(
+            "查询单生或班级的诊断学情摘要（只读，口径版本 p1-v1；与学生页诊断卡、"
+            "班主任首页类型分布卡同一数据源与同一口径）。传 person_id 返回该生"
+            "六类特征（当前水平/趋势/稳定性/偏科/作业行为/教师关注）与类型判定"
+            "（主类型+次标签+证据，数据不足如实标注、不强行归类）；缺省 person_id "
+            "返回班级每生类型汇总与班级级特征，适合回答「班里有哪些学生需要重点"
+            "关注」「某某属于什么类型」。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "person_id": {
+                    "type": "integer",
+                    "description": "可选，会话范围内学生身份 ID；缺省=班级汇总",
+                },
+                "academic_year_id": {
+                    "type": "integer",
+                    "description": "可选，学年 ID；缺省当前学年",
+                },
+            },
+        },
+        domains=("homeroom", "teaching"),
+        handler=_tool_get_diagnosis_summary,
     ),
 ]
 

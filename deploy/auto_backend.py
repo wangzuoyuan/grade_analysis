@@ -64,6 +64,8 @@ def snapshot(data, destination):
     db_path = data / 'db.sqlite'
     if not db_path.is_file():
         raise ValueError('Explicit existing database required')
+    if any(path.is_symlink() for path in data.rglob('*') if 'backups' not in path.relative_to(data).parts):
+        raise ValueError('Data snapshot must not follow symlinks')
     shutil.copytree(data, destination, ignore=shutil.ignore_patterns('backups', 'db.sqlite', 'db.sqlite-wal', 'db.sqlite-shm'))
     with sqlite3.connect(db_path.as_uri() + '?mode=ro', uri=True) as src, sqlite3.connect(destination / 'db.sqlite') as dst:
         src.backup(dst)
@@ -93,6 +95,69 @@ def restore(data, backup):
         else:
             shutil.copy2(p, data / p.name)
     db_check(data / 'db.sqlite')
+
+
+def retain_preview_diagnosis_thresholds(backup, replacement):
+    """Preserve only the preview's global diagnosis setting across a source refresh.
+
+    The caller has stopped the preview writer and captured ``backup``. A missing row
+    is meaningful (factory defaults), so it also clears any source-side row.
+    """
+    backup_db = Path(backup) / 'db.sqlite'
+    replacement_db = Path(replacement) / 'db.sqlite'
+    table = 'diagnosis_threshold_config'
+    with sqlite3.connect(backup_db.as_uri() + '?mode=ro', uri=True) as old:
+        if old.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?', (table,)).fetchone() is None:
+            return  # old preview release predates migration 0018
+        row = old.execute(
+            'SELECT id,direction_rank_change,streak_rank_change,updated_at '
+            'FROM diagnosis_threshold_config WHERE id=1'
+        ).fetchone()
+    with sqlite3.connect(replacement_db) as new:
+        if new.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?', (table,)).fetchone() is None:
+            raise RuntimeError('Migrated preview database is missing diagnosis settings')
+        new.execute('DELETE FROM diagnosis_threshold_config')
+        if row is not None:
+            if row[1] < 1 or row[2] < 1:
+                raise RuntimeError('Preview diagnosis settings are invalid')
+            new.execute(
+                'INSERT INTO diagnosis_threshold_config '
+                '(id,direction_rank_change,streak_rank_change,updated_at) VALUES (?,?,?,?)', row
+            )
+    db_check(replacement_db)
+
+
+def data_digest(directory):
+    """Fingerprint a completed immutable snapshot, including uploaded source files."""
+    digest = hashlib.sha256()
+    for path in sorted(Path(directory).rglob('*')):
+        if path.is_symlink():
+            raise ValueError('Snapshot must not contain symlinks')
+        if not path.is_file() or path.name == '.release-backup.json':
+            continue
+        digest.update(str(path.relative_to(directory)).encode() + b'\0')
+        with path.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+    return digest.hexdigest()
+
+
+def refresh_source(name, config):
+    cfg = config['targets'][name]
+    refresh = cfg.get('data_refresh')
+    if not refresh:
+        return None
+    source_name = refresh['source_target']
+    source = config['targets'][source_name]
+    if (cfg['branch'] != 'codex/diagnosis-roadmap' or source['branch'] != 'main'
+            or source.get('data_refresh') or name == source_name):
+        raise ValueError('Data refresh is only allowed from main to the designated preview')
+    paths = [Path(c['data_dir']).resolve() for c in (cfg, source)]
+    if paths[0].is_relative_to(paths[1]) or paths[1].is_relative_to(paths[0]):
+        raise ValueError('Refresh data directories must be independent')
+    if not isinstance(refresh.get('interval_seconds', 900), int) or refresh.get('interval_seconds', 900) < 60:
+        raise ValueError('Refresh interval must be at least 60 seconds')
+    return source_name
 
 
 def extract_release(directory, destination, sha, branch, repo):
@@ -261,10 +326,51 @@ class Target:
                                 '-v', str(backups) + ':/backups', '-v', str(backups) + ':/data/backups',
                                 'backend', 'python', '-c', PROBE])
             db_check(scratch / 'db.sqlite')
+        self.activate(image, dict(self.state, sha=manifest['sha'], backend_fingerprint=manifest['backend_fingerprint']))
+
+    def refresh_data(self, source):
+        """One-way online source snapshot; only the preview writer is stopped."""
+        self.recover()
+        previous = self.state.get('data_refresh', {})
+        now = time.time()
+        interval = self.cfg['data_refresh'].get('interval_seconds', 900)
+        release_changed = previous.get('release_sha') != self.state.get('sha')
+        if not release_changed and now - previous.get('checked_at', 0) < interval:
+            return 'not_due'
+        source.validate_mount()
+        if self.data.is_relative_to(source.data) or source.data.is_relative_to(self.data):
+            raise ValueError('Refresh data directories must be independent')
+        actual = self.validate_mount()
+        if actual['Image'] != self.state.get('image_id'):
+            raise ValueError('Refresh requires a verified running release')
+        image = actual['Image']
+        with tempfile.TemporaryDirectory(dir=self.runtime, prefix='refresh-') as temp:
+            temp = Path(temp)
+            scratch = temp / 'source'
+            snapshot(source.data, scratch)
+            digest = data_digest(scratch)
+            metadata = dict(previous, source_digest=digest, checked_at=now, release_sha=self.state['sha'])
+            if previous.get('source_digest') == digest:
+                self.state['data_refresh'] = metadata
+                atomic_json(self.state_path, self.state)
+                return 'unchanged'
+            backups = temp / 'migration-backups'
+            backups.mkdir()
+            self.compose(image, ['run', '--rm', '--no-deps', '-T', '-v', str(scratch) + ':/data',
+                                '-v', str(backups) + ':/backups', '-v', str(backups) + ':/data/backups',
+                                'backend', 'python', '-c', PROBE])
+            # Capture committed WAL from the migrated scratch database, never copy its main file alone.
+            prepared = temp / 'prepared'
+            snapshot(scratch, prepared)
+            metadata['refreshed_at'] = time.time()
+            self.activate(image, dict(self.state, data_refresh=metadata), replacement=prepared)
+        return 'refreshed'
+
+    def activate(self, image, new_state, replacement=None):
         old = self.validate_mount()
-        backup = self.runtime / 'backups' / (time.strftime('%Y%m%dT%H%M%S') + '-' + manifest['sha'][:12])
+        backup = self.runtime / 'backups' / (time.strftime('%Y%m%dT%H%M%S') + '-' + str(time.time_ns()) + '-' + new_state['sha'][:12])
         journal = {'phase': 'gating', 'old_image': old['Image'], 'old_state': self.state,
-                   'backup': str(backup), 'new_state': {'sha': manifest['sha'], 'backend_fingerprint': manifest['backend_fingerprint']}}
+                   'backup': str(backup), 'new_state': new_state}
         atomic_json(self.journal_path, journal)
         try:
             self.gate(self.state.get('sha', ''), maintenance=True)
@@ -272,6 +378,10 @@ class Target:
             snapshot(self.data, backup)
             journal['phase'] = 'backup_complete'
             atomic_json(self.journal_path, journal)
+            if replacement is not None:
+                if self.cfg.get('data_refresh'):
+                    retain_preview_diagnosis_thresholds(backup, replacement)
+                restore(self.data, replacement)
             self.start(image)
             self.validate_mount()
             if inspect(self.cfg['container'])['Image'] != json.loads(run(['docker', 'image', 'inspect', image]))[0]['Id']:
@@ -300,6 +410,7 @@ def tick(config):
         data_paths = [Path(c['data_dir']).resolve() for c in config['targets'].values()]
         if len(set(data_paths)) != len(data_paths):
             raise ValueError('Targets must have separate data directories')
+        sources = {name: refresh_source(name, config) for name in config['targets']}
         for name, cfg in config['targets'].items():
             target = Target(name, cfg, runtime)
             try:
@@ -336,8 +447,8 @@ def tick(config):
                             and target.state.get('image_id') == inspect(cfg['container'])['Image']):
                         target.smoke()
                         target.gate(sha)
-                        target.state = {'sha': sha, 'backend_fingerprint': manifest['backend_fingerprint'],
-                                        'image_id': inspect(cfg['container'])['Image']}
+                        target.state = dict(target.state, sha=sha, backend_fingerprint=manifest['backend_fingerprint'],
+                                            image_id=inspect(cfg['container'])['Image'])
                         atomic_json(target.state_path, target.state)
                     else:
                         image = 'grade-analysis-backend:' + sha
@@ -348,6 +459,20 @@ def tick(config):
             except Exception as exc:
                 # Do not publish tool outputs, student data, secrets or URLs with tokens.
                 statuses[name] = {'status': 'error', 'error_type': type(exc).__name__, 'message': str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Operation failed'}
+        # Code deployments finish first, so the source and preview run verified releases.
+        for name, source_name in sources.items():
+            if not source_name or statuses[name]['status'] not in ('current', 'deployed'):
+                continue
+            try:
+                target = Target(name, config['targets'][name], runtime)
+                source = Target(source_name, config['targets'][source_name], runtime)
+                if source.journal_path.exists():
+                    raise RuntimeError('Source release recovery is pending; refresh postponed')
+                result = target.refresh_data(source)
+                statuses[name]['data_refresh'] = {'status': result, **target.state.get('data_refresh', {})}
+            except Exception as exc:
+                statuses[name]['data_refresh'] = {'status': 'error', 'error_type': type(exc).__name__,
+                    'message': str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Operation failed'}
         atomic_json(runtime / 'status.json', {'checked_at': time.time(), 'targets': statuses})
         print(json.dumps(statuses), flush=True)
 

@@ -200,7 +200,8 @@ def test_rank_frequency_endpoint(client):
 
 def test_grade_score_frequency_bins_are_exact_scores():
     """高二/高三+3等级分频次按精确等级分统计，不按分数段归并。"""
-    from app.analysis.rank_metrics import GRADE_SCORE_BINS, _grade_score_bin
+    # P0-A1：等级分箱是共享定义（新旧两条排名频次路径同一份）
+    from app.analysis.definitions import GRADE_SCORE_BINS, grade_score_bin as _grade_score_bin
 
     assert [label for _key, label, _score, _separator in GRADE_SCORE_BINS] == [
         "70分",

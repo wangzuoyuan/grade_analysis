@@ -1,6 +1,7 @@
 """P6 只读工具注册表测试（契约 docs/contracts/p6-ai-mcp.md §2/§0.1；A01）。
 
-- 注册表 = 契约 24 工具（既有 9 + 新增 15）；domains 声明与域投影
+- 注册表 = P6 契约 24 工具（既有 9 + 新增 15）+ P1-B4 诊断摘要
+  get_diagnosis_summary（共 25）；domains 声明与域投影
   （teaching 会话不含班主任专属工具；homeroom 会话不含教学班对比工具）
 - 未知 / 越权 / 越界（person/学科）→ 模型可读错误文本，不抛栈
 - A01：工具 vs /api/v1 端点同源同果（关键数值断言，同一 service 层），
@@ -43,6 +44,8 @@ EXPECTED_TOOLS = {
     "get_student_notes",
     "get_academic_years",
     "get_exam_students",
+    # P1-B4 诊断摘要（第 25 个工具，契约 docs/diagnosis-roadmap/p1-contracts.md §6.3）
+    "get_diagnosis_summary",
 }
 
 # 班主任专属工具（teaching 会话不可见）
@@ -85,7 +88,7 @@ def test_registry_matches_contract(v1_seed):
     from app.api.chat_tools import TOOL_REGISTRY, tools_for_domain
 
     assert {spec.name for spec in TOOL_REGISTRY} == EXPECTED_TOOLS
-    assert len(TOOL_REGISTRY) == 24
+    assert len(TOOL_REGISTRY) == 25  # P1-B4 起含 get_diagnosis_summary
     for spec in TOOL_REGISTRY:
         assert spec.domains, spec.name
         assert set(spec.domains) <= {"homeroom", "teaching"}

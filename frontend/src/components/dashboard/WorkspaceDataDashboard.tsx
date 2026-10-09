@@ -55,6 +55,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { MoreToggle } from '@/components/ui/more-toggle'
+import { CardFoldToggle, useCardFold } from '@/components/dashboard/card-fold'
 import { Skeleton } from '@/components/ui/skeleton'
 
 interface TrendDatum {
@@ -206,6 +207,11 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
   const [warningsEmptyExpanded, setWarningsEmptyExpanded] = useState(false)
   const [warningsExpanded, setWarningsExpanded] = useState(false)
   const [focusExpanded, setFocusExpanded] = useState(false)
+  // 卡片级折叠（本地记忆）：空态/常态两个分支的「重点关注」是同一逻辑卡，共用一键
+  const trendFold = useCardFold(`${mode}:trend`)
+  const subjectFold = useCardFold(`${mode}:subject-latest`)
+  const focusFold = useCardFold(`${mode}:focus-students`)
+  const warningsFold = useCardFold(`${mode}:homework-warnings`)
 
   useEffect(() => {
     homeworkCurrentSemester()
@@ -450,13 +456,15 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
             <WeeklyFocusCard scopeQuery={analysisQ} />
           ) : null}
           <Card>
-              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button></CardHeader>
+              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button><CardFoldToggle folded={warningsFold.folded} onToggle={warningsFold.toggle} /></div></CardHeader>
+              {warningsFold.folded ? null : (
             <CardContent>
               {homeworkAssignmentCount > 0 ? <div className="h-32"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.homework}><CartesianGrid strokeDasharray="3 3" stroke="#eef4f8" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10, fill: '#7890a8' }} /><YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#7890a8' }} /><Tooltip /><Bar dataKey="assignments" name="作业批次" fill="#35b9e9" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div> : <div className="flex h-20 items-center justify-center text-sm text-slate-400">暂无可统计的作业批次</div>}
               <ul className="mt-3 space-y-2">{(warningsEmptyExpanded ? data.warnings : data.warnings.slice(0, 6)).map((student) => <li key={student.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs"><span className="font-medium text-amber-900">{student.name}</span><span className="text-amber-700">{student.summary}</span></li>)}</ul>
               <MoreToggle hiddenCount={data.warnings.length - 6} unit="条" expanded={warningsEmptyExpanded} onToggle={() => setWarningsEmptyExpanded((v) => !v)} />
               {data.warnings.length === 0 ? <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><CheckCircle2 className="h-4 w-4" />当前筛选下暂无重点作业预警</div> : null}
             </CardContent>
+              )}
           </Card>
         </>
       ) : data ? (
@@ -505,37 +513,45 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
 
           <div className="grid gap-4 xl:grid-cols-[1.45fr_1fr]">
             <Card>
-              <CardHeader><CardTitle>成绩趋势</CardTitle><CardDescription>{mode === 'homeroom' ? '各次考试综合均分' : `各次${teachingStats?.subject ?? '任教学科'}平均分`}，点击数据点查看该次考试</CardDescription></CardHeader>
+              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>成绩趋势</CardTitle><CardDescription>{mode === 'homeroom' ? '各次考试综合均分' : `各次${teachingStats?.subject ?? '任教学科'}平均分`}，点击数据点查看该次考试</CardDescription></div><CardFoldToggle folded={trendFold.folded} onToggle={trendFold.toggle} /></CardHeader>
+              {trendFold.folded ? null : (
               <CardContent className="h-64">
                 {comparableTrend.length >= 2 ? <ResponsiveContainer width="100%" height="100%"><LineChart data={data.trend} margin={{ left: -12, right: 12, top: 8, bottom: 4 }} onClick={(state) => { const exam = state?.activePayload?.[0]?.payload?.exam; if (exam) openExam(String(exam)) }}><CartesianGrid strokeDasharray="3 3" stroke="#e8f1f8" /><XAxis dataKey="date" tick={{ fontSize: 11, fill: '#7890a8' }} /><YAxis tick={{ fontSize: 11, fill: '#7890a8' }} domain={['auto', 'auto']} /><Tooltip formatter={(value) => [`${String(value)} 分`, '均分']} labelFormatter={(_, payload) => payload?.[0]?.payload?.exam ?? ''} /><Line type="monotone" dataKey="value" stroke="#1f7fd6" strokeWidth={3} dot={(props) => <ClickableTrendDot {...props} onOpen={openExam} />} activeDot={{ r: 7, cursor: 'pointer' }} connectNulls={false} /></LineChart></ResponsiveContainer> : <div className="flex h-full flex-col items-center justify-center text-center"><TrendingUp className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-medium text-slate-600">{comparableTrend.length === 1 ? '仅 1 场考试有可比均分' : '暂无可比均分'}</p><p className="mt-1 text-xs text-slate-400">{comparableTrend.length === 1 ? `${comparableTrend[0].exam}：${formatScore(comparableTrend[0].value)} 分，尚不足以形成趋势` : '缺失值保持为空，不按 0 分绘制'}</p></div>}
               </CardContent>
+              )}
             </Card>
 
             <Card>
-              <CardHeader><CardTitle>{mode === 'homeroom' ? '最近一次学科表现' : '教学班对比'}</CardTitle><CardDescription>{mode === 'homeroom' ? '学科均分横向对照' : '班级样本均分，不冒充官方年级排名'}</CardDescription></CardHeader>
+              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>{mode === 'homeroom' ? '最近一次学科表现' : '教学班对比'}</CardTitle><CardDescription>{mode === 'homeroom' ? '学科均分横向对照' : '班级样本均分，不冒充官方年级排名'}</CardDescription></div><CardFoldToggle folded={subjectFold.folded} onToggle={subjectFold.toggle} /></CardHeader>
+              {subjectFold.folded ? null : (
               <CardContent className="space-y-3">
                 {(mode === 'homeroom' ? subjectRows.map((row) => ({ label: row.subject, value: row.avg, count: row.valid_count })) : data.compare.map((row) => ({ label: row.class_label, value: row.subject_avg, count: row.member_count }))).map((row) => (
                   <div key={row.label} className="grid grid-cols-[5rem_1fr_3rem] items-center gap-2 text-xs"><span className="truncate text-slate-600" title={row.label}>{row.label}</span><div className="h-2.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-gradient-to-r from-[#35b9e9] to-[#1f7fd6]" style={{ width: `${String(Math.max(0, Math.min(100, row.value ?? 0)))}%` }} /></div><span className="text-right tabular-nums text-slate-600">{formatScore(row.value)}</span></div>
                 ))}
                 {(mode === 'homeroom' ? subjectRows : data.compare).length === 0 ? <p className="py-8 text-center text-sm text-slate-400">暂无可对比数据</p> : null}
               </CardContent>
+              )}
             </Card>
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">
             <Card>
-              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>需关注学生</CardTitle><CardDescription>{mode === 'homeroom' ? '进退步、波动、名次段、偏科与稳定优秀综合标注' : '根据最近考试排序，供教师进一步核查'}</CardDescription></div><Button asChild variant="ghost" size="sm"><Link href={scoreHref}>查看成绩 <ArrowRight className="h-4 w-4" /></Link></Button></CardHeader>
+              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>需关注学生</CardTitle><CardDescription>{mode === 'homeroom' ? '进退步、波动、名次段、偏科与稳定优秀综合标注' : '根据最近考试排序，供教师进一步核查'}</CardDescription></div><div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><Link href={scoreHref}>查看成绩 <ArrowRight className="h-4 w-4" /></Link></Button><CardFoldToggle folded={focusFold.folded} onToggle={focusFold.toggle} /></div></CardHeader>
+              {focusFold.folded ? null : (
               <CardContent><ul className="divide-y divide-slate-100">{(focusExpanded ? data.focus : data.focus.slice(0, 8)).map((student) => <li key={student.id} className="flex items-center gap-3 py-2.5"><span className="grid h-8 w-8 place-items-center rounded-full bg-slate-50 text-brand-600"><UserRoundSearch className="h-4 w-4" /></span><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium text-slate-700">{student.name}</p><p className="text-xs text-slate-400">{student.reason}</p></div><span className="text-sm font-semibold tabular-nums text-slate-700">{student.value}</span></li>)}</ul><MoreToggle hiddenCount={data.focus.length - 8} unit="人" expanded={focusExpanded} onToggle={() => setFocusExpanded((v) => !v)} />{data.focus.length === 0 ? <p className="py-8 text-center text-sm text-slate-400">暂无可分析的学生成绩</p> : null}</CardContent>
+              )}
             </Card>
 
             <Card>
-              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button></CardHeader>
+              <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button><CardFoldToggle folded={warningsFold.folded} onToggle={warningsFold.toggle} /></div></CardHeader>
+              {warningsFold.folded ? null : (
               <CardContent>
                 {homeworkAssignmentCount > 0 ? <div className="h-32"><ResponsiveContainer width="100%" height="100%"><BarChart data={data.homework}><CartesianGrid strokeDasharray="3 3" stroke="#eef4f8" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10, fill: '#7890a8' }} /><YAxis allowDecimals={false} tick={{ fontSize: 10, fill: '#7890a8' }} /><Tooltip /><Bar dataKey="assignments" name="作业批次" fill="#35b9e9" radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div> : <div className="flex h-24 flex-col items-center justify-center text-center"><p className="text-sm text-slate-500">暂无可统计的作业批次</p><p className="mt-1 text-xs text-slate-400">可从作业看板开始录入。</p></div>}
                 <ul className="mt-3 space-y-2">{(warningsExpanded ? data.warnings : data.warnings.slice(0, 3)).map((student) => <li key={student.id} className="flex items-center justify-between rounded-lg bg-amber-50 px-3 py-2 text-xs"><span className="font-medium text-amber-900">{student.name}</span><span className="text-amber-700">{student.summary}</span></li>)}</ul>
                 <MoreToggle hiddenCount={data.warnings.length - 3} unit="条" expanded={warningsExpanded} onToggle={() => setWarningsExpanded((v) => !v)} />
                 {data.warnings.length === 0 ? <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><CheckCircle2 className="h-4 w-4" />当前筛选下暂无重点作业预警</div> : null}
               </CardContent>
+              )}
             </Card>
           </div>
         </>

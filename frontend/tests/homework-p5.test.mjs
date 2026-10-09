@@ -198,13 +198,12 @@ test('预警时间轴：连续阈值真筛选、旧数据口径与默认已交�
   assert.match(warningsPanel, /disabled=\{teaching\}/, '教学域学科过滤须只读固定')
 })
 
-test('相关性卡：r=null 不可计算态、方向文案、免责声明（契约 §4）', () => {
-  assert.match(correlationCard, /homeworkCorrelation/, '相关性须走 correlation 端点')
+test('相关性卡：r=null 不可计算态、方向文案、免责声明（P2-C1 起改接诊断端点，y=成绩分数）', () => {
+  assert.match(correlationCard, /diagnosisCorrelation/, '相关性须走 P2 诊断 correlation 端点')
   assert.match(correlationCard, /corr\.r == null/, '须对 r=null 分支')
   assert.match(correlationCard, /相关系数不可计算（样本不足或零方差）/, '须显示不可计算文案')
   assert.match(correlationCard, /correlationDirectionLabel/, '方向文案须由 direction 驱动')
   assert.match(correlationCard, /ScatterChart/, '须用 recharts 散点')
-  assert.match(correlationCard, /reversed/, 'y 轴反转：名次小（好）朝上')
   assert.match(correlationCard, /不构成因果/, '必须渲染免责声明')
   assert.match(correlationCard, /caveats/, '后端 caveats 必须逐条展示')
 })
