@@ -107,6 +107,9 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - `PUT /api/v1/homework/semesters/{id}`：手工改日期；auto 模式下改过即转手工（保留可回自动）。
 - `POST /api/v1/homework/semesters/{id}/restore-auto`：回自动模式（手工日期丢弃前 preview diff）。
 - `PUT /api/v1/homework/semesters/{id}/current`：设当前；重复设同一条 → 422（不 500）。
+- 前端在设当前成功后，必须立即把班主任与教学两个工作台的筛选记忆同步到返回的
+  `academic_year_id`，清空旧学期与跨学年班级/教学班选择并作废在途范围请求；不得依赖
+  仪表盘挂载后的纠偏。设置页顶部的学年下拉仅切换本页浏览，不改变全局当前学期。
 - 学期表：新表 `ws_homework_semester`（迁移 0005，与 p4 迁移合并发布：`id, academic_year_id FK,
   name, start_date, end_date, is_current, mode('auto'|'manual'), created_at, updated_at`，唯一键
   (academic_year_id, name)）。

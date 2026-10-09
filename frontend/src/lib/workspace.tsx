@@ -46,6 +46,8 @@ export interface WorkspaceContextValue {
   setMode: (mode: WorkspaceMode) => void
   filter: WorkspaceFilter
   setFilter: (patch: Partial<WorkspaceFilter>) => void
+  /** 当前学期切换成功后专用：把两个工作台的筛选同时同步到新学年。 */
+  applyCurrentSemesterFilter: (academicYearId: number) => void
   scope: ScopeState | null
   scopeError: ApiV1Error | null
   scopeLoading: boolean
@@ -223,6 +225,38 @@ function WorkspaceProviderInner({ children }: { children: ReactNode }) {
     [mode, bumpGeneration],
   )
 
+  /**
+   * 当前学期设置成功后专用同步。普通 setFilter 只能改当前 mode，若只在此调用会导致
+   * 另一个工作台仍携带旧 workspace-scope 学年，直到访问仪表盘才被看板纠偏。
+   */
+  const applyCurrentSemesterFilter = useCallback(
+    (academicYearId: number) => {
+      if (!Number.isInteger(academicYearId)) return
+      const next: Record<WorkspaceMode, WorkspaceFilter> = {
+        homeroom: {
+          ...filtersRef.current.homeroom,
+          academic_year_id: academicYearId,
+          term_id: undefined,
+          class_id: undefined,
+        },
+        teaching: {
+          ...filtersRef.current.teaching,
+          academic_year_id: academicYearId,
+          term_id: undefined,
+          teaching_class_id: 'all',
+        },
+      }
+      filtersRef.current = next
+      persistFilter('homeroom', next.homeroom)
+      persistFilter('teaching', next.teaching)
+      setFilters(next)
+      bumpGeneration()
+      setScope(null)
+      setScopeError(null)
+    },
+    [bumpGeneration],
+  )
+
   const refreshScope = useCallback(() => {
     bumpGeneration()
     setRefreshNonce((n) => n + 1)
@@ -293,6 +327,7 @@ function WorkspaceProviderInner({ children }: { children: ReactNode }) {
       setMode,
       filter,
       setFilter,
+      applyCurrentSemesterFilter,
       scope,
       scopeError,
       scopeLoading,
@@ -300,7 +335,7 @@ function WorkspaceProviderInner({ children }: { children: ReactNode }) {
       generation,
       switching,
     }),
-    [mode, setMode, filter, setFilter, scope, scopeError, scopeLoading, refreshScope, generation, switching],
+    [mode, setMode, filter, setFilter, applyCurrentSemesterFilter, scope, scopeError, scopeLoading, refreshScope, generation, switching],
   )
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>

@@ -7,6 +7,7 @@ import test from 'node:test'
 
 const apiV1 = readFileSync(new URL('../src/lib/api-v1.ts', import.meta.url), 'utf8')
 const workspace = readFileSync(new URL('../src/components/homework/HomeworkWorkspace.tsx', import.meta.url), 'utf8')
+const workspaceProvider = readFileSync(new URL('../src/lib/workspace.tsx', import.meta.url), 'utf8')
 const entryPanel = readFileSync(new URL('../src/components/homework/HomeworkEntryPanel.tsx', import.meta.url), 'utf8')
 const assignmentTable = readFileSync(new URL('../src/components/homework/AssignmentTable.tsx', import.meta.url), 'utf8')
 const warningsPanel = readFileSync(new URL('../src/components/homework/WarningsPanel.tsx', import.meta.url), 'utf8')
@@ -229,6 +230,36 @@ test('学期设置卡：auto 推导标注、手工编辑、设当前/恢复自�
   assert.doesNotMatch(settingsPage, /useWorkspace|academicYearId=\{filter\./, '学期设置不得跟随工作台学年筛选')
   assert.match(settingsPage, /班主任和教学工作台共用同一套学期日期与当前学期/, '页面须说明两个工作台共用学期')
   assert.doesNotMatch(settingsPage, /教学班|管理教学班/, '学期设置页不得重复提供教学班管理')
+})
+
+test('设当前学期成功后立即同步两个工作台筛选，不等仪表盘纠偏', () => {
+  assert.match(workspaceProvider, /applyCurrentSemesterFilter: \(academicYearId: number\) => void/, 'WorkspaceContext 须暴露当前学期专用同步方法')
+  const syncStart = workspaceProvider.indexOf('const applyCurrentSemesterFilter')
+  const syncEnd = workspaceProvider.indexOf('const refreshScope', syncStart)
+  assert.ok(syncStart >= 0 && syncEnd > syncStart, '应能定位当前学期同步实现')
+  const syncBody = workspaceProvider.slice(syncStart, syncEnd)
+  for (const mode of ['homeroom', 'teaching']) {
+    assert.match(syncBody, new RegExp(`persistFilter\\('${mode}', next\\.${mode}\\)`), `${mode} 筛选必须持久化`)
+    assert.match(syncBody, /academic_year_id: academicYearId/, `${mode} 学年必须写入新当前学年`)
+    assert.match(syncBody, /term_id: undefined/, '切换当前学期必须清空旧 term_id')
+  }
+  assert.match(syncBody, /class_id: undefined/, '班主任需清掉跨学年无效行政班选择')
+  assert.match(syncBody, /teaching_class_id: 'all'/, "教学需重置为 'all'，避免携带跨学年教学班 id")
+  assert.match(syncBody, /bumpGeneration\(\)/, '同步后必须作废在途响应')
+  assert.match(syncBody, /setScope\(null\)/, '同步后必须丢弃旧 scope')
+
+  assert.match(semesterCard, /const \{ applyCurrentSemesterFilter \} = useWorkspace\(\)/, '学期设置卡须接入工作台同步方法')
+  const setCurrentStart = semesterCard.indexOf('async function setCurrentSemester(')
+  const setCurrentEnd = semesterCard.indexOf('async function createYear', setCurrentStart)
+  assert.ok(setCurrentStart >= 0 && setCurrentEnd > setCurrentStart, '应能定位设当前学期处理函数')
+  const setCurrentBody = semesterCard.slice(setCurrentStart, setCurrentEnd)
+  assert.match(setCurrentBody, /await homeworkSetCurrentSemester\(semesterId\)/, '必须先等待设当前成功')
+  assert.match(setCurrentBody, /applyCurrentSemesterFilter\(result\.academic_year_id\)/, '只有成功拿到返回学年后才同步全局筛选')
+  const yearSelectStart = semesterCard.indexOf('<select')
+  const yearSelectEnd = semesterCard.indexOf('</select>', yearSelectStart)
+  const yearSelect = semesterCard.slice(yearSelectStart, yearSelectEnd)
+  assert.match(yearSelect, /onChange=\{\(e\) => \{/, '应能定位学年下拉处理')
+  assert.doesNotMatch(yearSelect, /applyCurrentSemesterFilter/, '学年下拉只是切换本页浏览，不得直接改全局当前范围')
 })
 
 test('请求序号按资源分离（F11）：列表/看板/详情/考试清单各比对其序号', () => {

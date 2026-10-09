@@ -39,6 +39,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { useWorkspace } from '@/lib/workspace'
 
 /** 把 422（重名/重叠/重复设当前）转成中文文案：后端 detail 已是中文，原样优先。 */
 function semesterActionError(err: unknown): string {
@@ -49,6 +50,7 @@ function semesterActionError(err: unknown): string {
 }
 
 export function SemesterSettingsCard() {
+  const { applyCurrentSemesterFilter } = useWorkspace()
   // 学期设置独立于工作台筛选，班主任和教学始终使用同一份学年清单。
   const [years, setYears] = useState<AcademicYear[] | null>(null)
   const [ayId, setAyId] = useState<number | null>(null)
@@ -154,6 +156,21 @@ export function SemesterSettingsCard() {
       }),
     )
     setCreateForm({ name: '', start: '', end: '' })
+  }
+
+  async function setCurrentSemester(semesterId: number) {
+    setBusy(true)
+    setActionError(null)
+    try {
+      const result = await homeworkSetCurrentSemester(semesterId)
+      // 只有设当前成功才改全局工作台筛选；学年下拉只影响本页浏览。
+      applyCurrentSemesterFilter(result.academic_year_id)
+      reload()
+    } catch (err) {
+      setActionError(semesterActionError(err))
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function createYear() {
@@ -327,9 +344,7 @@ export function SemesterSettingsCard() {
                               size="icon"
                               aria-label={`设 ${s.name} 为当前学期`}
                               disabled={busy}
-                              onClick={() =>
-                                runAction(() => homeworkSetCurrentSemester(s.id as number))
-                              }
+                              onClick={() => setCurrentSemester(s.id as number)}
                             >
                               <Star className="h-4 w-4" />
                             </Button>
