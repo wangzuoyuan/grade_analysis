@@ -50,17 +50,25 @@ def test_is_full_submission():
 
 
 def test_evaluation_tone_poor_marker_rule():
-    """单字「差」只在独立成段或「差：细节」打头时算负面；藏在词内不算。"""
+    """单字「差」只在独立成段或「差：/差，细节」打头时算负面；藏在词内不算。"""
     from app.api.homework import _evaluation_tone
 
     assert _evaluation_tone("差") == "negative"
     assert _evaluation_tone("差：最后两题没写完") == "negative"
     assert _evaluation_tone("差:潦草") == "negative"
+    # 「差，细节」逗号引出细节同样算负面（2026-10-12 真实录入：差，没有计算过程）
+    assert _evaluation_tone("差，没有计算过程") == "negative"
+    assert _evaluation_tone("差,没写完") == "negative"
+    assert _evaluation_tone("旷课｜差，没有计算过程") == "negative"
     assert _evaluation_tone("不认真") == "negative"
     assert _evaluation_tone("不合格") == "negative"
     assert _evaluation_tone("优秀") == "neutral"
     assert _evaluation_tone("误差分析") == "neutral"
     assert _evaluation_tone("差错订正") == "neutral"
+    # 差字藏词内（含后跟逗号的短语）不误报：差距/差错订正后接逗号仍非打头「差，」
+    assert _evaluation_tone("差距很大，要加油") == "neutral"
+    assert _evaluation_tone("差错订正，张三") == "neutral"
+    assert _evaluation_tone("没有计算过程，差") == "neutral"
     assert _evaluation_tone("练习册") == "neutral"
     assert _evaluation_tone("迟到｜差") == "negative"
     assert _evaluation_tone("迟到｜误差分析") == "neutral"
