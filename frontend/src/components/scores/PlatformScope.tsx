@@ -44,10 +44,10 @@ export function usePlatformScope() {
 }
 export function PlatformScope({ value }: {value: ReturnType<typeof usePlatformScope>}) {
   return <div className="flex flex-wrap gap-4">
-    <label className="text-sm text-slate-600">学年<select aria-label="导入与对比学年" className="ml-2 rounded-md border bg-white p-2" value={value.year ?? ''} onChange={e => value.chooseYear(Number(e.target.value))}>
+    <label className="text-sm text-slate-600">学年<select aria-label="导入与对比学年" className="ml-2 rounded-md border bg-white py-2 pl-2" value={value.year ?? ''} onChange={e => value.chooseYear(Number(e.target.value))}>
       <option value="" disabled>选择学年</option>{value.years.map(y => <option key={y.id} value={y.id}>{y.name}</option>)}
     </select></label>
-    <label className="text-sm text-slate-600">年级<select aria-label="导入与对比年级" className="ml-2 rounded-md border bg-white p-2" value={value.grade} onChange={e => value.chooseGrade(Number(e.target.value))}>
+    <label className="text-sm text-slate-600">年级<select aria-label="导入与对比年级" className="ml-2 rounded-md border bg-white py-2 pl-2" value={value.grade} onChange={e => value.chooseGrade(Number(e.target.value))}>
       <option value={1}>高一</option><option value={2}>高二</option><option value={3}>高三</option>
     </select></label>
     <p className="self-center text-sm text-slate-600">任教学科：<strong>{value.subject || '尚未配置'}</strong></p>

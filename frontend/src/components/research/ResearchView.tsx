@@ -12,7 +12,7 @@ const PROBLEM_LABELS: Record<string,string> = {
   稳定临界型: '稳定临界', 临界上升型: '临界段上升', 作业风险型: '作业缺交', 综合风险型: '多项问题',
   持续进步型: '持续进步', 稳定优秀型: '稳定优秀', 高位波动型: '高位波动',
 }
-const selectClass = 'h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700'
+const selectClass = 'h-10 w-full rounded-lg border border-slate-200 bg-white pl-3 text-sm text-slate-700'
 export function defaultMetric(problem: string, data: FocusCohorts): string {
   if (problem === '明显偏科型') return 'problem:imbalance'
   if (problem === '作业风险型') return 'problem:homework'

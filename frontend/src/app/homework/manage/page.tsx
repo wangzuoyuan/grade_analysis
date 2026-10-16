@@ -238,7 +238,7 @@ export default function HomeworkManagePage() {
               <div className="text-sm text-slate-500">{editing.date} · {editing.name}</div>
               <label className="block text-sm">提交状态
                 <select value={editing.submission_status || '缺交'} onChange={(e) => setEditing({ ...editing, submission_status: e.target.value })}
-                  className="mt-1 w-full rounded-md border border-slate-200 px-2 py-2">
+                  className="mt-1 w-full rounded-md border border-slate-200 pl-2 py-2">
                   <option value="缺交">缺交</option><option value="已交">已交</option>
                 </select>
               </label>

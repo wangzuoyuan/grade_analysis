@@ -380,7 +380,7 @@ export default function InterventionCard({
               <select
                 value={form.target_metric}
                 onChange={(e) => update('target_metric', e.target.value)}
-                className="rounded-md border border-slate-200 px-2 py-2 text-sm"
+                className="rounded-md border border-slate-200 pl-2 py-2 text-sm"
               >
                 {METRIC_OPTIONS.map((m) => (
                   <option key={m.value} value={m.value}>

@@ -93,8 +93,8 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <label className="text-sm">考试名称<input aria-label="考试名称" className="mt-1 w-full rounded border p-2" value={name} onChange={e=>setName(e.target.value)} placeholder="明确填写本次考试名称"/></label>
         <label className="text-sm">考试日期<input aria-label="考试日期" type="date" className="mt-1 w-full rounded border p-2" value={date} onChange={e=>setDate(e.target.value)}/></label>
-        <label className="text-sm">学生明细所属教学班<select aria-label="学生明细所属教学班" className="mt-1 w-full rounded border bg-white p-2" value={target} onChange={e=>setTarget(e.target.value)}><option value="">仅质量表可不选</option>{scope.classes.map(c=><option key={c.class_id} value={c.class_id}>{c.label}</option>)}</select></label>
-        <label className="text-sm">导入类型<select aria-label="导入类型" className="mt-1 w-full rounded border bg-white p-2" value={operation} onChange={e=>setOperation(e.target.value)}><option value="initial">首次导入 / 明确修订</option><option value="supplement">{scope.grade===1?'只补学籍排名、年级百分位':'只补等级分'}</option></select></label>
+        <label className="text-sm">学生明细所属教学班<select aria-label="学生明细所属教学班" className="mt-1 w-full rounded border bg-white py-2 pl-2" value={target} onChange={e=>setTarget(e.target.value)}><option value="">仅质量表可不选</option>{scope.classes.map(c=><option key={c.class_id} value={c.class_id}>{c.label}</option>)}</select></label>
+        <label className="text-sm">导入类型<select aria-label="导入类型" className="mt-1 w-full rounded border bg-white py-2 pl-2" value={operation} onChange={e=>setOperation(e.target.value)}><option value="initial">首次导入 / 明确修订</option><option value="supplement">{scope.grade===1?'只补学籍排名、年级百分位':'只补等级分'}</option></select></label>
       </div>
       <p className="text-sm text-slate-500">{scope.grade===1?'明细：学号、姓名、分数、学籍排名、年级百分位。排名和百分位可留空后补。':'明细：学号、姓名、原始分数、等级分数。等级分可留空后补。'} 补录不修改原始分，空白保留已有值。</p>
       <ScoreImportTemplates mode="teaching" grade={scope.grade}/>

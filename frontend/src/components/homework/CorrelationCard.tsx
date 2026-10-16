@@ -309,7 +309,7 @@ export function CorrelationCard({
               id="hw-corr-exam"
               value={examName ?? ''}
               onChange={(e) => setExamName(e.target.value === '' ? null : e.target.value)}
-              className="h-10 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-10 rounded-md border border-slate-200 bg-white pl-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {exams == null ? <option value="">加载中…</option> : null}
               {exams != null && exams.length === 0 ? <option value="">（无已导入考试）</option> : null}
@@ -330,7 +330,7 @@ export function CorrelationCard({
                 id="hw-corr-metric"
                 value={metricDraft}
                 onChange={(e) => setMetricDraft(e.target.value)}
-                className="h-10 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="h-10 rounded-md border border-slate-200 bg-white pl-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {METRIC_OPTIONS.map((m) => (
                   <option key={m.value} value={m.value}>
@@ -348,7 +348,7 @@ export function CorrelationCard({
               id="hw-corr-window"
               value={String(windowDays)}
               onChange={(e) => setWindowDays(e.target.value === '30' ? 30 : 14)}
-              className="h-10 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-10 rounded-md border border-slate-200 bg-white pl-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <option value="14">14 天</option>
               <option value="30">30 天</option>

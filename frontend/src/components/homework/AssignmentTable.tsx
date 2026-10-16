@@ -1470,7 +1470,7 @@ function AssignmentDetailView({
                           onChange={(e) =>
                             setEdit(s.person_id, { status: e.target.value as HomeworkStatus }, s.status as HomeworkStatus)
                           }
-                          className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="h-8 rounded-md border border-slate-200 bg-white pl-2 text-sm text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {HOMEWORK_STATUS_OPTIONS.map((o) => (
                             <option key={o.value} value={o.value}>
