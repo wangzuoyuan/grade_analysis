@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import update
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
 from app.api import _queries as q, current_teacher_id, domain_endpoint
@@ -135,17 +135,58 @@ def identities(db,s,students,confirmations=None,new_aliases=(),enforce=False):
     return mapping,new,pending
 
 
-def plan(db,s,mapping):
+def auto_assignments(db, s, mapping, students, ctx):
+    """按学号自动分班：多个教学班的明细合并成一个文件时，学生身份由学号
+    解析后，在其本人任教学科、年级匹配的教学班里找考试当日成员有效期
+    覆盖该生的班级，唯一命中才归属。返回 ({alias: class_id}, errors)；
+    无法唯一归属的学生逐个报错，沿用整批零写入防线。"""
+    classes = [c for c in db.query(TeachingClass).filter_by(
+        academic_year_id=s["academic_year_id"], subject=s["subject"]).order_by(TeachingClass.id)
+        if c.id in ctx.class_ids and c.grade in (None, s["grade"])]
+    at = date.fromisoformat(s["exam_date"])
+    rows = db.query(TeachingClassMember.teaching_class_id, TeachingClassMember.identity_id).filter(
+        TeachingClassMember.teaching_class_id.in_([c.id for c in classes]),
+        TeachingClassMember.valid_from <= at,
+        or_(TeachingClassMember.valid_to.is_(None), TeachingClassMember.valid_to >= at)).all()
+    by_person = {}
+    for cid, pid in rows:
+        by_person.setdefault(pid, set()).add(cid)
+    labels = {c.id: c.label for c in classes}
+    assignments, errors = {}, []
+    for alias in students:
+        ident = mapping.get(alias)
+        if ident is None:
+            errors.append({"alias": alias, "message": "学号未解析为已有学生（新学生或身份待确认）；自动分班要求学生已在教学班名册中"})
+            continue
+        hits = by_person.get(ident, set())
+        if len(hits) == 1:
+            assignments[alias] = next(iter(hits))
+        elif not hits:
+            errors.append({"alias": alias, "message": "学号不在你任教的任何教学班名册中，无法自动分班"})
+        else:
+            names = "、".join(sorted(labels.get(c, str(c)) for c in hits))
+            errors.append({"alias": alias, "message": f"学号同时属于 {names}，无法自动分班，请分班上传或修正名册"})
+    return assignments, errors
+
+
+def plan(db, s, mapping, ctx=None):
     students,classes,aggregates,errors=merged_files(s)
+    assignments={}
+    if s.get("auto_assign") and students:
+        assignments,auto_errors=auto_assignments(db,s,mapping,students,ctx)
+        errors.extend(auto_errors)
     exam=get_exam(db,s)
     changes,conflicts,score_plans,quality_plans=[],[],[],[]
     if exam and str(exam.exam_date)!=s["exam_date"]:
         errors.append({"message":"同范围同名考试日期不同"})
     for alias,row in students.items():
+        if s.get("auto_assign") and alias not in assignments:
+            continue
         ident=mapping.get(alias)
+        class_id=assignments.get(alias) if s.get("auto_assign") else s["teaching_class_id"]
         existing = db.query(ScoreFact).filter_by(data_domain="teaching",academic_year_id=s["academic_year_id"],
             exam_name=s["exam_name"],identity_id=ident,subject_key=s["subject"],total_key="").one_or_none() if ident else None
-        if existing and (existing.class_ref_id!=s["teaching_class_id"] or existing.teaching_exam_id not in (None,exam.id if exam else None)):
+        if existing and (existing.class_ref_id!=class_id or existing.teaching_exam_id not in (None,exam.id if exam else None)):
             errors.append({"alias":alias,"message":"已有成绩属于其他班级/考试范围"})
             continue
         if existing and (existing.exam_date is None or str(existing.exam_date)!=s["exam_date"]):
@@ -200,7 +241,7 @@ def plan(db,s,mapping):
     for key,c in classes.items():
         if key not in wanted:
             tc=db.query(TeachingClass).filter_by(academic_year_id=s["academic_year_id"],subject=s["subject"],label=c["class_label"]).first() if c["class_kind"]=="teaching" else None
-            if tc and tc.grade!=s["grade"] and not (tc.grade is None and tc.id==s["teaching_class_id"]):
+            if tc and tc.grade!=s["grade"] and not (tc.grade is None and (tc.id==s.get("teaching_class_id") or tc.id in set(assignments.values()))):
                 tc=None
             wanted[key]={"class_kind":c["class_kind"],"class_label":c["class_label"],"class_type":c["class_type"],"teacher_name":c["teacher_name"],"managed_class_id":tc.id if tc else None}
             roster_changes.append({"action":"add","class_kind":c["class_kind"],"class_label":c["class_label"]})
@@ -211,7 +252,8 @@ def plan(db,s,mapping):
         changes.append(change)
         conflicts.append(change)
     return {"changes":changes,"conflicts":conflicts,"errors":errors,"roster_changes":roster_changes,
-        "snapshot":list(wanted.values()),"score_plans":score_plans,"quality_plans":quality_plans,"aggregates":aggregates}
+        "snapshot":list(wanted.values()),"score_plans":score_plans,"quality_plans":quality_plans,"aggregates":aggregates,
+        "assignments":assignments}
 
 
 @router.post("/imports/preview")
@@ -222,9 +264,12 @@ async def preview(request: Request, db: Session=Depends(get_db)):
         year_id=int(form.get("academic_year_id", ""))
         grade=int(form.get("grade", ""))
         target=int(form["teaching_class_id"]) if form.get("teaching_class_id") else None
+        auto=form.get("auto_assign")=="true"
         exam_date=date.fromisoformat(str(form.get("exam_date", "")))
     except (ValueError,TypeError):
         raise InvalidScopeParam("请明确填写学年、年级、考试日期和有效班级") from None
+    if target and auto:
+        raise InvalidScopeParam("指定教学班与按学号自动分班不能同时选择")
     ay,subject,ctx,tc=scope(db,year_id,grade,form.get("subject"),target)
     name=str(form.get("exam_name", "")).strip()
     operation=str(form.get("operation", "initial"))
@@ -246,14 +291,14 @@ async def preview(request: Request, db: Session=Depends(get_db)):
         files.append(f)
     if not files:
         raise InvalidScopeParam("请选择 .xlsx 文件")
-    if any(f["rows"] for f in files) and tc is None:
-        raise InvalidScopeParam("学生明细必须指定本人管理的教学班；纯质量表无需选择")
+    if any(f["rows"] for f in files) and tc is None and not auto:
+        raise InvalidScopeParam("学生明细须选择「按学号自动分到各教学班」或指定教学班；纯质量表无需选择")
     s={"kind":"teaching_platform","academic_year_id":ay.id,"grade":grade,"subject":subject,
         "exam_name":name,"exam_date":exam_date.isoformat(),"teaching_class_id":target,"operation":operation,"files":files,
-        "replace_roster":form.get("replace_roster")=="true"}
+        "replace_roster":form.get("replace_roster")=="true","auto_assign":auto}
     students,_,_,_=merged_files(s)
     mapping,new,candidates=identities(db,s,students)
-    p=plan(db,s,mapping)
+    p=plan(db,s,mapping,ctx)
     s["state_digest"]=state(db,s,ctx)
     token=secrets.token_hex(24)
     expires=datetime.utcnow()+timedelta(minutes=30)
@@ -293,7 +338,7 @@ def confirm(req: ConfirmRequest, db: Session=Depends(get_db)):
             raise LinkVersionConflict("预览后的数据或范围已变化，请重新预览")
         students,_,_,_=merged_files(s)
         mapping,new,candidates=identities(db,s,students,req.identity_confirmations,req.identity_new_aliases,True)
-        p=plan(db,s,mapping)
+        p=plan(db,s,mapping,ctx)
         if p["errors"]:
             raise LinkVersionConflict("整批校验失败，零写入",details={"conflicts":p["errors"]})
         if p["conflicts"] and not req.revise:
@@ -354,10 +399,17 @@ def confirm(req: ConfirmRequest, db: Session=Depends(get_db)):
                         raise LinkVersionConflict("该学生考试时不在目标班，请先核对成员有效期")
                     db.add(TeachingClassMember(teaching_class_id=tc.id,identity_id=pid,valid_from=start,source="platform_import"))
                     members+=1
+        if s.get("auto_assign") and students and s["operation"]=="initial":
+            # 自动分班即名册匹配，学生已是各班考试当日有效成员；只回填缺年级的班级信息，不新增成员。
+            for cid in set(p["assignments"].values()):
+                auto_tc=db.get(TeachingClass,cid)
+                if auto_tc and auto_tc.grade is None:
+                    auto_tc.grade=s["grade"]
         for row,existing,updates in p["score_plans"]:
             if existing is None:
                 existing=ScoreFact(data_domain="teaching",academic_year_id=ay.id,exam_name=exam.exam_name,
-                    exam_date=exam.exam_date,subject=subject,identity_id=mapping[row["alias"]],class_ref_id=tc.id,
+                    exam_date=exam.exam_date,subject=subject,identity_id=mapping[row["alias"]],
+                    class_ref_id=p["assignments"].get(row["alias"]) if s.get("auto_assign") else tc.id,
                     teaching_exam_id=exam.id,source="platform_import",score=None)
                 db.add(existing)
                 imported+=1

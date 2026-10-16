@@ -8,7 +8,7 @@ import pytest
 from openpyxl import Workbook
 from app.db.models import SessionLocal, Teacher, engine
 from app.db.workspace_models import (AcademicYear,TeachingClass,TeachingClassMember,ScoreFact,
-    TeachingExamScope,TeachingClassQuality,TeachingComparisonRoster,WsStudentIdentity,ImportBatch)
+    TeachingExamScope,TeachingClassQuality,TeachingComparisonRoster,WsStudentIdentity,WsStudentAlias,ImportBatch)
 from app.ingest.teaching_platform import GRADE_LABELS,parse
 
 API="/api/v1/teaching/platform"
@@ -292,6 +292,69 @@ def test_complementary_files_and_conflicting_duplicate(env):
         ('乙.xlsx',detail(1,[['00001','合成甲',0,21,.2]]))])
     assert p['errors'][0]['field']=='xueji_rank'
     confirm(e,p,409,revise=True)
+
+
+def auto(e,rows,name='合成期中',**extra):
+    """多班学生合并在一个文件里、按学号自动分班的预览。"""
+    return preview(e,files=[('三班合并.xlsx',detail(rows=rows))],target=False,auto_assign='true',name=name,**extra)
+
+
+def test_auto_assign_splits_multi_class_file(env):
+    e=env
+    # 三个班各自先单独导入一次摸底，建立学号别名与成员名册
+    roster=[('SYN001','合成甲',61),('SYN002','合成乙',62),('SYN003','合成丙',63)]
+    tcs=[]
+    for i,(sid,sname,score) in enumerate(roster,1):
+        tc=TeachingClass(academic_year_id=e.year,subject='物理',label=f'合成{i}班')
+        e.db.add(tc);e.db.commit()
+        tcs.append(tc.id);e.tc=tc.id
+        confirm(e,preview(e,name='合成摸底',files=[('明细.xlsx',detail(rows=[[sid,sname,score,None]]))]))
+    rows=[['SYN001','合成甲',71,None],['SYN003','合成丙',83,None],['SYN002','合成乙',72,None]]
+    p=auto(e,rows)
+    assert p['errors']==[]
+    r=confirm(e,p)
+    assert r['imported']==3
+    alias_ident={a.alias_value:a.identity_id for a in e.db.query(WsStudentAlias).filter_by(data_domain='teaching')}
+    facts={f.identity_id:f.class_ref_id for f in e.db.query(ScoreFact).filter_by(exam_name='合成期中')}
+    assert [facts[alias_ident[sid]] for sid,_,_ in roster]==tcs
+    listed=e.client.get(API+f"/exams/{r['exam_id']}/students").json()['students']
+    assert sorted(x['class_label'] for x in listed)==['合成1班','合成2班','合成3班']
+    assert confirm(e,auto(e,rows))['skipped']==3
+    p=auto(e,[['SYN001','合成甲',71,70],['SYN002','合成乙',72,64]],operation='supplement')
+    confirm(e,p)
+    grades={f.identity_id:f.grade_score for f in e.db.query(ScoreFact).filter_by(exam_name='合成期中')}
+    assert grades[alias_ident['SYN001']]==70 and grades[alias_ident['SYN002']]==64
+
+
+def test_auto_assign_rejects_unmatched_students(env):
+    e=env
+    confirm(e,preview(e))  # SYN001 合成甲 → 合成A 班
+    ident=e.db.query(WsStudentAlias).filter_by(alias_value='SYN001').one().identity_id
+    # 新学号：自动分班不创建学生
+    p=auto(e,[['SYN001','合成甲',70,None],['SYN009','合成壬',90,None]])
+    errs={x['alias']:x['message'] for x in p['errors'] if 'alias' in x}
+    assert '未解析为已有学生' in errs['SYN009']
+    confirm(e,p,409)
+    # 409 整批零写入：合成期中仍只有预置导入那一条
+    assert e.db.query(ScoreFact).filter_by(exam_name='合成期中').count()==1
+    assert not e.db.query(WsStudentIdentity).filter_by(display_name='合成壬').count()
+    # 有身份但考试当日不在任何班（成员有效期已结束）
+    member=e.db.query(TeachingClassMember).filter_by(identity_id=ident).one()
+    member.valid_to=date(2030,10,31);e.db.commit()
+    errs={x['alias']:x['message'] for x in auto(e,[['SYN001','合成甲',70,None]])['errors']}
+    assert '不在你任教的任何教学班名册' in errs['SYN001']
+    # 同一学号同时是两个班的成员
+    member.valid_to=None;e.db.commit()
+    other=TeachingClass(academic_year_id=e.year,subject='物理',label='合成B班')
+    e.db.add(other);e.db.flush()
+    e.db.add(TeachingClassMember(teaching_class_id=other.id,identity_id=ident,valid_from=date(2030,9,1)));e.db.commit()
+    errs={x['alias']:x['message'] for x in auto(e,[['SYN001','合成甲',70,None]])['errors']}
+    assert '同时属于' in errs['SYN001']
+    # 指定班级与自动分班互斥
+    form={'academic_year_id':str(e.year),'grade':'2','subject':'物理','exam_name':'合成期中',
+        'exam_date':'2030-11-01','operation':'initial','teaching_class_id':str(e.tc),'auto_assign':'true'}
+    r=e.client.post(API+'/imports/preview',data=form,files=[('files',('明细.xlsx',detail(),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))])
+    assert r.status_code==422
 
 
 def test_history_candidates_and_own_domain_only(env):

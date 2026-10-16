@@ -2,11 +2,12 @@
 
 ## 范围
 
-仅 teaching，服务端校验配置学科，显式 academic_year_id、grade(1/2/3)、subject、exam_name、exam_date。学生文件需教学班 ID，质量表可单独导入。所有标签大小写敏感，不根据样表固定班名或数量。
+仅 teaching，服务端校验配置学科，显式 academic_year_id、grade(1/2/3)、subject、exam_name、exam_date。学生文件可选按学号自动分班或指定教学班 ID，质量表可单独导入。所有标签大小写敏感，不根据样表固定班名或数量。
 
 ## 两阶段导入
 
-- POST /api/v1/teaching/platform/imports/preview multipart: files、上述范围、teaching_class_id?、operation(initial|supplement)。仅写预览台账，返回 token、items、changes、conflicts、roster_changes、warnings；保留文件/表/行来源。
+- POST /api/v1/teaching/platform/imports/preview multipart: files、上述范围、teaching_class_id?、auto_assign?（与 teaching_class_id 互斥）、operation(initial|supplement)。仅写预览台账，返回 token、items、changes、conflicts、roster_changes、warnings；保留文件/表/行来源。
+- auto_assign=true：多个教学班的学生明细合并成一个文件时，每个学生按学号解析身份后，须在其本人任教学科、年级匹配的教学班中**考试当日唯一**归属（成员有效期覆盖考试日期）；唯一命中归入该班，事实的 class_ref_id 按各自班级写入。未解析为已有学生（新学生/身份待确认）、不在任何班名册、同时属于多个班的学生逐个报错，整批零写入；自动分班不创建学生身份、不新增班成员，只为缺年级的归属班回填年级。
 - POST /api/v1/teaching/platform/imports/confirm JSON: token、revise=false、accept_roster_changes=false、identity_confirmations?、identity_new_aliases?。复用身份候选规则，锁定预览数据版本和成员/关联快照；任意冲突整批拒绝。新班参照变化必须显式确认。
 - initial：新建事实；已有事实按文件实际非空字段合并，空白不清空；不同值须 revise。supplement：只能修改 grade_score(高二三)、xueji_rank/grade_percentile(高一)；原始分不同拒绝，无已有事实拒绝，不创建成员。
 - 数值 0 有效，空白不同于 0，NaN/inf/非法数字拒绝；百分位与比例规范化为 0..1。重复自然键、同值跳过；同批互补合并；同字段异值冲突。令牌单次消费，事务失败回滚，版本漂移须重新预览。
@@ -23,7 +24,7 @@
 
 ## UI
 
-/upload 教学平台入口及旧模板切换；/compare 官方质量对比及旧样本入口。学年/年级/学科/考试显式，成绩与汇总单独加载；学生表无数据不阻断官方对比。快速切换丢弃迟到响应，变更输入使预览失效。
+/upload 教学平台入口及旧模板切换；/compare 官方质量对比及旧样本入口。学年/年级/学科/考试显式，成绩与汇总单独加载；学生表无数据不阻断官方对比。快速切换丢弃迟到响应，变更输入使预览失效。学生明细分班默认「按学号自动分到各教学班」（多班合用一个文件），可改为指定教学班或仅质量表。
 
 上传页提供与当前年级对应的空白 `.xlsx` 模板下载：高一学生明细及质量分析，高二/高三学生明细、教学班质量分析、行政班质量分析。补录使用同一学生明细模板。班主任及教学旧格式入口提供高一、高二/高三的全科明细与班级均分模板。模板位于 `/templates/scores/v1/`，只含原有解析器要求的单工作表表头与空白填写区，不含学生、班级名单、考试或学年数据；学号列按文本、比率列按百分比格式保存，下载不创建预览或业务记录。
 

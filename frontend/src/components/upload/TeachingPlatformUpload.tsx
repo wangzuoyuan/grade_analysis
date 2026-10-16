@@ -38,7 +38,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
   const scope = usePlatformScope()
   const [name,setName] = useState('')
   const [date,setDate] = useState('')
-  const [target,setTarget] = useState('')
+  const [target,setTarget] = useState('auto')
   const [operation,setOperation] = useState('initial')
   const [replaceRoster,setReplaceRoster] = useState(false)
   const [files,setFiles] = useState<File[]>([])
@@ -56,7 +56,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
     requestId.current += 1
     setPreview(null); setResult(null); setError(null); setBusy(false); setRevise(false); setAcceptRoster(false); setPicks({})
   }, [name,date,target,operation,replaceRoster,fileId,scopeKey])
-  useEffect(() => { setTarget('') }, [scope.year,scope.grade])
+  useEffect(() => { setTarget('auto') }, [scope.year,scope.grade])
   useEffect(() => () => { requestId.current += 1 }, [])
   async function runPreview() {
     const id=++requestId.current
@@ -65,7 +65,8 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
     form.set('academic_year_id',String(scope.year)); form.set('grade',String(scope.grade)); form.set('subject',scope.subject)
     form.set('exam_name',name); form.set('exam_date',date); form.set('operation',operation)
     form.set('replace_roster',String(replaceRoster))
-    if (target) form.set('teaching_class_id',target)
+    if (target === 'auto') form.set('auto_assign','true')
+    else if (target) form.set('teaching_class_id',target)
     files.forEach(f => form.append('files',f))
     try { const p=await platformPreview(form); if(id===requestId.current) {setPreview(p);setPicks({});setRevise(false);setAcceptRoster(false)} }
     catch(e) { if(id===requestId.current) setError(apiErrorMessage(e)) }
@@ -93,10 +94,10 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <label className="text-sm">考试名称<input aria-label="考试名称" className="mt-1 w-full rounded border p-2" value={name} onChange={e=>setName(e.target.value)} placeholder="明确填写本次考试名称"/></label>
         <label className="text-sm">考试日期<input aria-label="考试日期" type="date" className="mt-1 w-full rounded border p-2" value={date} onChange={e=>setDate(e.target.value)}/></label>
-        <label className="text-sm">学生明细所属教学班<select aria-label="学生明细所属教学班" className="mt-1 w-full rounded border bg-white py-2 pl-2" value={target} onChange={e=>setTarget(e.target.value)}><option value="">仅质量表可不选</option>{scope.classes.map(c=><option key={c.class_id} value={c.class_id}>{c.label}</option>)}</select></label>
+        <label className="text-sm">学生明细分班<select aria-label="学生明细分班" className="mt-1 w-full rounded border bg-white py-2 pl-2" value={target} onChange={e=>setTarget(e.target.value)}><option value="auto">按学号自动分到各教学班</option><option value="">仅质量表可不选</option>{scope.classes.map(c=><option key={c.class_id} value={c.class_id}>{c.label}</option>)}</select></label>
         <label className="text-sm">导入类型<select aria-label="导入类型" className="mt-1 w-full rounded border bg-white py-2 pl-2" value={operation} onChange={e=>setOperation(e.target.value)}><option value="initial">首次导入 / 明确修订</option><option value="supplement">{scope.grade===1?'只补学籍排名、年级百分位':'只补等级分'}</option></select></label>
       </div>
-      <p className="text-sm text-slate-500">{scope.grade===1?'明细：学号、姓名、分数、学籍排名、年级百分位。排名和百分位可留空后补。':'明细：学号、姓名、原始分数、等级分数。等级分可留空后补。'} 补录不修改原始分，空白保留已有值。</p>
+      <p className="text-sm text-slate-500">{scope.grade===1?'明细：学号、姓名、分数、学籍排名、年级百分位。排名和百分位可留空后补。':'明细：学号、姓名、原始分数、等级分数。等级分可留空后补。'} 多个教学班的学生合并在一个文件时选「按学号自动分到各教学班」，按各自名册归班。补录不修改原始分，空白保留已有值。</p>
       <ScoreImportTemplates mode="teaching" grade={scope.grade}/>
       <label className="flex items-start gap-2 text-sm text-slate-600"><input type="checkbox" className="mt-1" checked={replaceRoster} onChange={e=>setReplaceRoster(e.target.checked)}/><span>分班已变化：以本次质量表替换所提供类别的对比参照名单。未勾选时保留已有参照并补充新班；其他历史考试不变。</span></label>
       <label className="block rounded-lg border-2 border-dashed border-sky-200 bg-sky-50/40 p-6 text-sm">选择成绩明细、教学班或行政班质量分析（可多选）<input aria-label="选择教学平台成绩文件" className="mt-3 block w-full" type="file" multiple accept=".xlsx" onChange={e=>setFiles(Array.from(e.target.files??[]))}/></label>

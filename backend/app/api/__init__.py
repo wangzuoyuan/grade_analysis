@@ -12,6 +12,7 @@ exception_handler，故用装饰器封装（不能改 main.py 全局注册）。
 """
 
 import functools
+import inspect
 from typing import Callable, TypeVar
 
 from fastapi import APIRouter
@@ -28,8 +29,19 @@ def domain_endpoint(func: Callable[..., T]) -> Callable[..., T]:
 
     DomainError.to_http() 返回 ``(status_code, payload)``；payload 形如
     ``{"error": code, "detail": ...}``。路由函数内正常 return 的值仍走
-    FastAPI 的 response_model 校验/过滤。
+    FastAPI 的 response_model 校验/过滤。async 端点（multipart 外壳等）
+    的异常在 await 时才抛出，必须同样包裹，否则绕过统一错误处理变 500。
     """
+
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def awrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except DomainError as exc:
+                status_code, payload = exc.to_http()
+                return JSONResponse(payload, status_code=status_code)
+        return awrapper
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
