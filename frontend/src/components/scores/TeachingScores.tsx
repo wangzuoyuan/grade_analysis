@@ -48,6 +48,7 @@ import { CorrelationCard } from '@/components/homework/CorrelationCard'
 import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
+import { ClassScopePicker } from '@/components/ClassScopePicker'
 import { analysisScopeQuery, formatScore, scoreBasisLabel, sortExamsDesc } from './shared'
 
 /** 班级对比卡：各班样本均分条形 + estimated 角标（E04）。拉取失败由页面统一错误卡承接。 */
@@ -255,15 +256,19 @@ export function TeachingScores() {
             任教学科成绩、本班名次与教学班对比{switching ? ' · 正在切换…' : ''}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setExamNonce((n) => n + 1)}
-          disabled={loadingExams}
-        >
-          <BarChart3 className="h-4 w-4" />
-          刷新考试
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* 分班查看：选中即切换全页统计/成绩表/对比/相关性的教学班范围 */}
+          <ClassScopePicker />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setExamNonce((n) => n + 1)}
+            disabled={loadingExams}
+          >
+            <BarChart3 className="h-4 w-4" />
+            刷新考试
+          </Button>
+        </div>
       </div>
 
       {/* 考试选择卡（筛选控件不参与打印，U01） */}
