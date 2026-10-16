@@ -49,7 +49,6 @@ import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, scoreBasisLabel, sortExamsDesc } from './shared'
-import { TeachingPlatformCompare } from './TeachingPlatformCompare'
 
 /** 班级对比卡：各班样本均分条形 + estimated 角标（E04）。拉取失败由页面统一错误卡承接。 */
 function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse | null }) {
@@ -101,12 +100,6 @@ function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse 
 }
 
 export function TeachingScores() {
-  const [legacy,setLegacy] = useState(false)
-  if(!legacy) return <TeachingPlatformCompare title="成绩分析" onLegacy={()=>setLegacy(true)} />
-  return <><Button variant="outline" className="mb-4" onClick={()=>setLegacy(false)}>返回教学平台成绩</Button><LegacyTeachingScores /></>
-}
-
-function LegacyTeachingScores() {
   const { filter, generation, switching, scope } = useWorkspace()
   const searchParams = useSearchParams()
   const requestedExam = searchParams.get('exam')
@@ -185,17 +178,61 @@ function LegacyTeachingScores() {
       })
   }, [selectedExam, scopeQ])
 
-  // 学生表按本班内名次升序；无名次（不可算/缺考）排后，其次按姓名
-  const sortedStudents = useMemo(() => {
-    const list = (students ?? []).slice()
-    list.sort((a, b) => {
-      if (a.rank != null && b.rank == null) return -1
-      if (a.rank == null && b.rank != null) return 1
-      if (a.rank != null && b.rank != null && a.rank !== b.rank) return a.rank - b.rank
-      return (a.name ?? '').localeCompare(b.name ?? '', 'zh-CN')
-    })
-    return list
-  }, [students])
+  // 分班展示：按教学班分组，名次在各班内按同分同名次（min-rank）计算；
+  // 分组顺序跟随班级对比卡的后端顺序，未知归属（label 缺失）排最后。
+  const classGroups = useMemo(() => {
+    const buckets = new Map<string, TeachingStudentRow[]>()
+    for (const s of students ?? []) {
+      const key = s.class_label ?? '未分班'
+      const bucket = buckets.get(key)
+      if (bucket) bucket.push(s)
+      else buckets.set(key, [s])
+    }
+    const order = (compare?.classes ?? []).map((c) => c.class_label)
+    return [...buckets.entries()]
+      .sort((a, b) => {
+        const ia = order.indexOf(a[0])
+        const ib = order.indexOf(b[0])
+        return (ia === -1 ? buckets.size : ia) - (ib === -1 ? buckets.size : ib)
+      })
+      .map(([label, rows]) => {
+        const ranks = new Map<TeachingStudentRow['person_id'], number>()
+        const scored = rows
+          .filter((r) => r.score != null)
+          .sort((x, y) => (y.score as number) - (x.score as number))
+        let prev: number | null = null
+        let rank = 0
+        scored.forEach((r, i) => {
+          if (prev == null || r.score !== prev) rank = i + 1
+          ranks.set(r.person_id, rank)
+          prev = r.score
+        })
+        const sorted = rows.slice().sort((a, b) => {
+          const ra = ranks.get(a.person_id)
+          const rb = ranks.get(b.person_id)
+          if (ra != null && rb == null) return -1
+          if (ra == null && rb != null) return 1
+          if (ra != null && rb != null && ra !== rb) return ra - rb
+          return (a.name ?? '').localeCompare(b.name ?? '', 'zh-CN')
+        })
+        const valid = rows.filter((r) => r.score != null)
+        const avg =
+          valid.length > 0
+            ? valid.reduce((sum, r) => sum + (r.score as number), 0) / valid.length
+            : null
+        const rankVals = [...ranks.values()]
+        return {
+          label,
+          sorted,
+          ranks,
+          count: rows.length,
+          missing: rows.length - valid.length,
+          avg,
+          rankMin: rankVals.length ? Math.min(...rankVals) : null,
+          rankMax: rankVals.length ? Math.max(...rankVals) : null,
+        }
+      })
+  }, [students, compare])
 
   const loadingExams = exams == null && examsError == null
   const hasExamData = selectedExam != null
@@ -323,7 +360,7 @@ function LegacyTeachingScores() {
                           </p>
                         </div>
                         <div>
-                          <p className="text-xs text-slate-400">名次范围（本班内）</p>
+                          <p className="text-xs text-slate-400">名次范围（当前范围）</p>
                           <p className="text-xl font-semibold text-slate-900">{rankRangeLabel}</p>
                         </div>
                         <div>
@@ -334,19 +371,19 @@ function LegacyTeachingScores() {
                         </div>
                       </div>
                       <p className="mt-2 text-[10px] text-slate-400">
-                        同分同名次（min-rank）；缺考不计入均分与名次分母；名次仅在本教学班成员内计算。
+                        同分同名次（min-rank）；缺考不计入均分与名次分母；名次在当前范围成员内计算，学生成绩表分班展示、名次为各班内名次。
                       </p>
                     </>
                   )}
                 </CardContent>
               </Card>
 
-              {/* 学生表：rank/grade_score/source_domain */}
+              {/* 学生表：分班展示，名次在各教学班内计算 */}
               <Card>
                 <CardHeader>
                   <CardTitle>学生成绩表</CardTitle>
                   <CardDescription>
-                    按本班内名次升序；「班主任域投影」行来自行政班导入的任教学科事实（反向投影参与名次计算）。
+                    按教学班分组展示，名次在各班内按同分同名次计算；「班主任域投影」行来自行政班导入的任教学科事实（反向投影参与名次计算）。
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -365,52 +402,68 @@ function LegacyTeachingScores() {
                       </p>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="text-xs">姓名</TableHead>
-                            <TableHead className="text-xs">班级</TableHead>
-                            <TableHead className="text-right text-xs">成绩</TableHead>
-                            <TableHead className="text-right text-xs">等级分</TableHead>
-                            <TableHead className="text-right text-xs">名次（本班内）</TableHead>
-                            <TableHead className="text-xs">来源</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {sortedStudents.map((s) => (
-                            <TableRow key={String(s.person_id)}>
-                              <TableCell className="whitespace-nowrap text-sm font-medium text-slate-900">
-                                {s.name ?? '（未命名）'}
-                              </TableCell>
-                              <TableCell className="whitespace-nowrap text-xs text-slate-500">
-                                {s.class_label ?? '—'}
-                              </TableCell>
-                              <TableCell
-                                className={cn(
-                                  'text-right tabular-nums text-sm',
-                                  s.score == null ? 'text-slate-300' : 'text-slate-900',
-                                )}
-                              >
-                                {s.score == null ? '—' : formatScore(s.score)}
-                              </TableCell>
-                              <TableCell className="text-right tabular-nums text-sm text-slate-600">
-                                {s.grade_score == null ? '—' : formatScore(s.grade_score)}
-                              </TableCell>
-                              <TableCell className="text-right tabular-nums text-sm text-slate-900">
-                                {s.rank == null ? '—' : String(s.rank)}
-                              </TableCell>
-                              <TableCell>
-                                {s.source_domain === 'homeroom' ? (
-                                  <Badge variant="outline">班主任域投影</Badge>
-                                ) : (
-                                  <Badge variant="secondary">教学域</Badge>
-                                )}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
+                    <div className="space-y-6">
+                      {classGroups.map((g) => (
+                        <section key={g.label}>
+                          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                            <h3 className="text-sm font-semibold text-slate-900">{g.label}</h3>
+                            <p className="text-xs text-slate-500">
+                              {String(g.count)} 人 · 平均 {formatScore(g.avg)}
+                              {g.rankMin == null || g.rankMax == null
+                                ? ' · 名次 —'
+                                : g.rankMin === g.rankMax
+                                  ? ` · 第 ${String(g.rankMin)} 名`
+                                  : ` · 第 ${String(g.rankMin)} ~ ${String(g.rankMax)} 名`}
+                              {g.missing > 0 ? ` · 缺考 ${String(g.missing)}` : ''}
+                            </p>
+                          </div>
+                          <div className="overflow-x-auto">
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead className="text-xs">姓名</TableHead>
+                                  <TableHead className="text-right text-xs">成绩</TableHead>
+                                  <TableHead className="text-right text-xs">等级分</TableHead>
+                                  <TableHead className="text-right text-xs">名次（班内）</TableHead>
+                                  <TableHead className="text-xs">来源</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {g.sorted.map((s) => (
+                                  <TableRow key={String(s.person_id)}>
+                                    <TableCell className="whitespace-nowrap text-sm font-medium text-slate-900">
+                                      {s.name ?? '（未命名）'}
+                                    </TableCell>
+                                    <TableCell
+                                      className={cn(
+                                        'text-right tabular-nums text-sm',
+                                        s.score == null ? 'text-slate-300' : 'text-slate-900',
+                                      )}
+                                    >
+                                      {s.score == null ? '—' : formatScore(s.score)}
+                                    </TableCell>
+                                    <TableCell className="text-right tabular-nums text-sm text-slate-600">
+                                      {s.grade_score == null ? '—' : formatScore(s.grade_score)}
+                                    </TableCell>
+                                    <TableCell className="text-right tabular-nums text-sm text-slate-900">
+                                      {g.ranks.get(s.person_id) == null
+                                        ? '—'
+                                        : String(g.ranks.get(s.person_id))}
+                                    </TableCell>
+                                    <TableCell>
+                                      {s.source_domain === 'homeroom' ? (
+                                        <Badge variant="outline">班主任域投影</Badge>
+                                      ) : (
+                                        <Badge variant="secondary">教学域</Badge>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </section>
+                      ))}
                     </div>
                   )}
                 </CardContent>
