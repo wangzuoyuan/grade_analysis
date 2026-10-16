@@ -48,6 +48,7 @@ import {
 import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
 import { ScoreYearPicker } from '@/components/scores/ScoreYearPicker'
+import { TeachingPlatformCompare } from '@/components/scores/TeachingPlatformCompare'
 import { ExamSelect } from '@/components/scores/ExamSelect'
 import { analysisScopeQuery, scoreBasisLabel, sortExamsDesc } from '@/components/scores/shared'
 import { Button } from '@/components/ui/button'
@@ -106,6 +107,13 @@ function deriveRanks(classes: TeachingClassCompareItem[]): Array<TeachingClassCo
 }
 
 export default function ComparePage() {
+  const { mode } = useWorkspace()
+  const [legacy,setLegacy] = useState(false)
+  if(mode === 'teaching' && !legacy) return <TeachingPlatformCompare onLegacy={() => setLegacy(true)} />
+  return <>{mode === 'teaching'?<Button variant="outline" className="mb-4" onClick={()=>setLegacy(false)}>返回官方质量分析</Button>:null}<LegacyComparePage /></>
+}
+
+function LegacyComparePage() {
   const { filter, generation, switching, mode } = useWorkspace()
   const router = useRouter()
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])

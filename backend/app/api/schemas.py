@@ -236,6 +236,7 @@ class HomeroomClassInfo(BaseModel):
 
 class TeachingClassInfo(BaseModel):
     class_id: int
+    grade: Optional[int] = None
     label: str
     subject: str
     status: str = "active"

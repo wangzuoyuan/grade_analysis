@@ -49,6 +49,7 @@ import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, scoreBasisLabel, sortExamsDesc } from './shared'
+import { TeachingPlatformCompare } from './TeachingPlatformCompare'
 
 /** 班级对比卡：各班样本均分条形 + estimated 角标（E04）。拉取失败由页面统一错误卡承接。 */
 function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse | null }) {
@@ -100,6 +101,12 @@ function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse 
 }
 
 export function TeachingScores() {
+  const [legacy,setLegacy] = useState(false)
+  if(!legacy) return <TeachingPlatformCompare title="成绩分析" onLegacy={()=>setLegacy(true)} />
+  return <><Button variant="outline" className="mb-4" onClick={()=>setLegacy(false)}>返回教学平台成绩</Button><LegacyTeachingScores /></>
+}
+
+function LegacyTeachingScores() {
   const { filter, generation, switching, scope } = useWorkspace()
   const searchParams = useSearchParams()
   const requestedExam = searchParams.get('exam')

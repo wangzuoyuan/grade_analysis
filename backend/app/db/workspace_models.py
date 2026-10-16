@@ -211,6 +211,7 @@ class TeachingClass(Base):
     id = Column(Integer, primary_key=True)
     academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
     subject = Column(String(32), nullable=False)
+    grade = Column(Integer, nullable=True)  # 明确配置/实际导入确认，不从班名猜测
     label = Column(String(64), nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
     status = Column(String(16), nullable=False, default="active", server_default="active")
@@ -384,6 +385,8 @@ class ScoreFact(Base):
     score = Column(Float, nullable=True)
     # P3 §1.3：等级分/赋分（原始分仍在 score；缺考两者皆 NULL）
     grade_score = Column(Float, nullable=True)
+    teaching_exam_id = Column(Integer, ForeignKey("teaching_exam_scope.id", name="fk_score_teaching_exam"), nullable=True)
+    field_sources = Column(JSON, nullable=True)
     # 旧班主任版重点关注口径：总分行保留学籍/年级名次与年级百分位，
     # 单科行保留年级百分位。缺值保持 NULL，绝不按班内分数伪造年级口径。
     grade_percentile = Column(Float, nullable=True)
@@ -414,6 +417,52 @@ class ScoreFact(Base):
         key_col = "subject_key" if key == "subject" else "total_key"
         setattr(self, key_col, value or "")
         return value
+
+
+class TeachingExamScope(Base):
+    """教学单科考试；只含汇总表也可成立。"""
+    __tablename__ = "teaching_exam_scope"
+    id = Column(Integer, primary_key=True)
+    academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
+    grade = Column(Integer, nullable=False)
+    subject = Column(String(32), nullable=False)
+    exam_name = Column(String(128), nullable=False)
+    exam_date = Column(Date, nullable=False)
+    class_snapshot = Column(JSON, nullable=False, default=list)
+    aggregates = Column(JSON, nullable=False, default=list)
+    data_revision = Column(Integer, nullable=False, default=1)
+    __table_args__ = (
+        UniqueConstraint("academic_year_id", "grade", "subject", "exam_name", name="uq_teaching_exam_scope"),
+        CheckConstraint("grade IN (1,2,3)", name="ck_teaching_exam_grade"),
+    )
+
+
+class TeachingComparisonRoster(Base):
+    """对比参照；独立于管理班，旧版本保留。"""
+    __tablename__ = "teaching_comparison_roster"
+    id = Column(Integer, primary_key=True)
+    academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
+    grade = Column(Integer, nullable=False)
+    subject = Column(String(32), nullable=False)
+    version = Column(Integer, nullable=False)
+    source_exam_date = Column(Date, nullable=False)
+    classes = Column(JSON, nullable=False, default=list)
+    __table_args__ = (UniqueConstraint("academic_year_id", "grade", "subject", "version", name="uq_teaching_roster_version"),)
+
+
+class TeachingClassQuality(Base):
+    __tablename__ = "teaching_class_quality"
+    id = Column(Integer, primary_key=True)
+    exam_id = Column(Integer, ForeignKey("teaching_exam_scope.id"), nullable=False)
+    class_kind = Column(String(16), nullable=False)
+    class_label = Column(String(64, collation="BINARY"), nullable=False)
+    metrics = Column(JSON, nullable=False, default=dict)
+    source = Column(JSON, nullable=False, default=dict)
+    data_revision = Column(Integer, nullable=False, default=1)
+    __table_args__ = (
+        UniqueConstraint("exam_id", "class_kind", "class_label", name="uq_teaching_quality"),
+        CheckConstraint("class_kind IN ('teaching','administrative')", name="ck_teaching_quality_kind"),
+    )
 
 
 class WorkspaceClassAverage(Base):

@@ -46,6 +46,43 @@ export class ApiV1Error extends Error {
   }
 }
 
+export interface PlatformBand { label: string; count: number | null; ratio: number | null }
+export interface PlatformMetrics {
+  expected_count?: number | null; actual_count?: number | null
+  raw_avg?: number | null; grade_avg?: number | null; stddev?: number | null
+  stddev_basis?: string; score_sum?: number | null; max_score?: number | null; min_score?: number | null
+  bands?: PlatformBand[]
+}
+export interface PlatformExam { id: number; exam_name: string; exam_date: string; grade: number; subject: string }
+export interface PlatformChange { entity?: string; alias?: string; field?: string; existing?: unknown; incoming?: unknown; message?: string }
+export interface PlatformPreview {
+  token: string; scope: Record<string, string | number>
+  items: Array<{ filename: string; parsed_ok: boolean; kind: string; row_count: number; message?: string
+    classes?: Array<{class_label: string}>; excluded?: Array<{class_label: string; reason: string}>; warnings?: string[] }>
+  changes: PlatformChange[]; conflicts: PlatformChange[]; errors: PlatformChange[]
+  roster_changes: Array<{action: string; class_kind: string; class_label: string}>
+  new_students: Array<{alias: string; name: string}>
+  identity_candidates: ImportIdentityCandidate[]
+}
+export interface PlatformStudent {
+  person_id: number; name: string | null; class_label: string | null; score: number | null
+  grade_score: number | null; grade_label: string | null; rank: number | null
+  xueji_rank: number | null; grade_percentile: number | null; source_domain: string
+}
+export interface PlatformCompare {
+  exam: PlatformExam; metadata: { data_revision: number }
+  classes: Array<{id: string; class_kind: string; class_label: string; class_type: string | null
+    teacher_name: string | null; source: string; metrics: PlatformMetrics; raw_avg: number | null; grade_avg: number | null
+    raw_rank?: number; grade_rank?: number; raw_diff?: number | null; grade_diff?: number | null; sample_count: number}>
+  overall: Record<'raw' | 'grade', { value: number; source: string; method: string } | null>
+  warnings: string[]
+}
+export const platformPreview = (form: FormData): Promise<PlatformPreview> => requestMultipart('/api/v1/teaching/platform/imports/preview', form)
+export const platformConfirm = (body: {token: string; revise: boolean; accept_roster_changes: boolean; identity_confirmations: Record<string, number>; identity_new_aliases: string[]}): Promise<{exam_id: number; imported: number; revised: number; skipped: number; students_created: number}> => request('/api/v1/teaching/platform/imports/confirm', {method:'POST', body:JSON.stringify(body)})
+export const platformExams = (year: number, grade: number, subject: string): Promise<{exams: PlatformExam[]}> => request(withQuery('/api/v1/teaching/platform/exams', {academic_year_id:year,grade,subject}))
+export const platformCompare = (id: number): Promise<PlatformCompare> => request(`/api/v1/teaching/platform/exams/${id}/compare`)
+export const platformStudents = (id: number, classId?: number): Promise<{students: PlatformStudent[]}> => request(withQuery(`/api/v1/teaching/platform/exams/${id}/students`, {teaching_class_id:classId}))
+
 /* ------------------------------------------------------------------ */
 /* §1.1 配置与范围                                                     */
 /* ------------------------------------------------------------------ */
@@ -92,6 +129,7 @@ export interface ClassesCatalogHomeroom {
 
 export interface ClassesCatalogTeaching {
   class_id: number
+  grade?: number | null
   label: string
   subject: string
   status?: 'active' | 'inactive'

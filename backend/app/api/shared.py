@@ -259,6 +259,7 @@ def get_shared_classes(
     teaching_list = [
         TeachingClassInfo(
             class_id=tc.id,
+            grade=tc.grade,
             label=tc.label,
             subject=tc.subject,
             status=tc.status,
@@ -323,6 +324,7 @@ def _managed_teaching_classes(
     return TeachingClassManageResponse(classes=[
         TeachingClassInfo(
             class_id=row.id,
+            grade=row.grade,
             label=row.label,
             subject=row.subject,
             status=row.status,

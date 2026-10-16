@@ -34,6 +34,8 @@ const STORAGE_PREFIX = 'workspace-scope:'
 export interface WorkspaceFilter {
   /** 学年整数 id（学年名称只作显示，不作 ID 传递）。 */
   academic_year_id?: number
+  /** 教学平台单科导入/对比的显式年级，属于界面筛选记忆。 */
+  grade?: number
   term_id?: number
   /** homeroom：行政班 id（首版行政班来自教师配置绑定，只读展示，不由前端选择）。 */
   class_id?: number
@@ -95,6 +97,8 @@ function loadStoredFilter(mode: WorkspaceMode): WorkspaceFilter {
     const filter: WorkspaceFilter = {}
     const academicYearId = toFiniteInt(parsed.academic_year_id)
     if (academicYearId !== undefined) filter.academic_year_id = academicYearId
+    const grade = toFiniteInt(parsed.grade)
+    if (grade !== undefined && [1, 2, 3].includes(grade)) filter.grade = grade
     const termId = toFiniteInt(parsed.term_id)
     if (termId !== undefined) filter.term_id = termId
     if (typeof parsed.class_id === 'number') {

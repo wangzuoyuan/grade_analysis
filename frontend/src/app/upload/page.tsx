@@ -48,6 +48,7 @@ import {
   type IdentityPick,
 } from '@/components/upload/IdentityCandidatesPanel'
 import { cn } from '@/lib/utils'
+import { TeachingPlatformUpload } from '@/components/upload/TeachingPlatformUpload'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -108,6 +109,13 @@ function StepIndicator({ current }: { current: 1 | 2 }) {
 }
 
 export default function UploadPage() {
+  const { mode } = useWorkspace()
+  const [legacy, setLegacy] = useState(false)
+  if (mode === 'teaching' && !legacy) return <TeachingPlatformUpload onLegacy={() => setLegacy(true)} />
+  return <>{mode === 'teaching' ? <Button variant="outline" className="mb-4" onClick={() => setLegacy(false)}>返回教学平台单科导入</Button> : null}<LegacyUploadPage /></>
+}
+
+function LegacyUploadPage() {
   const { mode, filter, switching } = useWorkspace()
 
   const [files, setFiles] = useState<File[]>([])

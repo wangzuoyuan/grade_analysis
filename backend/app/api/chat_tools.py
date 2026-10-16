@@ -940,7 +940,17 @@ def _tool_get_exam_list(db, snapshot: dict, args: dict) -> dict:
     if err:
         return err
     # 与考试名模糊匹配（_exam_candidates）完全同源：同一 service、同一钉法
-    return {"exams": _exam_candidates(db, snapshot, year_id)}
+    result = {"exams": _exam_candidates(db, snapshot, year_id)}
+    if snapshot["mode"] == "teaching":
+        from app.db.workspace_models import TeachingExamScope
+        official = db.query(TeachingExamScope).filter_by(
+            academic_year_id=year_id, subject=snapshot.get("subject")
+        ).order_by(TeachingExamScope.exam_date.desc()).all()
+        if official:
+            result["comparison_exams"] = [{"exam_id":e.id,"exam_name":e.exam_name,
+                "grade":e.grade,"exam_date":str(e.exam_date),"subject":e.subject,
+                "note":"官方对比可用；学生明细须另经成员范围校验"} for e in official]
+    return result
 
 
 def _tool_get_exam_stats(db, snapshot: dict, args: dict) -> dict:
@@ -1256,6 +1266,30 @@ def _tool_get_class_comparison(db, snapshot: dict, args: dict) -> dict:
     下按快照班级重建 ctx 并复刻端点装配——直接复用端点自己的聚合助手
     （_queries/readable_facts 门），聚合前限制班级，不自写 SQL。跨年由
     _teaching_ctx_for_year 显式解析该学年同学科班集合。"""
+    # 新教学平台考试以年级/考试 ID 唯一定位，汇总表不依赖学生考试列表。
+    from app.db.workspace_models import TeachingExamScope
+    from app.api.teaching_platform import comparison
+    year_id, err = _year_id_of(db, snapshot, args)
+    if err:
+        return err
+    query = db.query(TeachingExamScope).filter_by(academic_year_id=year_id, subject=snapshot.get("subject"))
+    if args.get("exam_id") is not None:
+        query = query.filter_by(id=args["exam_id"])
+    elif args.get("exam_name"):
+        query = query.filter_by(exam_name=str(args["exam_name"]).strip())
+    else:
+        query = query.filter_by(id=-1)
+    if args.get("grade") is not None:
+        query = query.filter_by(grade=args["grade"])
+    choices = query.all()
+    if len(choices) > 1:
+        return {"error":"invalid_scope_param","detail":"同名考试跨年级，请指定 grade 或 exam_id",
+                "candidates":[{"exam_id":e.id,"grade":e.grade,"exam_name":e.exam_name} for e in choices]}
+    if len(choices) == 1:
+        ctx = _teaching_ctx_for_year(db,snapshot,year_id)
+        return comparison(db,choices[0],ctx)
+    if args.get("exam_id") is not None:
+        return {"error":"resource_out_of_scope","detail":"考试不在当前会话学年和学科范围"}
     year_id, err = _exam_year_id_of(db, snapshot, args)
     if err:
         return err
@@ -2126,10 +2160,12 @@ TOOL_REGISTRY: List[WsToolSpec] = [
     ),
     WsToolSpec(
         name="get_class_comparison",
-        description="按所教教学班对比单场考试的班均分（教师专属视角）",
+        description="查询单场教学班级对比：教学平台考试含官方质量分析与来源；旧模板返回本人班样本估算。可用 get_exam_list 的 comparison_exams 中 exam_id 定位",
         input_schema=_schema_with_year_args(
-            {"exam_name": _EXAM_SCHEMA["properties"]["exam_name"]},
-            required=["exam_name"],
+            {"exam_name": _EXAM_SCHEMA["properties"]["exam_name"],
+             "exam_id":{"type":"integer","description":"教学平台考试 ID，与 exam_name 二选一"},
+             "grade":{"type":"integer","enum":[1,2,3],"description":"高一/高二/高三，同名考试用于消歧"}},
+            required=[],
         ),
         domains=("teaching",),
         handler=_tool_get_class_comparison,

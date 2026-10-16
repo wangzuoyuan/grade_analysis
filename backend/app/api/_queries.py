@@ -973,6 +973,7 @@ def readable_facts(
     exam_name: Optional[str] = None,
     member_ids: Optional[Sequence[int]] = None,
     class_ids: Optional[Sequence[int]] = None,
+    teaching_exam_id: Optional[int] = None,
 ) -> List[ReadableFact]:
     """当前范围允许读取的成绩事实（契约 p3 §1.4 v2.1/F09 统一口径）：
     本域事实（域/学年/班级/成员过滤）+ 经 §1.4.1 五条件门的对侧投影行
@@ -986,6 +987,13 @@ def readable_facts(
     （合法空态）。"""
     ids = list(member_ids) if member_ids is not None else list(ctx.member_person_ids)
     scope_class_ids = list(class_ids) if class_ids is not None else list(ctx.class_ids)
+    if ctx.mode == "teaching" and exam_name and teaching_exam_id is None:
+        from app.db.workspace_models import TeachingExamScope
+        grades = db.query(TeachingExamScope.grade).filter_by(
+            academic_year_id=ctx.academic_year_id, subject=ctx.subject, exam_name=exam_name
+        ).distinct().all()
+        if len(grades) > 1:
+            raise InvalidScopeParam("同名考试跨多个年级，请在教学平台成绩页按年级和考试选择")
     if not ids:
         return []
 
