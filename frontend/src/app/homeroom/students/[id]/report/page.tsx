@@ -27,6 +27,7 @@ import {
 } from '@/lib/api-v1'
 import { apiErrorMessage, isApiErrorCode } from '@/components/link/error-text'
 import { analysisScopeQuery } from '@/components/scores/shared'
+import { displayStudentId } from '@/lib/student-id'
 import { useWorkspace } from '@/lib/workspace'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -318,6 +319,8 @@ export default function StudentReportPrintPage() {
   const roster = report?.roster ?? null
   // G05 修正：别名史在 person.aliases；档案摘要是 {count, recent} 对象
   const aliases = report?.person.aliases ?? []
+  // 座号即学号：alias 缺时用座号值顶上（同一概念不重复显示）
+  const rosterSid = roster?.alias ?? (roster?.seat_no != null ? String(roster.seat_no) : null)
   const recentNotes = report?.notes_summary.recent ?? []
   // 摘要数据源：全量档案优先；加载中/失败回退后端 recent（最近 5 条，口径不变）
   const summaryNotes: Array<{ id: number; date: string; category: string; content: string }> =
@@ -374,14 +377,14 @@ export default function StudentReportPrintPage() {
               {report.person.name ?? '（未命名）'}
               {roster?.class_label ? ` · ${roster.class_label}` : ''}
               {roster?.academic_year_name ? ` · ${roster.academic_year_name}` : ''}
-              {roster?.seat_no != null ? ` · 座号 ${roster.seat_no}` : ''}
+              {rosterSid != null ? ` · 学号 ${rosterSid}` : ''}
               <span className="ml-3 text-slate-400">生成日期 {new Date().toISOString().slice(0, 10)}</span>
             </p>
             {aliases.length > 0 ? (
               <p className="mt-1 text-xs text-slate-500">
                 学号（别名）史：
                 {aliases
-                  .map((a) => `${a.alias_value}（${fmtDate(a.valid_from)} ~ ${a.valid_to == null ? '至今' : fmtDate(a.valid_to)}）`)
+                  .map((a) => `${displayStudentId(a.alias_value)}（${fmtDate(a.valid_from)} ~ ${a.valid_to == null ? '至今' : fmtDate(a.valid_to)}）`)
                   .join('、')}
               </p>
             ) : null}

@@ -51,6 +51,7 @@ import {
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace, WorkspaceSwitcher } from '@/lib/workspace'
+import { displayStudentId } from '@/lib/student-id'
 import { analysisScopeQuery } from '@/components/scores/shared'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
@@ -542,10 +543,8 @@ export function HomeroomProfileView() {
                     )}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
-                    <span>学号：<strong className="font-mono text-slate-700">{report.roster.alias ?? currentStudent?.alias ?? DASH}</strong></span>
-                    {report.roster.seat_no != null && (
-                      <span>座号：<strong className="text-slate-700">{report.roster.seat_no}</strong></span>
-                    )}
+                    {/* 座号即学号：alias 缺时用座号值顶上，同一概念不重复显示 */}
+                    <span>学号：<strong className="font-mono text-slate-700">{report.roster.alias ?? currentStudent?.alias ?? (report.roster.seat_no != null ? String(report.roster.seat_no) : DASH)}</strong></span>
                     {report.roster.class_label && (
                       <span>班级：<strong className="text-slate-700">{report.roster.class_label}</strong></span>
                     )}
@@ -559,7 +558,7 @@ export function HomeroomProfileView() {
                       {report.person.aliases
                         .map(
                           (a) =>
-                            `${a.alias_value} (${fmtDate(a.valid_from)} ~ ${
+                            `${displayStudentId(a.alias_value)} (${fmtDate(a.valid_from)} ~ ${
                               a.valid_to ? fmtDate(a.valid_to) : '至今'
                             })`,
                         )

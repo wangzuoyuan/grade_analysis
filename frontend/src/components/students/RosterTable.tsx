@@ -35,6 +35,7 @@ import {
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
+import { displayStudentId } from '@/lib/student-id'
 import { analysisScopeQuery } from '@/components/scores/shared'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -334,7 +335,7 @@ export function RosterTable() {
                             )}
                           </TableCell>
                           <TableCell className="whitespace-nowrap font-mono text-xs text-slate-600">
-                            {s.alias ?? '—'}
+                            {s.alias ? displayStudentId(s.alias) : s.seat_no != null ? String(s.seat_no) : '—'}
                           </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {isActive(s.status) ? (

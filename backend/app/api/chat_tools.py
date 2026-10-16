@@ -2011,7 +2011,7 @@ def _schema_with_year_args(properties: dict, required: Optional[list] = None) ->
 TOOL_REGISTRY: List[WsToolSpec] = [
     WsToolSpec(
         name="search_students",
-        description="按姓名/学号关键字搜索当前会话范围内的学生名单（含 person_id/姓名/学号/座号）",
+        description="按姓名/学号关键字搜索当前会话范围内的学生名单（含 person_id/姓名/学号，按学号排序）",
         input_schema=_schema_with_year_args(
             {"q": {"type": "string", "description": "姓名或学号关键字，可留空返回全部"}}
         ),

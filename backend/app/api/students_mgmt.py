@@ -502,6 +502,13 @@ def list_teaching_members(teaching_class_id: int, db: Session = Depends(get_db))
         # 本接口没有独立 status 列；按契约以 valid_to 是否为空分列。
         target = active if member.valid_to is None else left
         target.append(item)
+    # 名册统一口径：按学号（无学号按姓名拼音排最后）排序，与
+    # homeroom/teaching 名册端点同序；sort 稳定，同键者保持入班时间序。
+    def _member_sort_key(it: TeachingMemberItem) -> tuple:
+        return q.roster_sid_sort_key(it.alias, None, it.name, it.person_id)
+
+    active.sort(key=_member_sort_key)
+    left.sort(key=_member_sort_key)
     return TeachingMembersResponse(active=active, left=left)
 
 

@@ -29,9 +29,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
+from pypinyin import lazy_pinyin
 
 from app.core.context import WorkspaceContext
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope, WorkspaceNotConfigured
+from app.db.sid_space import strip_ns
 from app.db.workspace_models import (
     AcademicYear,
     AdministrativeClass,
@@ -640,6 +642,50 @@ def aliases_for(
     return in_year
 
 
+def _natural_sid_chunks(sid: str) -> List[tuple]:
+    """学号自然排序键：数字段按数值、字母段按字符比较。
+
+    学号格式并不统一（纯数字 / 跨届前缀 G1::1234567 / 字母混合
+    2025H6-07），纯字典序会把 1234567 排到 999999 之后；
+    每段统一成 (是否数字, 数值, 小写文本) 三元组，保证任意两段可比。
+    """
+    key: List[tuple] = []
+    for chunk in re.split(r"(\d+)", sid):
+        if chunk.isdigit():
+            key.append((1, int(chunk), ""))
+        elif chunk:
+            key.append((0, 0, chunk.lower()))
+    return key
+
+
+def roster_sid_sort_key(
+    alias: Optional[str],
+    seat_no: Optional[int],
+    name: Optional[str],
+    person_id: int,
+) -> tuple:
+    """名册统一排序键（用户口径：座号就是学号，同一概念）。
+
+    有效学号 = alias（学号）优先，缺时用座号值顶上；有效学号先剥跨届
+    前缀（G1::/g1-）再自然升序。无学号者排最后，按姓名拼音（姓氏首字
+    母优先）排序；person_id 终兜底保证稳定。
+    """
+    sid = alias
+    if not sid and seat_no is not None:
+        sid = str(seat_no)
+    name_key = lazy_pinyin(name or "")
+    if sid:
+        bare, _ = strip_ns(sid)
+        return (0, _natural_sid_chunks(bare), name_key, person_id)
+    return (1, name_key, person_id)
+
+
+def _roster_sort_key(item: dict) -> tuple:
+    return roster_sid_sort_key(
+        item.get("alias"), item.get("seat_no"), item.get("name"), item["person_id"]
+    )
+
+
 def homeroom_roster(
     db: Session,
     admin_class_id: int,
@@ -647,7 +693,8 @@ def homeroom_roster(
     academic_year_id: Optional[int] = None,
 ) -> List[dict]:
     """行政班当期在班成员（status='active' 且有效期覆盖 as_of），
-    按座号（空座号最后）排序。条目：person_id/name/seat_no/alias/status。
+    按学号（座号即学号：alias 优先、座号值兜底；无学号者按姓名拼音
+    排最后）排序。条目：person_id/name/seat_no/alias/status。
     academic_year_id 用于别名学年优先（v2.1/名册学年别名：优先该学年
     登记，回退最早；缺省保持旧行为）。"""
     rows = (
@@ -677,7 +724,7 @@ def homeroom_roster(
         }
         for enrollment, identity in rows
     ]
-    roster.sort(key=lambda item: (item["seat_no"] is None, item["seat_no"] or 0, item["person_id"]))
+    roster.sort(key=_roster_sort_key)
     return roster
 
 
@@ -688,8 +735,9 @@ def teaching_roster(
     academic_year_id: Optional[int] = None,
 ) -> List[dict]:
     """教学班当期成员（有效期覆盖 as_of；教学成员无状态列，不推断）。
-    条目：person_id/name/seat_no(None)/alias/status(None)，按 person_id
-    排序。academic_year_id 透传 aliases_for（别名学年优先，同上）。"""
+    条目：person_id/name/seat_no(None)/alias/status(None)，按学号
+    （alias；无学号者按姓名拼音排最后）排序去重。
+    academic_year_id 透传 aliases_for（别名学年优先，同上）。"""
     if not teaching_class_ids:
         return []
     rows = (
@@ -723,7 +771,7 @@ def teaching_roster(
     ]
     seen: set = set()
     deduped = []
-    for item in sorted(roster, key=lambda entry: entry["person_id"]):
+    for item in sorted(roster, key=_roster_sort_key):
         if item["person_id"] not in seen:
             seen.add(item["person_id"])
             deduped.append(item)

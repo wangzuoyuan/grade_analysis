@@ -91,6 +91,10 @@ v1 其余条款未列出者继续有效。变更须经集成者修订本文件�
   **v2.1（F03）**：名册行的姓名/座号投影用查询时点；但任何共享分数字段（`shared_subject_score`、
   `shared_conflict`）必须逐 fact 通过 §1.4.1 五条件门（**含按考试时点的双侧成员交集**），
   不得以查询时点成员校验替代。入班日晚于考试日的成绩不得出现在名册响应中。
+  **排序（v2.2）**：按学号自然升序——用户口径「座号就是学号」：有效学号 = `alias` 优先、
+  座号值兜底，先剥跨届前缀（`G{g}::`/`g{g}-`）再按数字段数值比较（999999 < 1234567）；
+  无学号者排最后按姓名拼音（pypinyin，姓氏首字母优先）；person_id 终兜底。
+  `/teaching/students` 与 `/teaching/classes/{id}/members` 同键同序（实现：`_queries.roster_sid_sort_key`）。
 - `GET /api/v1/teaching/students?academic_year_id=&teaching_class_id=`
   同构；关联班成员的 `name/seat_no` 来自 H 名册投影；非关联教学班仅 teaching 域数据。
 - `GET /api/v1/homeroom/students/{person_id}` / `GET /api/v1/teaching/students/{person_id}`
