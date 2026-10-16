@@ -49,6 +49,7 @@ import {
 } from '@/components/upload/IdentityCandidatesPanel'
 import { cn } from '@/lib/utils'
 import { TeachingPlatformUpload } from '@/components/upload/TeachingPlatformUpload'
+import { ScoreImportTemplates } from '@/components/upload/ScoreImportTemplates'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -339,6 +340,8 @@ function LegacyUploadPage() {
           {mode === 'homeroom' ? '导入到班主任域' : '导入到教学域'}
         </Badge>
       </div>
+
+      <ScoreImportTemplates mode={mode} legacy />
 
       <Card>
         <CardContent className="py-5">

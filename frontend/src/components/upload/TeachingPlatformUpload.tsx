@@ -7,6 +7,7 @@ import { apiErrorMessage } from '@/components/link/error-text'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { IdentityCandidatesPanel, type IdentityPick } from '@/components/upload/IdentityCandidatesPanel'
+import { ScoreImportTemplates } from '@/components/upload/ScoreImportTemplates'
 
 const fieldNames: Record<string,string> = {score:'原始分',exam_date:'考试日期',grade_score:'等级分',xueji_rank:'学籍排名',grade_percentile:'年级百分位',raw_avg:'原始均分',grade_avg:'等级均分',expected_count:'应考',actual_count:'实考',stddev:'标准差',teacher_name:'任课教师',class_type:'班级类型',bands:'人数及比率',aggregate:'汇总指标',score_sum:'单科总分',max_score:'最高分',min_score:'最低分',stddev_basis:'标准差口径',band_scheme:'分布口径',class_snapshot:'考试参照名单',count:'人数',ratio:'比率'}
 function show(value: unknown,field='') {
@@ -96,6 +97,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
         <label className="text-sm">导入类型<select aria-label="导入类型" className="mt-1 w-full rounded border bg-white p-2" value={operation} onChange={e=>setOperation(e.target.value)}><option value="initial">首次导入 / 明确修订</option><option value="supplement">{scope.grade===1?'只补学籍排名、年级百分位':'只补等级分'}</option></select></label>
       </div>
       <p className="text-sm text-slate-500">{scope.grade===1?'明细：学号、姓名、分数、学籍排名、年级百分位。排名和百分位可留空后补。':'明细：学号、姓名、原始分数、等级分数。等级分可留空后补。'} 补录不修改原始分，空白保留已有值。</p>
+      <ScoreImportTemplates mode="teaching" grade={scope.grade}/>
       <label className="flex items-start gap-2 text-sm text-slate-600"><input type="checkbox" className="mt-1" checked={replaceRoster} onChange={e=>setReplaceRoster(e.target.checked)}/><span>分班已变化：以本次质量表替换所提供类别的对比参照名单。未勾选时保留已有参照并补充新班；其他历史考试不变。</span></label>
       <label className="block rounded-lg border-2 border-dashed border-sky-200 bg-sky-50/40 p-6 text-sm">选择成绩明细、教学班或行政班质量分析（可多选）<input aria-label="选择教学平台成绩文件" className="mt-3 block w-full" type="file" multiple accept=".xlsx" onChange={e=>setFiles(Array.from(e.target.files??[]))}/></label>
       {files.length ? <ul className="text-sm text-slate-600">{files.map((f,i)=><li key={`${f.name}-${i}`}>{f.name}</li>)}</ul> : null}
