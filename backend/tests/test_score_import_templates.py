@@ -121,3 +121,6 @@ def test_homeroom_class_average_downloads(tmp_path, grade):
     assert row["class_num"] == 6
     assert row["subject_averages"]["语文"] == 0 and row["subject_averages"]["数学"] == 88
     assert row["total_averages"]["主三门"] == 240
+    teaching = parse_teaching_file(target, f"高{'一' if grade == 1 else '二' if grade == 2 else '三'}班级均分模板.xlsx", "数学", None, "模板合成考试", "2030-10-10")
+    assert teaching.parsed_ok and teaching.grade == grade
+    assert teaching.class_averages[0]["subject_averages"]["数学"] == 88
