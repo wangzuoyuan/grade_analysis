@@ -36,7 +36,7 @@ export function ExamSelect({
           <div className="px-3 py-2 text-xs text-slate-400">当前范围暂无已导入考试</div>
         ) : null}
         {exams.map((e) => (
-          <SelectItem key={`${e.exam_name}|${e.exam_date ?? ''}`} value={e.exam_key ?? e.exam_name}>
+          <SelectItem key={e.exam_key ?? `${e.exam_name}|${e.exam_date ?? ''}`} value={e.exam_key ?? e.exam_name}>
             {examOptionLabel(e)}
           </SelectItem>
         ))}
