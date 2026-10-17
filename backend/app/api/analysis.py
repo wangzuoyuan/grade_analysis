@@ -159,11 +159,10 @@ def _exam_exists_in_domain(
     """该域该学年是否存在该考试（不限班级）：完全不存在 → 调用方 404；
     存在但本班无行由调用方按 200 空态处理。"""
     return (
-        db.query(ScoreFact.id)
+        q.filter_exam(db.query(ScoreFact.id), db, ScoreFact, exam_name)
         .filter(
             ScoreFact.data_domain == data_domain,
             ScoreFact.academic_year_id == academic_year_id,
-            ScoreFact.exam_name == exam_name,
         )
         .limit(1)
         .first()
@@ -413,16 +412,23 @@ def homeroom_class_averages(
     )
     admin_class = db.get(AdministrativeClass, ctx.class_ids[0])
     records = (
-        db.query(WorkspaceClassAverage)
+        q.filter_exam(db.query(WorkspaceClassAverage), db, WorkspaceClassAverage, exam_name)
         .filter(
             WorkspaceClassAverage.data_domain == "homeroom",
             WorkspaceClassAverage.academic_year_id == ctx.academic_year_id,
-            WorkspaceClassAverage.exam_name == exam_name,
             WorkspaceClassAverage.grade == admin_class.grade,
         )
         .all()
     )
 
+    # Identical aggregate sources survive a metadata merge but count once.
+    unique_records = {}
+    for record in sorted(records, key=lambda r: r.id):
+        old = unique_records.get(record.class_num)
+        if old is not None and (old.subject_averages != record.subject_averages or old.total_averages != record.total_averages):
+            raise InvalidScopeParam("同场班级均分来源存在差异，请先核对来源")
+        unique_records[record.class_num] = record
+    records = list(unique_records.values())
     subject_keys = {
         key for record in records for key in (record.subject_averages or {}).keys()
     }
@@ -466,7 +472,7 @@ def homeroom_class_averages(
             "exam",
             fact_revisions=[record.data_revision for record in records],
         ),
-        exam_name=exam_name,
+        exam_name=q.exam_label(db, exam_name),
         grade=admin_class.grade,
         subjects=subjects,
         total_types=total_types,
@@ -642,7 +648,7 @@ def homeroom_rank_frequency(
         entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
         exam_rows.append(
             HomeroomRankFrequencyExam(
-                exam_name=exam_name,
+                exam_name=q.exam_label(db, exam_name),
                 exam_date=next(
                     (q.display_exam_date(entry.fact) for entry in entries if q.display_exam_date(entry.fact)),
                     None,
@@ -769,7 +775,7 @@ def homeroom_rank_range(
         metadata=_analysis_metadata(
             ctx, "exam", fact_revisions=[entry.fact.data_revision for entry in entries]
         ),
-        exam_name=exam_name,
+        exam_name=q.exam_label(db, exam_name),
         metric=metric,
         metric_label=meta["label"],
         metric_kind=meta["kind"],
@@ -827,7 +833,7 @@ def homeroom_rank_distribution(
         metadata=_analysis_metadata(
             ctx, "exam", fact_revisions=[entry.fact.data_revision for entry in entries]
         ),
-        exam_name=exam_name,
+        exam_name=q.exam_label(db, exam_name),
         grade=grade,
         bins=bin_rows,
         series=[
@@ -883,7 +889,7 @@ def homeroom_exam_focus(
         issues: List[str] = []
 
         historical_totals = {
-            e.fact.exam_name: e.fact
+            q.fact_key(db, e.fact): e.fact
             for e in history_entries
             if e.person_id == person_id and e.fact.total_type == "主三门"
         }
@@ -896,7 +902,7 @@ def homeroom_exam_focus(
             ),
         )
         selected_index = next(
-            (i for i, fact in enumerate(ordered_totals) if fact.exam_name == exam_name),
+            (i for i, fact in enumerate(ordered_totals) if fact.exam_name == exam_name or q.fact_key(db, fact) == exam_name),
             None,
         )
         if selected_index is not None:
@@ -965,7 +971,7 @@ def homeroom_exam_focus(
             "exam",
             fact_revisions=[entry.fact.data_revision for entry in entries],
         ),
-        exam_name=exam_name,
+        exam_name=q.exam_label(db, exam_name),
         config=FocusBandConfig(
             high_score_max=band["high_score_max"],
             critical_min=band["critical_min"],
@@ -1014,12 +1020,12 @@ def homeroom_trends(
     projected: List[ScoreFact] = []
     if ctx.link_id is not None:
         link = db.get(HomeroomTeachingLink, ctx.link_id)
-        h_keys = {(f.subject, f.exam_name) for f in facts if f.total_type is None}
+        h_keys = {(f.subject, q.fact_key(db, f)) for f in facts if f.total_type is None}
         for t_fact, _h_id in q.gated_teaching_facts_for_homeroom(
             db, ctx, link, h_ids=[person_id]
         ):
             # H 域已有同场（值同或值异）→ 保留 H 条目，不重复/不替换
-            if (t_fact.subject, t_fact.exam_name) in h_keys:
+            if (t_fact.subject, q.fact_key(db, t_fact)) in h_keys:
                 continue
             projected.append(t_fact)
 
@@ -1242,6 +1248,7 @@ def teaching_exam_students(
         )
     member_ids = _exam_member_ids(db, ctx, exam_name)
     rows = _teaching_member_rows(db, ctx, class_ids, subject, exam_name, member_ids)
+    conflicts = {e.person_id: e.conflict for e in q.readable_facts(db, ctx, exam_name, member_ids=member_ids)}
     ranks = _rank_map([(pid, score) for pid, score, _, _, _ in rows])
     name_map = q.names_for(db, [pid for pid, _, _, _, _ in rows])
     students = [
@@ -1253,6 +1260,7 @@ def teaching_exam_students(
             grade_score=grade_score,
             rank=ranks[pid],
             source_domain=source_domain,
+            shared_conflict=conflicts.get(pid),
         )
         for pid, score, grade_score, source_domain, class_label in rows
     ]
@@ -1424,7 +1432,7 @@ def homeroom_weekly_focus(
         if latest_exam_fact and latest_exam_fact[0]:
             exam_name = latest_exam_fact[0]
             focus_res = homeroom_exam_focus(
-                exam_name=exam_name,
+                exam_name=q.exam_label(db, exam_name),
                 academic_year_id=ctx.academic_year_id,
                 class_id=class_id_val,
                 term_id=term_id,

@@ -278,6 +278,7 @@ class TeachingExamStatsResponse(BaseModel):
 
 
 class TeachingAnalysisStudent(BaseModel):
+    shared_conflict: Optional[dict] = None
     """教学班学生行：无 total_type/其他学科键（键本身缺席）。
     source_domain 标注行来源（teaching 本域 / homeroom 反向投影）。"""
 

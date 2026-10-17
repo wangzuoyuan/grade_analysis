@@ -954,6 +954,7 @@ class ImportsPreviewItem(BaseModel):
     row_count: int = 0
     known_students: int = 0
     new_students: List[ImportNewItem] = Field(default_factory=list)
+    exam_resolution: Optional[dict] = None
     identity_candidates: List[ImportIdentityCandidate] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
@@ -1020,6 +1021,7 @@ class ImportsConfirmResponse(BaseModel):
 
 
 class SharedExamEntry(BaseModel):
+    exam_key: Optional[str] = None
     """该域该学年、当前班级范围内已导入的一场考试（契约 §1.4）。"""
 
     exam_name: str

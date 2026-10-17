@@ -7,6 +7,7 @@ import { apiErrorMessage } from '@/components/link/error-text'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { IdentityCandidatesPanel, type IdentityPick } from '@/components/upload/IdentityCandidatesPanel'
+import { ExamResolutionSelect } from './ExamResolutionSelect'
 import { ScoreImportTemplates } from '@/components/upload/ScoreImportTemplates'
 
 const fieldNames: Record<string,string> = {score:'原始分',exam_date:'考试日期',grade_score:'等级分',xueji_rank:'学籍排名',grade_percentile:'年级百分位',raw_avg:'原始均分',grade_avg:'等级均分',expected_count:'应考',actual_count:'实考',stddev:'标准差',teacher_name:'任课教师',class_type:'班级类型',bands:'人数及比率',aggregate:'汇总指标',score_sum:'单科总分',max_score:'最高分',min_score:'最低分',stddev_basis:'标准差口径',band_scheme:'分布口径',class_snapshot:'考试参照名单',count:'人数',ratio:'比率'}
@@ -42,6 +43,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
   const [operation,setOperation] = useState('initial')
   const [replaceRoster,setReplaceRoster] = useState(false)
   const [files,setFiles] = useState<File[]>([])
+  const [examChoice,setExamChoice] = useState<number | string>()
   const [preview,setPreview] = useState<PlatformPreview | null>(null)
   const [error,setError] = useState<string | null>(null)
   const [busy,setBusy] = useState(false)
@@ -54,7 +56,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
   const scopeKey=`${scope.year}:${scope.grade}:${scope.subject}:${scope.generation}`
   useEffect(() => {
     requestId.current += 1
-    setPreview(null); setResult(null); setError(null); setBusy(false); setRevise(false); setAcceptRoster(false); setPicks({})
+    setExamChoice(undefined); setPreview(null); setResult(null); setError(null); setBusy(false); setRevise(false); setAcceptRoster(false); setPicks({})
   }, [name,date,target,operation,replaceRoster,fileId,scopeKey])
   useEffect(() => { setTarget('auto') }, [scope.year,scope.grade])
   useEffect(() => () => { requestId.current += 1 }, [])
@@ -68,7 +70,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
     if (target === 'auto') form.set('auto_assign','true')
     else if (target) form.set('teaching_class_id',target)
     files.forEach(f => form.append('files',f))
-    try { const p=await platformPreview(form); if(id===requestId.current) {setPreview(p);setPicks({});setRevise(false);setAcceptRoster(false)} }
+    try { const p=await platformPreview(form); if(id===requestId.current) {setPreview(p);setExamChoice(undefined);setPicks({});setRevise(false);setAcceptRoster(false)} }
     catch(e) { if(id===requestId.current) setError(apiErrorMessage(e)) }
     finally { if(id===requestId.current) setBusy(false) }
   }
@@ -79,12 +81,13 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
     const identity_confirmations: Record<string,number>={}
     const identity_new_aliases: string[]=[]
     Object.entries(picks).forEach(([alias,pick]) => { if(pick==='new') identity_new_aliases.push(alias); else identity_confirmations[alias]=Number(pick) })
-    try { const r=await platformConfirm({token:preview.token,revise,accept_roster_changes:acceptRoster,identity_confirmations,identity_new_aliases}); if(id===requestId.current){setResult(r);setPreview(null)} }
+    try { const r=await platformConfirm({token:preview.token,exam_choice:examChoice,revise,accept_roster_changes:acceptRoster,identity_confirmations,identity_new_aliases}); if(id===requestId.current){setResult(r);setPreview(null)} }
     catch(e) { if(id===requestId.current) setError(e instanceof ApiV1Error && e.body?.conflicts ? `${apiErrorMessage(e)}：${JSON.stringify(e.body.conflicts)}` : apiErrorMessage(e)) }
     finally { if(id===requestId.current) setBusy(false) }
   }
   const aliases=[...new Set(preview?.identity_candidates.map(c => c.alias) ?? [])]
   const groups=aliases.map(alias => ({alias,name:preview?.identity_candidates.find(c => c.alias===alias)?.name ?? '',options:preview?.identity_candidates.filter(c => c.alias===alias) ?? []}))
+  const examUnresolved = preview?.exam_resolution?.requires_choice && examChoice === undefined && preview.exam_resolution.selected == null
   const unresolved=aliases.some(a => picks[a]===undefined)
   const hasFatal=preview?.errors.some(e => !e.message?.startsWith('补录须先存在') || !preview.identity_candidates.some(c => c.alias===e.alias))
   return <div className="space-y-5">
@@ -107,6 +110,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
     {error?<p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>:null}
     {result?<Card><CardContent className="space-y-3 pt-6"><p role="status" className="font-medium text-emerald-700">导入成功：新增 {result.imported} 条，修订 {result.revised} 条，同值跳过 {result.skipped} 条。</p><Button asChild variant="outline"><Link href={`/compare?ws=teaching&exam_id=${result.exam_id}&grade=${scope.grade}&academic_year_id=${scope.year}`}>查看本次班级对比与成绩</Link></Button></CardContent></Card>:null}
     {preview?<Card><CardHeader><CardTitle>预览与确认</CardTitle></CardHeader><CardContent className="space-y-4">
+      <ExamResolutionSelect resolution={preview.exam_resolution} value={examChoice} onChange={setExamChoice} disabled={busy}/>
       <p className="text-sm text-slate-500">预览未写入成绩。高一纳入全部真实班级；高二、高三纳入全部教学班及教师非空的行政班。新增参照不会创建管理班或成员。</p>
       {preview.items.map((f,i)=><div key={i} className="rounded border p-3 text-sm"><strong>{f.filename}</strong><span className={f.parsed_ok?'ml-3 text-emerald-700':'ml-3 text-red-700'}>{f.parsed_ok?f.kind==='class_quality'?`质量分析 · ${f.classes?.length ?? 0} 个班级`:`学生明细 · ${f.row_count} 行`:f.message}</span>
         {f.excluded?.length?<details className="mt-2"><summary>查看排除的行（{f.excluded.length}）</summary><ul>{f.excluded.map((r,j)=><li key={j}>{r.class_label}：{r.reason}</li>)}</ul></details>:null}
@@ -118,7 +122,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
       {preview.new_students.length?<p className="text-sm text-slate-600">首次导入将新建 {preview.new_students.length} 名学生并加入所选教学班；补录不创建学生。</p>:null}
       {preview.roster_changes.length?<label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={acceptRoster} onChange={e=>setAcceptRoster(e.target.checked)}/><span>确认 {preview.roster_changes.length} 项班级对比参照变化：{preview.roster_changes.map(c=>`${c.action==='remove'?'移出':'纳入'} ${c.class_kind==='teaching'?'教学':'行政'}·${c.class_label}`).join('、')}。只用于对比。</span></label>:null}
       {preview.conflicts.length?<label className="flex items-center gap-2 text-sm text-amber-800"><input type="checkbox" checked={revise} onChange={e=>setRevise(e.target.checked)}/>已核对上述 {preview.conflicts.length} 项已有值差异，同意修订</label>:null}
-      <Button disabled={busy || !!hasFatal || preview.items.some(f=>!f.parsed_ok) || unresolved || (!!preview.roster_changes.length&&!acceptRoster) || (!!preview.conflicts.length&&!revise)} onClick={runConfirm}>确认整批入库</Button>
+      <Button disabled={busy || !!examUnresolved || !!hasFatal || preview.items.some(f=>!f.parsed_ok) || unresolved || (!!preview.roster_changes.length&&!acceptRoster) || (!!preview.conflicts.length&&!revise)} onClick={runConfirm}>确认整批入库</Button>
     </CardContent></Card>:null}
   </div>
 }

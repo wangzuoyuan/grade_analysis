@@ -57,9 +57,9 @@ test('个人分析显示年级固定口径、配对分母与评价覆盖', () =>
   assert.match(card, /负面评价率 × 成绩水平/)
   assert.match(card, /evaluation_coverage/)
   assert.match(card, /unknown_batches/)
-  assert.match(card, /Spearman ρ为主/)
+  assert.match(card, /Kendall τb为主/)
   assert.match(card, /不是置信区间/)
-  assert.match(card, /rho_without_one/)
+  assert.match(card, /tau_without_one/)
 })
 
 test('教学学科固定，个人选择可搜索，缺失趋势不补连', () => {

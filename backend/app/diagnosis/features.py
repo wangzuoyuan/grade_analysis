@@ -155,7 +155,12 @@ def class_features_at_anchors(
     anchor_dates: Dict[str, dict] = {}
     if anchors:
         summaries = q.readable_exam_summaries(db, scope)  # 一次解析全部锚点日期
-        by_name = {e["exam_name"]: e["exam_date"] for e in summaries}
+        by_name = {e.get("exam_key", e["exam_name"]): e["exam_date"] for e in summaries}
+        labels = {e.get("exam_key", e["exam_name"]): e["exam_name"] for e in summaries}
+        for e in summaries:
+            if sum(other["exam_name"] == e["exam_name"] for other in summaries) == 1:
+                by_name[e["exam_name"]] = e["exam_date"]
+                labels[e["exam_name"]] = e["exam_name"]
         for name in anchors:
             if name not in by_name:
                 raise ResourceOutOfScope(
@@ -164,6 +169,7 @@ def class_features_at_anchors(
                 )
             date_str = by_name[name]  # None=无日期；"YYYY-MM"=月精度
             anchor_dates[name] = {
+                "exam_name": labels.get(name, name),
                 "date_str": date_str,
                 "date": _parse_anchor_date(date_str),
             }
@@ -227,7 +233,7 @@ def class_features_at_anchors(
     def _payload(anchor: Optional[str], bucket: dict) -> dict:
         anchor_payload = (
             {
-                "exam_name": anchor,
+                "exam_name": anchor_dates[anchor].get("exam_name", anchor),
                 "exam_date": anchor_dates[anchor]["date_str"],
                 "date_resolved": anchor_dates[anchor]["date"] is not None,
                 "timepoint_basis": (
@@ -292,7 +298,7 @@ def _fetch_student_base(db: Session, scope: WorkspaceContext, person_id: int):
     锚点间完全共用、只在截断/窗口过滤上分叉——多锚点重算（P3 队列清单）
     一次取数多次装配，避免「每生 × 每场」重复查询。"""
     entries = q.readable_facts(db, scope, member_ids=[person_id])
-    exams = _group_exams(entries)
+    exams = _group_exams(entries, db)
     ordered = _ordered_exam_names(exams)
     events, line_axis_map = _person_events(
         db, scope, person_id, academic_year_id=scope.academic_year_id, all_history=False
@@ -334,7 +340,7 @@ def _fetch_class_bases(db: Session, scope: WorkspaceContext, members: List[int])
 
     bases = {}
     for pid in members:
-        exams = _group_exams(facts_by_person[pid])
+        exams = _group_exams(facts_by_person[pid], db)
         events, line_axis = events_by_person[pid]
         bases[pid] = (exams, _ordered_exam_names(exams), events, line_axis, notes_by_person[pid])
     return bases
@@ -384,15 +390,15 @@ def _compute_student(
     }
 
 
-def _group_exams(entries) -> Dict[str, dict]:
+def _group_exams(entries, db=None) -> Dict[str, dict]:
     """可读事实行 → {exam_name: {"display_date", "subjects", "totals"}}。
     每生每场每口径至多一行（readable_facts 已按本域优先消解冲突）。"""
     exams: Dict[str, dict] = {}
     for entry in entries:
         fact = entry.fact
         bucket = exams.setdefault(
-            fact.exam_name,
-            {"display_date": None, "subjects": {}, "totals": {}},
+            q.fact_key(db, fact) if db is not None and fact.exam_event_id else fact.exam_name,
+            {"exam_name": q.exam_label(db, q.fact_key(db, fact)) if db is not None and fact.exam_event_id else fact.exam_name, "display_date": None, "subjects": {}, "totals": {}},
         )
         shown = q.display_exam_date(fact)
         if shown is not None and (
@@ -495,7 +501,7 @@ def _current_level_indicator(exams: Dict[str, dict], ordered: List[str], band_co
         {
             "status": "ok",
             "missing_reason": None,
-            "exam_name": latest,
+            "exam_name": bucket.get("exam_name", latest),
             "as_of": bucket["display_date"],
             "main3": {
                 "rank": rank,
@@ -909,22 +915,12 @@ def _class_missing_stats(db: Session, scope: WorkspaceContext) -> dict:
     - absent_by_subject：该科 score 为 NULL 的登记缺考行数（缺考不转 0）；
     - missing_main3（仅班主任域）：无主三门总分行的人数。
     考试名发现 = 本域本班事实的去重考试 ∪ 成员可读事实中的考试（含投影行）。"""
-    scope_exam_names = {
-        row[0]
-        for row in (
-            db.query(ScoreFact.exam_name)
-            .filter(
-                ScoreFact.data_domain == scope.data_domain,
-                ScoreFact.academic_year_id == scope.academic_year_id,
-                ScoreFact.class_ref_id.in_(list(scope.class_ids)),
-            )
-            .distinct()
-            .all()
-        )
-        if row[0]
-    }
+    own = db.query(ScoreFact).filter(ScoreFact.data_domain == scope.data_domain,
+        ScoreFact.academic_year_id == scope.academic_year_id, ScoreFact.class_ref_id.in_(list(scope.class_ids))).all()
     entries_all = q.readable_facts(db, scope)
-    exam_names = scope_exam_names | {e.fact.exam_name for e in entries_all}
+    facts = [*own, *[e.fact for e in entries_all]]
+    labels = {(q.fact_key(db, f) if f.exam_event_id else f.exam_name): f.exam_name for f in facts}
+    exam_names = set(labels)
 
     exams = []
     for name in sorted(exam_names):
@@ -934,7 +930,7 @@ def _class_missing_stats(db: Session, scope: WorkspaceContext) -> dict:
                 ScoreFact.data_domain == scope.data_domain,
                 ScoreFact.academic_year_id == scope.academic_year_id,
                 ScoreFact.class_ref_id.in_(list(scope.class_ids)),
-                ScoreFact.exam_name == name,
+                q.exam_predicate(db, ScoreFact, name),
             )
             .scalar()
         )
@@ -957,7 +953,7 @@ def _class_missing_stats(db: Session, scope: WorkspaceContext) -> dict:
             elif fact.total_type == DEFAULT_TOTAL_TYPE:
                 main3_have.add(entry.person_id)
         exam_stat = {
-            "exam_name": name,
+            "exam_name": labels.get(name, name),
             "exam_date": exam_date.isoformat() if exam_date is not None else None,
             "members_at": len(members),
             "missing_by_subject": {

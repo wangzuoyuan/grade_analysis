@@ -2,6 +2,8 @@
 export interface PersonalCorrelation {
   n: number
   r: number | null
+  tau: number | null
+  tau_without_one: [number, number] | null
   rho: number | null
   reason: string | null
   rho_without_one: [number, number] | null
@@ -33,7 +35,9 @@ export interface StudentHomeworkResponse {
 }
 export function personalReason(reason: string | null): string {
   const labels: Record<string, string> = {
-    insufficient_exams: '配对考试不足6场，先看逐场变化', homework_unchanged: '作业指标没有变化，无法判断相关',
+    insufficient_evaluations: '明确评价及覆盖率达标的考试不足4场',
+    insufficient_progress_pairs: '相邻进步配对不足4组，先看逐次变化',
+    insufficient_exams: '有效配对不足4场，可先看逐场和相邻变化', homework_unchanged: '作业指标没有变化，无法判断相关',
     achievement_unchanged: '成绩指标没有变化，无法判断相关', mixed_grades: '跨年级不可混算，请选择一个年级',
     grade_missing: '班级或考试尚未注明年级', grade_conflict: '考试与班级年级不一致，需核对',
     score_missing: '缺考或未导入有效成绩', percentile_missing: '缺少年级百分位', grade_score_missing: '缺少等级分',

@@ -238,9 +238,9 @@ def teaching_students(
 # ────────────────────────────── 画像 ──────────────────────────────
 
 
-def _exam_entry(fact, source_domain: str) -> ProfileExam:
+def _exam_entry(fact, source_domain: str, db=None) -> ProfileExam:
     return ProfileExam(
-        exam_name=fact.exam_name,
+        exam_name=q.exam_label(db, q.fact_key(db, fact)) if db is not None and fact.exam_event_id else fact.exam_name,
         exam_date=q.display_exam_date(fact),
         score=fact.score,
         grade_score=fact.grade_score,
@@ -248,13 +248,13 @@ def _exam_entry(fact, source_domain: str) -> ProfileExam:
     )
 
 
-def _group_exams(facts, source_domain: str):
+def _group_exams(facts, source_domain: str, db=None):
     grouped: dict = {}
     for fact in sorted(
         facts,
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
-        grouped.setdefault(fact.subject, []).append(_exam_entry(fact, source_domain))
+        grouped.setdefault(fact.subject, []).append(_exam_entry(fact, source_domain, db))
     return grouped
 
 
@@ -294,7 +294,7 @@ def homeroom_student_profile(
     # H 域无该场 → 投影行（source_domain=teaching）；值不同 → 保留 H
     # 条目并附 shared_conflict；值相同 → H 条目已是规范值，不重复添加。
     conflicts: Dict[Tuple[str, str], float] = {
-        (e.fact.subject, e.fact.exam_name): e.conflict["teaching_score"]
+        (e.fact.subject, q.fact_key(db, e.fact)): e.conflict.get("teaching_score")
         for e in entries
         if e.conflict is not None
     }
@@ -305,8 +305,8 @@ def homeroom_student_profile(
         subject_facts,
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
-        entry = _exam_entry(fact, "homeroom")
-        conflict_key = (fact.subject, fact.exam_name)
+        entry = _exam_entry(fact, "homeroom", db)
+        conflict_key = (fact.subject, q.fact_key(db, fact))
         if conflict_key in conflicts:
             entry.shared_conflict = {"teaching_score": conflicts[conflict_key]}
         grouped.setdefault(fact.subject, []).append(entry)
@@ -314,7 +314,7 @@ def homeroom_student_profile(
         teaching_facts,
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
-        grouped.setdefault(t_fact.subject, []).append(_exam_entry(t_fact, "teaching"))
+        grouped.setdefault(t_fact.subject, []).append(_exam_entry(t_fact, "teaching", db))
 
     subjects = [SubjectGroup(subject=subject, exams=exams) for subject, exams in grouped.items()]
     totals_grouped: dict = {}
@@ -323,7 +323,7 @@ def homeroom_student_profile(
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
         totals_grouped.setdefault(fact.total_type, []).append(
-            _exam_entry(fact, "homeroom")
+            _exam_entry(fact, "homeroom", db)
         )
     totals = [
         TotalGroup(total_type=total_type, exams=exams)
@@ -364,12 +364,12 @@ def teaching_student_profile(
     facts = [e.fact for e in entries if not e.projected]
     projected_facts: List = [e.fact for e in entries if e.projected]
 
-    grouped = _group_exams(facts, "teaching")
+    grouped = _group_exams(facts, "teaching", db)
     for h_fact in sorted(
         projected_facts,
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
-        grouped.setdefault(h_fact.subject, []).append(_exam_entry(h_fact, "homeroom"))
+        grouped.setdefault(h_fact.subject, []).append(_exam_entry(h_fact, "homeroom", db))
     subjects = [SubjectGroup(subject=s, exams=e) for s, e in grouped.items()]
     return TeachingStudentProfileResponse(
         metadata=_metadata(ctx, teaching_class_id=class_ids[0] if teaching_class_id is not None else None),

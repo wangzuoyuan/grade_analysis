@@ -8,6 +8,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--exams', type=int, choices=range(1, 9), default=4)
     parser.add_argument('--data-dir', required=True)
     parser.add_argument('--backup-dir', required=True)
     args = parser.parse_args()
@@ -48,17 +49,20 @@ def main():
                 alias_scope=str(year.id), alias_value=f'SYN{grade}{i+1:03d}', source='synthetic-preview'))
             db.add(wm.TeachingClassMember(teaching_class_id=cls.id, identity_id=person.id, valid_from=date(2026, 9, 1)))
         identities[grade] = people
-        for i in range(8):
+        for i in range(args.exams):
             day = date(2026, 9, 8) + timedelta(days=i*5)
+            event = wm.WorkspaceExamEvent(academic_year_id=year.id, grade=grade, exam_name=f'合成高{grade}测评{i+1}')
+            db.add(event)
+            db.flush()
             exam = wm.TeachingExamScope(academic_year_id=year.id, grade=grade, subject='物理',
-                exam_name=f'合成高{grade}测评{i+1}', exam_date=day)
+                exam_name=f'合成高{grade}测评{i+1}', exam_date=day, exam_event_id=event.id)
             db.add(exam)
             db.flush()
             for j, pid in enumerate(people):
                 achievement = [52, 57, 60, 66, 59, 70, 75, 79][i] if j == 0 else 85-i*3 if j == 1 else 60+i
                 db.add(wm.ScoreFact(data_domain='teaching', academic_year_id=year.id, class_ref_id=cls.id,
                     identity_id=pid, subject='物理', exam_name=exam.exam_name, exam_date=day,
-                    teaching_exam_id=exam.id, score=80-i, grade_score=achievement if grade > 1 and j != 2 else None,
+                    teaching_exam_id=exam.id, exam_event_id=event.id, score=80-i, grade_score=achievement if grade > 1 and j != 2 else None,
                     grade_percentile=(100-achievement)/100 if grade == 1 and j != 2 else None, source='synthetic-preview'))
             for k in range(8):
                 batch = wm.HomeworkAssignment(data_domain='teaching', academic_year_id=year.id, class_ref_id=cls.id,
@@ -85,6 +89,20 @@ def main():
         db.flush()
         db.add(wm.Enrollment(admin_class_id=hclass.id, identity_id=person.id, valid_from=date(2026, 9, 1), status='active'))
         db.add(wm.LinkedStudent(link_id=link.id, homeroom_identity_id=person.id, teaching_identity_id=tpid, confirm_basis='synthetic-preview'))
+        for index, fact in enumerate(db.query(wm.ScoreFact).filter_by(data_domain='teaching', identity_id=tpid).order_by(wm.ScoreFact.exam_date)):
+            eid = fact.exam_event_id
+            if index == args.exams - 1:
+                duplicate = db.query(wm.WorkspaceExamEvent).filter_by(academic_year_id=year.id, exam_name=fact.exam_name,
+                    data_revision=2).first()
+                if duplicate is None:
+                    duplicate = wm.WorkspaceExamEvent(academic_year_id=year.id, grade=2, exam_name=fact.exam_name, data_revision=2)
+                    db.add(duplicate); db.flush()
+                eid = duplicate.id
+            db.add(wm.ScoreFact(data_domain='homeroom', academic_year_id=year.id, class_ref_id=hclass.id,
+                identity_id=person.id, subject='物理', exam_name=fact.exam_name, exam_date=fact.exam_date,
+                exam_event_id=eid, score=fact.score, grade_score=fact.grade_score if fact.grade_score is not None else 65,
+                source='synthetic-preview'))
+
     db.commit()
     print(json.dumps({'academic_year_id': year.id, 'teaching_classes': classes, 'homeroom_class': hclass.id}))
     db.close()

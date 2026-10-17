@@ -781,6 +781,9 @@ def teaching_roster(
 # ────────────────────────────── 成绩事实 ──────────────────────────────
 
 
+from app.api.exam_events import fact_key, filter_exam, field_conflicts, exam_predicate, canonical_map, exam_label
+
+
 def _fact_query(db: Session, data_domain: str, ctx: WorkspaceContext,
                 identity_ids: Sequence[int], class_ids: Sequence[int],
                 subject: Optional[str] = None, exam_name: Optional[str] = None):
@@ -794,7 +797,7 @@ def _fact_query(db: Session, data_domain: str, ctx: WorkspaceContext,
     if subject is not None:
         query = query.filter(ScoreFact.subject == subject)
     if exam_name:
-        query = query.filter(ScoreFact.exam_name == exam_name)
+        query = filter_exam(query, db, ScoreFact, exam_name)
     return query
 
 
@@ -932,14 +935,15 @@ def exam_date_for(db: Session, ctx: WorkspaceContext, exam_name: str) -> Optiona
     exam_date（取最大），回退同学年本域其他班，再回退同学年对侧域
     （teaching 统计含反向投影 H 行，H-only 考试也要能解析时点）。
     全部未知（事实均无日期）→ None，调用方回退查询时点成员。"""
-    direct = _max_exam_date(db, ctx.data_domain, ctx.academic_year_id, ctx.class_ids)
-    if direct is not None:
-        return direct
-    domain_wide = _max_exam_date(db, ctx.data_domain, ctx.academic_year_id, [])
-    if domain_wide is not None:
-        return domain_wide
-    other = "teaching" if ctx.data_domain == "homeroom" else "homeroom"
-    return _max_exam_date(db, other, ctx.academic_year_id, [])
+    own = filter_exam(db.query(ScoreFact), db, ScoreFact, exam_name).filter(
+        ScoreFact.data_domain == ctx.mode, ScoreFact.academic_year_id == ctx.academic_year_id,
+        ScoreFact.class_ref_id.in_(ctx.class_ids)).all()
+    dates = [f.exam_date for f in own if f.exam_date]
+    if dates:
+        return max(dates)
+    facts = readable_facts(db, ctx, exam_name)
+    dates = [e.fact.exam_date for e in facts if e.fact.exam_date]
+    return max(dates) if dates else None
 
 
 @dataclass
@@ -967,6 +971,24 @@ class ReadableFact:
     conflict_fact: Optional[ScoreFact] = None
 
 
+def _deduplicate_entries(db, entries, selector=None, roots=None):
+    grouped = {}
+    for entry in sorted(entries, key=lambda e: (e.projected, -e.fact.id)):
+        key = (entry.person_id, entry.fact.subject, entry.fact.total_type, fact_key(db, entry.fact, roots))
+        if key in grouped:
+            first = grouped[key]
+            fields = field_conflicts(first.fact, entry.fact)
+            if fields:
+                first.conflict = {**(first.conflict or {}), "fields": fields, "duplicate_source": True}
+                first.conflict_fact = entry.fact
+        else:
+            grouped[key] = entry
+    result = list(grouped.values())
+    if selector and not selector.startswith(("event:", "legacy:")) and len({fact_key(db, e.fact, roots) for e in result if e.fact.exam_event_id}) > 1:
+        raise InvalidScopeParam("同名考试对应多场记录，请按日期和考试标识选择")
+    return result
+
+
 def readable_facts(
     db: Session,
     ctx: WorkspaceContext,
@@ -987,7 +1009,7 @@ def readable_facts(
     （合法空态）。"""
     ids = list(member_ids) if member_ids is not None else list(ctx.member_person_ids)
     scope_class_ids = list(class_ids) if class_ids is not None else list(ctx.class_ids)
-    if ctx.mode == "teaching" and exam_name and teaching_exam_id is None:
+    if ctx.mode == "teaching" and exam_name and not exam_name.startswith(("event:", "legacy:")) and teaching_exam_id is None:
         from app.db.workspace_models import TeachingExamScope
         grades = db.query(TeachingExamScope.grade).filter_by(
             academic_year_id=ctx.academic_year_id, subject=ctx.subject, exam_name=exam_name
@@ -997,6 +1019,7 @@ def readable_facts(
     if not ids:
         return []
 
+    roots = canonical_map(db, ctx.academic_year_id)
     if ctx.mode == "homeroom":
         own = _fact_query(
             db, "homeroom", ctx, ids, scope_class_ids, exam_name=exam_name
@@ -1011,22 +1034,24 @@ def readable_facts(
             for f in own
         ]
         if ctx.link_id is None:
-            return entries
+            return _deduplicate_entries(db, entries, exam_name, roots)
         link = db.get(HomeroomTeachingLink, ctx.link_id)
         own_by_key = {
-            (e.person_id, e.fact.subject, e.fact.exam_name): e
+            (e.person_id, e.fact.subject, fact_key(db, e.fact, roots)): e
             for e in entries
             if e.fact.total_type is None
         }
         for t_fact, h_id in gated_teaching_facts_for_homeroom(
             db, ctx, link, exam_name, h_ids=ids
         ):
-            entry = own_by_key.get((h_id, t_fact.subject, t_fact.exam_name))
+            entry = own_by_key.get((h_id, t_fact.subject, fact_key(db, t_fact, roots)))
             if entry is not None:
                 # 值不同（含一方缺考）：保留本域值并附提示；值相同视为
                 # 已一致的规范值，不投影、不重复（R5）
-                if entry.fact.score != t_fact.score:
+                if field_conflicts(entry.fact, t_fact):
                     entry.conflict = {"teaching_score": t_fact.score}
+                    if entry.fact.exam_event_id or set(field_conflicts(entry.fact, t_fact)) != {"score"}:
+                        entry.conflict["fields"] = field_conflicts(entry.fact, t_fact)
                     entry.conflict_fact = t_fact
             else:
                 entries.append(
@@ -1038,7 +1063,7 @@ def readable_facts(
                         projected=True,
                     )
                 )
-        return entries
+        return _deduplicate_entries(db, entries, exam_name, roots)
 
     # teaching：仅任教学科；linked 学生 H 域同学科事实反向投影（T 域
     # 已有同场（值同或值异）保留 T 行、不投影、不附字段）。
@@ -1052,7 +1077,7 @@ def readable_facts(
         )
         for f in own
     ]
-    taken_keys = {(e.person_id, e.fact.subject, e.fact.exam_name) for e in entries}
+    taken_keys = {(e.person_id, e.fact.subject, fact_key(db, e.fact, roots)): e for e in entries}
     for tc_id in scope_class_ids:
         link = active_link_for_teaching_class(db, tc_id, ctx.academic_year_id, ctx.as_of)
         if link is None or link.subject != ctx.subject:
@@ -1060,10 +1085,14 @@ def readable_facts(
         for h_fact, t_id in gated_homeroom_facts_for_teaching(
             db, ctx, link, exam_name, t_ids=ids
         ):
-            key = (t_id, h_fact.subject, h_fact.exam_name)
+            key = (t_id, h_fact.subject, fact_key(db, h_fact, roots))
             if key in taken_keys:
+                own_entry = taken_keys[key]
+                if field_conflicts(own_entry.fact, h_fact):
+                    own_entry.conflict = {"homeroom_score": h_fact.score, "fields": field_conflicts(own_entry.fact, h_fact)}
+                    own_entry.conflict_fact = h_fact
                 continue
-            taken_keys.add(key)
+            taken_keys[key] = ReadableFact(fact=h_fact, person_id=t_id, source_domain="homeroom", class_ref_id=tc_id, projected=True)
             entries.append(
                 ReadableFact(
                     fact=h_fact,
@@ -1073,7 +1102,7 @@ def readable_facts(
                     projected=True,
                 )
             )
-    return entries
+    return _deduplicate_entries(db, entries, exam_name, roots)
 
 
 def readable_exam_summaries(db: Session, ctx: WorkspaceContext) -> List[dict]:
@@ -1085,12 +1114,14 @@ def readable_exam_summaries(db: Session, ctx: WorkspaceContext) -> List[dict]:
     row_count。subjects 只统计学科行（total_type 行不计入，契约 §1.4）。
     排序：有日期按日期降序，无日期按名称排后。返回 dict 与
     SharedExamEntry 字段一致，集成者可直接 SharedExamEntry(**item)。"""
+    roots = canonical_map(db, ctx.academic_year_id)
     grouped: Dict[str, dict] = {}
     for entry in readable_facts(db, ctx):
         fact = entry.fact
-        bucket = grouped.setdefault(
-            fact.exam_name, {"exam_date": None, "row_count": 0, "subjects": set()}
-        )
+        key = fact_key(db, fact, roots)
+        if key not in grouped:
+            grouped[key] = {"exam_name": exam_label(db, key), "exam_date": None, "row_count": 0, "subjects": set()}
+        bucket = grouped[key]
         bucket["row_count"] += 1
         shown_date = display_exam_date(fact)
         if shown_date is not None and (
@@ -1110,7 +1141,8 @@ def readable_exam_summaries(db: Session, ctx: WorkspaceContext) -> List[dict]:
     )
     return [
         {
-            "exam_name": name,
+            "exam_name": e["exam_name"],
+            "exam_key": name,
             "exam_date": e["exam_date"],
             "row_count": e["row_count"],
             "subjects": sorted(e["subjects"]),
@@ -1167,7 +1199,7 @@ def score_conflict_pairs(
     if not h_facts:
         return []
     t_by_key = {
-        (f.identity_id, f.exam_name): f
+        (f.identity_id, fact_key(db, f)): f
         for f in link_facts("teaching", t_ids, link.teaching_class_id)
     }
     if not t_by_key:
@@ -1179,7 +1211,7 @@ def score_conflict_pairs(
         pair = h_to_pair.get(h_fact.identity_id)
         if pair is None:  # h_ids 即来自 pairs，理论不可达；防御性保持
             continue
-        t_fact = t_by_key.get((pair.teaching_identity_id, h_fact.exam_name))
+        t_fact = t_by_key.get((pair.teaching_identity_id, fact_key(db, h_fact)))
         if t_fact is None:
             continue  # 单侧事实：按门投影为对方行，不是冲突
         if not gate_fact(link, t_fact):

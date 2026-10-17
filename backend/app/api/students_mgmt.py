@@ -2142,28 +2142,28 @@ def student_report(
                 (
                     f
                     for f in subject_facts
-                    if f.subject == t_fact.subject and f.exam_name == t_fact.exam_name
+                    if f.subject == t_fact.subject and q.fact_key(db, f) == q.fact_key(db, t_fact)
                 ),
                 None,
             )
             if h_match is None:
                 teaching_extra.append(t_fact)
             elif h_match.score != t_fact.score:
-                conflicts[(t_fact.subject, t_fact.exam_name)] = t_fact.score
+                conflicts[(t_fact.subject, q.fact_key(db, t_fact))] = t_fact.score
 
     grouped: dict = {}
     for fact in sorted(
         subject_facts, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
-        entry = _exam_entry(fact, "homeroom")
-        conflict_key = (fact.subject, fact.exam_name)
+        entry = _exam_entry(fact, "homeroom", db)
+        conflict_key = (fact.subject, q.fact_key(db, fact))
         if conflict_key in conflicts:
             entry.shared_conflict = {"teaching_score": conflicts[conflict_key]}
         grouped.setdefault(fact.subject, []).append(entry)
     for t_fact in sorted(
         teaching_extra, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
-        grouped.setdefault(t_fact.subject, []).append(_exam_entry(t_fact, "teaching"))
+        grouped.setdefault(t_fact.subject, []).append(_exam_entry(t_fact, "teaching", db))
     subjects = [
         SubjectGroup(subject=subject, exams=exams)
         for subject, exams in sorted(grouped.items())
@@ -2172,7 +2172,7 @@ def student_report(
     for fact in sorted(
         total_facts, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
-        totals_grouped.setdefault(fact.total_type, []).append(_exam_entry(fact, "homeroom"))
+        totals_grouped.setdefault(fact.total_type, []).append(_exam_entry(fact, "homeroom", db))
     totals = [
         TotalGroup(total_type=total_type, exams=exams)
         for total_type, exams in sorted(totals_grouped.items())

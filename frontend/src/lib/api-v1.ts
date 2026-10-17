@@ -17,6 +17,9 @@
 export type WorkspaceMode = 'homeroom' | 'teaching'
 
 export interface ManagedExam {
+  event_id?: number | null
+  sources?: string[]
+  conflicts?: Array<{person_id: number; name?: string | null; fact_id?: number | null; fields: Record<string, {own: number | null; other: number | null}>}>
   academic_year_id: number; platform_exam_id: number | null
   key: string; exam_name: string; grade: number | null; subject: string | null
   dates: string[]; classes: string[]; kind: 'native' | 'platform' | 'linked'; can_delete: boolean
@@ -76,6 +79,7 @@ export interface PlatformMetrics {
 export interface PlatformExam { id: number; exam_name: string; exam_date: string; grade: number; subject: string }
 export interface PlatformChange { entity?: string; alias?: string; field?: string; existing?: unknown; incoming?: unknown; message?: string }
 export interface PlatformPreview {
+  exam_resolution?: ExamResolution
   token: string; scope: Record<string, string | number>
   items: Array<{ filename: string; parsed_ok: boolean; kind: string; row_count: number; message?: string
     classes?: Array<{class_label: string}>; excluded?: Array<{class_label: string; reason: string}>; warnings?: string[] }>
@@ -98,7 +102,7 @@ export interface PlatformCompare {
   warnings: string[]
 }
 export const platformPreview = (form: FormData): Promise<PlatformPreview> => requestMultipart('/api/v1/teaching/platform/imports/preview', form)
-export const platformConfirm = (body: {token: string; revise: boolean; accept_roster_changes: boolean; identity_confirmations: Record<string, number>; identity_new_aliases: string[]}): Promise<{exam_id: number; imported: number; revised: number; skipped: number; students_created: number}> => request('/api/v1/teaching/platform/imports/confirm', {method:'POST', body:JSON.stringify(body)})
+export const platformConfirm = (body: {token: string; exam_choice?: number | string; revise: boolean; accept_roster_changes: boolean; identity_confirmations: Record<string, number>; identity_new_aliases: string[]}): Promise<{exam_id: number; imported: number; revised: number; skipped: number; students_created: number}> => request('/api/v1/teaching/platform/imports/confirm', {method:'POST', body:JSON.stringify(body)})
 export const platformExams = (year: number, grade: number, subject: string): Promise<{exams: PlatformExam[]}> => request(withQuery('/api/v1/teaching/platform/exams', {academic_year_id:year,grade,subject}))
 export const platformCompare = (id: number): Promise<PlatformCompare> => request(`/api/v1/teaching/platform/exams/${id}/compare`)
 export const platformStudents = (id: number, classId?: number): Promise<{students: PlatformStudent[]}> => request(withQuery(`/api/v1/teaching/platform/exams/${id}/students`, {teaching_class_id:classId}))
@@ -462,6 +466,7 @@ export type ImportPreviewKind = 'student_scores' | 'class_averages' | 'unknown'
 
 /** preview 单文件解析结果；缺考计数等风险信息在 warnings（契约 §1.1）。 */
 export interface ImportPreviewItem {
+  exam_resolution?: ExamResolution
   filename: string
   kind: ImportPreviewKind
   parsed_ok: boolean
@@ -514,6 +519,7 @@ export interface ImportsConfirmResult {
 
 /** 已导入考试摘要（GET /shared/exams，按考试日期降序）。 */
 export interface ExamSummary {
+  exam_key?: string
   exam_name: string
   exam_date: string | null
   row_count: number
@@ -777,6 +783,7 @@ export interface TeachingStatsResponse {
 
 /** 教学学生行（契约 §2.2）；rank 为本班内名次，score 缺考为 null。 */
 export interface TeachingStudentRow {
+  shared_conflict?: { fields?: Record<string, {own: number | null; other: number | null}> } | null
   person_id: PersonId
   name: string | null
   class_label: string | null
@@ -1008,11 +1015,13 @@ export function importsConfirmP3(
   revise = false,
   identityConfirmations?: Record<string, number>,
   identityNewAliases?: string[],
+  examChoices?: Record<string, number | string>,
 ): Promise<ImportsConfirmResult> {
   return request<ImportsConfirmResult>(`${API_V1_BASE}/imports/confirm`, {
     method: 'POST',
     body: JSON.stringify({
       token,
+      exam_choices: examChoices,
       revise,
       ...(identityConfirmations != null ? { identity_confirmations: identityConfirmations } : {}),
       ...(identityNewAliases != null && identityNewAliases.length > 0
@@ -2781,6 +2790,7 @@ export function closeChatSession(sessionId: number): Promise<ChatCloseResponse> 
 
 /** 单条当前冲突（H 侧视角；缺考为 null，展示层绝不转 0）。 */
 export interface ScoreConflictItem {
+  exam_key?: string | null
   person_id: PersonId
   name: string | null
   subject: string
@@ -2804,6 +2814,7 @@ export type CanonicalSide = 'homeroom' | 'teaching'
  * 同一冲突一次只选一侧，本阶段不做人工改分。
  */
 export interface CanonicalResolution {
+  exam_key?: string | null
   person_id: PersonId
   subject: string
   exam_name: string
@@ -2864,4 +2875,28 @@ export function getChatMessages(sessionId: number): Promise<{ messages: ChatMess
   return request<{ messages: ChatMessageItem[] }>(
     `${API_V1_BASE}/chat/sessions/${encodeURIComponent(String(sessionId))}/messages`,
   )
+}
+
+
+export interface ExamResolution {
+  candidates: Array<{id: number; exam_name: string; grade: number | null; dates: string[]; sources: string[]}>
+  selected: number | null; requires_choice: boolean; message: string
+}
+export interface ExamMergePreview {
+  token: string; source: ManagedExam; target: ManagedExam; message: string
+  differences: Array<{person_id: number; name?: string | null; subject: string | null; fields: Record<string, {own: number | null; other: number | null}>}>
+}
+export function previewExamMerge(mode: WorkspaceMode, body: {academic_year_id?: number; class_id?: number; source_event_id: number; target_event_id: number}): Promise<ExamMergePreview> {
+  return request(`/api/v1/${mode}/exams/merge-preview`, {method: 'POST', body: JSON.stringify(body)})
+}
+export function confirmExamMerge(mode: WorkspaceMode, body: {token: string; confirm_name: string; accept_conflicts: boolean}): Promise<{success: boolean; event_id: number}> {
+  return request(`/api/v1/${mode}/exams/merge-confirm`, {method: 'POST', body: JSON.stringify(body)})
+}
+
+export interface MetricFillPreview {token: string; exam_name: string; source_domain: string; changes: Record<string, number>}
+export function previewMetricFill(mode: WorkspaceMode, body: {academic_year_id?: number; class_id?: number; fact_id: number}): Promise<MetricFillPreview> {
+  return request(`/api/v1/${mode}/exams/metric-fill-preview`, {method:'POST', body:JSON.stringify(body)})
+}
+export function confirmMetricFill(mode: WorkspaceMode, body: {token: string; confirm_name: string}): Promise<{success: boolean}> {
+  return request(`/api/v1/${mode}/exams/metric-fill-confirm`, {method:'POST', body:JSON.stringify(body)})
 }

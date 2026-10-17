@@ -28,6 +28,7 @@ router = APIRouter(tags=["canonical-scores"])
 
 
 class ScoreConflictItem(BaseModel):
+    exam_key: Optional[str] = None
     """一条当前冲突（H 侧视角；缺考为 null，绝不转 0）。"""
 
     person_id: int
@@ -51,6 +52,7 @@ class CanonicalResolution(BaseModel):
     person_id: int
     subject: str
     exam_name: str
+    exam_key: Optional[str] = None
     canonical_side: Literal["homeroom", "teaching"]
     # 契约字段：缺省 canonical_confirm:<日期>；审计由 source/data_revision
     # 与响应回执承载，本字段仅校验形状（自由文本），不单独落库
@@ -101,6 +103,7 @@ def _conflict_items(db: Session, link: HomeroomTeachingLink) -> List[ScoreConfli
             person_id=h_fact.identity_id,
             name=names.get(h_fact.identity_id),
             subject=h_fact.subject or "",
+            exam_key=q.fact_key(db, h_fact),
             exam_name=h_fact.exam_name,
             exam_date=(
                 h_fact.exam_date.isoformat()
@@ -140,7 +143,7 @@ def _link_fact_index(
         )
         .all()
     )
-    return {(f.identity_id, f.subject or "", f.exam_name): f for f in rows}
+    return {(f.identity_id, f.subject or "", q.fact_key(db, f)): f for f in rows}
 
 
 # ────────────────────────── §1.6 端点 ──────────────────────────
@@ -184,7 +187,7 @@ def confirm_canonical_scores(
     # 同键给出不同侧 → 422（一次只能选一侧）
     unique: dict = {}
     for r in req.resolutions:
-        key = (r.person_id, r.subject, r.exam_name)
+        key = (r.person_id, r.subject, r.exam_key or r.exam_name)
         prev = unique.get(key)
         if prev is not None:
             if prev.canonical_side != r.canonical_side:
@@ -205,7 +208,7 @@ def confirm_canonical_scores(
     #    两域已相等，选任一侧都是同一值，无需再比对）；
     # 3) 人不在映射/科不符/两域事实缺失或仍不同（被门挡住等）→ 422。
     conflict_map = {
-        (h.identity_id, h.subject or "", h.exam_name): (h, t)
+        (h.identity_id, h.subject or "", q.fact_key(db, h)): (h, t)
         for h, t in q.score_conflict_pairs(db, link)
     }
     linked = {p.homeroom_identity_id: p for p in q.linked_students_for_link(db, link.id)}
@@ -230,15 +233,21 @@ def confirm_canonical_scores(
     plans: List[tuple] = []
     skipped = 0
     for r in unique.values():
-        pair = conflict_map.get((r.person_id, r.subject, r.exam_name))
+        selector = r.exam_key
+        if selector is None:
+            matching = {key[2] for key, fact in h_index.items() if key[:2] == (r.person_id, r.subject) and fact.exam_name == r.exam_name}
+            if len(matching) > 1:
+                raise InvalidScopeParam("同名考试不唯一，请刷新冲突清单并按考试标识确认")
+            selector = next(iter(matching), r.exam_name)
+        pair = conflict_map.get((r.person_id, r.subject, selector))
         if pair is not None:
             plans.append((r, pair[0], pair[1]))
             continue
         pair_row = linked.get(r.person_id)
         if pair_row is None or r.subject != link.subject:
             raise _not_a_conflict(r)
-        h_fact = h_index.get((r.person_id, r.subject, r.exam_name))
-        t_fact = t_index.get((pair_row.teaching_identity_id, r.subject, r.exam_name))
+        h_fact = h_index.get((r.person_id, r.subject, selector))
+        t_fact = t_index.get((pair_row.teaching_identity_id, r.subject, selector))
         if h_fact is None or t_fact is None:
             raise _not_a_conflict(r)
         if h_fact.score != t_fact.score:

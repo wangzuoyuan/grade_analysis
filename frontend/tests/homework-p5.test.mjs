@@ -200,8 +200,8 @@ test('预警时间轴：连续阈值真筛选、旧数据口径与默认已交�
 
 test('个人相关性卡：缺失不编造，展示个人时间线与数据限制', () => {
   assert.match(correlationCard, /studentHomeworkAnalysis/, '应使用逐人端点')
-  assert.match(correlationCard, /value\.rho == null/, '系数缺失须独立呈现')
-  assert.match(correlationCard, /暂不能判断/, '数据不足不能下判断')
+  assert.match(correlationCard, /value\.tau == null/, '系数缺失须独立呈现')
+  assert.match(correlationCard, /先看逐场变化/, '数据不足不能下判断')
   assert.match(correlationCard, /LineChart/, '个人趋势按多次考试展示')
   assert.match(correlationCard, /不构成因果/, '保留因果限制')
   assert.match(correlationCard, /caveats/, '逐人限制必须展示')

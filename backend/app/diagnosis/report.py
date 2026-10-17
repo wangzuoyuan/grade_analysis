@@ -134,7 +134,7 @@ def _resolve_anchor(
     返回 (anchor, exams, ordered, source)；exams/ordered 与 B1 特征层同源
     （readable_facts → _group_exams → _ordered_exam_names）。"""
     entries = q.readable_facts(db, scope, member_ids=[person_id])
-    exams = _group_exams(entries)
+    exams = _group_exams(entries, db)
     ordered = _ordered_exam_names(exams)
     if exam_name is None or exam_name == "":
         return (ordered[-1] if ordered else None), exams, ordered, "default_latest"

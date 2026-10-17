@@ -95,7 +95,7 @@ def test_grade_measure_and_personal_opposite_directions(client, world, grade):
         assert a['timeline'][1]['gain'] == 5
         assert b['correlations']['submission']['rho'] == -1
     assert a['paired_n'] == 8 and a['correlations']['submission']['n'] == 8
-    assert data['calc_version'] == 'student-homework-v1'
+    assert data['calc_version'] == 'student-homework-v2'
     assert 'layers' not in data and 'r' not in data
     # Raw scores fall; positive coefficient proves the chosen grade-specific metric.
     assert a['timeline'][-1]['raw_score'] < a['timeline'][0]['raw_score']
@@ -240,7 +240,7 @@ def test_constant_homework_and_small_samples_are_explained(client, world):
     assert student['correlations']['submission']['rho'] is None
     assert student['correlations']['submission']['reason'] == 'homework_unchanged'
     assert '变化很少' in student['advice']
-    assert get(client, w, end_exam_name='合成测评2')['students'][0]['correlations']['submission']['reason'] == 'insufficient_exams'
+    assert get(client, w, end_exam_name='合成测评2')['students'][0]['correlations']['submission']['reason'] == 'homework_unchanged'
 
 
 def test_statistical_sensitivity_and_average_ties():
@@ -330,3 +330,44 @@ def test_conflicting_date_cannot_supply_a_window_or_cutoff(client, world):
     assert p['pair_reason'] == 'exact_date_missing'
     assert p['homework'] is None and p['window_start'] is None and p['gain'] is None
     assert '只保留截止场明细' in data['note']
+
+
+@pytest.mark.parametrize('count', [1, 2, 3, 4])
+def test_four_exam_semester_and_adjacent_changes(client, world, count):
+    w=world(exams=count)
+    result=get(client,w)
+    a=result['students'][0]
+    assert len(a['timeline'])==count
+    assert sum(p['gain'] is not None for p in a['timeline'])==max(0,count-1)
+    assert a['correlations']['progress']['n']==max(0,count-1)
+    assert result['minimum_exams']==4
+    if count==4:
+        assert a['correlations']['submission']['tau']==1
+        assert a['correlations']['progress']['reason']=='achievement_unchanged'
+    else:
+        assert a['correlations']['submission']['tau'] is None
+    assert all('6场' not in text for text in a['caveats'])
+
+
+def test_kendall_ties_agree_with_reference_and_leave_one_sensitivity():
+    from app.diagnosis.student_homework import _kendall_tau_b, _correlation
+    # Published SciPy reference example, including ties in both variables.
+    assert _kendall_tau_b([12,2,1,12,2],[1,4,7,1,0])==pytest.approx(-.47140452079103173)
+    # Five concordant pairs, one x tie: tau-b = 5 / sqrt(5*6).
+    assert _correlation([(.5,50),(.5,60),(.8,70),(.9,80)])['tau']==pytest.approx(.9129,abs=.0001)
+    unstable=_correlation([(0,1),(0,2),(0,3),(1,4)])
+    assert unstable['sensitive'] and unstable['tau_without_one'] is not None
+    assert _correlation([(1,1)]*4)['reason']=='homework_unchanged'
+
+
+def test_month_precision_exam_selector_keeps_original_facts(client, world):
+    w=world(exams=1)
+    for f in w.facts:
+        f.exam_date=None; f.source_exam_date='2025-10'; f.exam_date_precision='month'
+    w.db.commit()
+    params=dict(mode='teaching',academic_year_id=w.ay,teaching_class_id=w.cls.id)
+    exams=client.get('/api/v1/shared/exams',params=params).json()['exams']
+    assert exams[0]['exam_date']=='2025-10'
+    response=client.get('/api/v1/teaching/analysis/exams/'+exams[0]['exam_key']+'/students',
+        params={k:v for k,v in params.items() if k!='mode'})
+    assert response.status_code==200 and len(response.json()['students'])==2,response.text

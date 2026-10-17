@@ -127,6 +127,7 @@ function LegacyUploadPage() {
   const [examNameOverride, setExamNameOverride] = useState('')
   const [examDateOverride, setExamDateOverride] = useState('')
 
+  const [examChoices, setExamChoices] = useState<Record<string, number | string>>({})
   const [previewing, setPreviewing] = useState(false)
   const [preview, setPreview] = useState<ImportsPreviewResult | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
@@ -156,6 +157,7 @@ function LegacyUploadPage() {
     prevModeRef.current = mode
     reqRef.current += 1
     setPreview(null)
+    setExamChoices({})
     setPreviewError(null)
     setConflicts(null)
     setConfirmError(null)
@@ -221,6 +223,7 @@ function LegacyUploadPage() {
     try {
       const r = await importsPreviewMultipart(buildForm())
       if (req !== reqRef.current) return
+      setExamChoices({})
       setPreview(r)
       // 新预览 = 新候选集：旧的确认选择与 409 候选一律作废
       setIdentityPicks({})
@@ -228,6 +231,7 @@ function LegacyUploadPage() {
     } catch (err) {
       if (req !== reqRef.current) return
       setPreview(null)
+    setExamChoices({})
       setPreviewError(apiErrorMessage(err))
     } finally {
       if (req === reqRef.current) setPreviewing(false)
@@ -255,10 +259,12 @@ function LegacyUploadPage() {
         revise,
         Object.keys(confirmations).length > 0 ? confirmations : undefined,
         newAliases.length > 0 ? newAliases : undefined,
+        examChoices,
       )
       if (req !== reqRef.current) return
       setResult(r)
       setPreview(null)
+    setExamChoices({})
       setFiles([])
       setIdentityPicks({})
       setConfirmCandidates(null)
@@ -280,6 +286,7 @@ function LegacyUploadPage() {
     reqRef.current += 1
     setFiles([])
     setPreview(null)
+    setExamChoices({})
     setPreviewError(null)
     setConflicts(null)
     setConfirmError(null)
@@ -577,7 +584,7 @@ function LegacyUploadPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <ImportsPreviewTable items={preview.items} />
+              <ImportsPreviewTable items={preview.items} examChoices={examChoices} onExamChoice={(filename, choice) => setExamChoices(prev => ({...prev, [filename]: choice}))}/>
 
               {/* F06：跨学年身份候选确认区（preview 候选 + 409 补发候选共用一套 UI） */}
               <IdentityCandidatesPanel groups={identityGroups} picks={identityPicks} onPick={pickIdentity} />
@@ -612,7 +619,7 @@ function LegacyUploadPage() {
                   </Button>
                   <Button
                     onClick={() => void handleConfirm(false)}
-                    disabled={confirming || preview.items.length === 0 || anyParseFailed || !identityAllPicked}
+                    disabled={confirming || preview.items.some(it => it.exam_resolution?.requires_choice && it.exam_resolution.selected == null && examChoices[it.filename] === undefined) || preview.items.length === 0 || anyParseFailed || !identityAllPicked}
                   >
                     {confirming ? (
                       <>

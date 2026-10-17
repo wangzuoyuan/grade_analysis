@@ -36,7 +36,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
-from sqlalchemy import or_
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
 from app.api import _queries as q
@@ -562,18 +562,30 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
             if c["scope"] == "batch":
                 msg = (
                     f"考试日期冲突（批内）：{c['exam_name']} 在多个文件中日期不同"
-                    f"（{'、'.join(c['dates'])}），确认时整批拒绝"
+                    f"（{'、'.join(c['dates'])}），请在预览中明确选择已有考试或另建考试"
                 )
             else:
                 msg = (
                     f"考试日期冲突（库内）：{c['exam_name']} 库内已有日期"
-                    f" {'、'.join(c['existing_dates'])}，本次为 {c['exam_date']}，确认时整批拒绝"
+                    f" {'、'.join(c['existing_dates'])}，本次为 {c['exam_date']}，请在预览中明确选择已有考试或另建考试"
                 )
             for item in items:
                 if item.exam_name == c["exam_name"]:
                     item.warnings.append(msg)
 
     snapshot = _scope_snapshot(ctx, target_tc_id, transport="multipart")
+    for item, f in zip(items, snapshot_files):
+        if f.get("parsed_ok"):
+            f["exam_resolution"] = events.candidates(db, ctx, f.get("exam_name"), f.get("grade") or ctx.grade, f.get("exam_date"))
+            item.exam_resolution = f["exam_resolution"]
+    dates_by_name = {}
+    for f in snapshot_files:
+        dates_by_name.setdefault(f.get("exam_name"), set()).add(f.get("exam_date"))
+    for item, f in zip(items, snapshot_files):
+        if len(dates_by_name.get(f.get("exam_name"), set())) > 1 and f.get("exam_resolution"):
+            f["batch_date_choice"] = True
+            item.exam_resolution = {**f["exam_resolution"], "requires_choice": True, "selected": None,
+                                    "message": "批内同名考试日期不同，请明确每份文件的考试归属"}
     snapshot["files"] = snapshot_files
     token = secrets.token_hex(16)
     expires_at = datetime.utcnow() + timedelta(minutes=q.PREVIEW_TTL_MINUTES)
@@ -599,8 +611,12 @@ router.add_api_route("/imports/preview", imports_preview, methods=["POST"])
 # ────────────────────────────── confirm（契约 §1.2：单次消费 + 漂移校验 + 单事务写入） ──────────────────────────────
 
 
+from app.api import exam_events as events
+
+
 class ImportsConfirmRequest(BaseModel):
     token: str
+    exam_choices: Dict[str, int | str] = {}
     revise: bool = False
     # F06：历史学年身份候选的显式确认 {alias_value: person_id}；
     # 存在历史候选而未逐项确认 → 409，确认的 person 须确实持有该 alias
@@ -613,20 +629,18 @@ class ImportsConfirmRequest(BaseModel):
 
 
 def _natural_fact(db: Session, domain: str, academic_year_id: int,
-                  exam_name: str, identity_id: int, subject, total_type):
+                  exam_name: str, identity_id: int, subject, total_type, event_id=None, exam_date=None):
     """按自然键 (domain, 学年, 考试, 人, 学科口径, 总分口径) 查库内行。"""
-    return (
-        db.query(ScoreFact)
-        .filter(
-            ScoreFact.data_domain == domain,
-            ScoreFact.academic_year_id == academic_year_id,
-            ScoreFact.exam_name == exam_name,
-            ScoreFact.identity_id == identity_id,
-            ScoreFact.subject_key == (subject or ""),
-            ScoreFact.total_key == (total_type or ""),
-        )
-        .one_or_none()
-    )
+    query = db.query(ScoreFact).filter(
+        ScoreFact.data_domain == domain, ScoreFact.academic_year_id == academic_year_id,
+        ScoreFact.identity_id == identity_id, ScoreFact.subject_key == (subject or ""),
+        ScoreFact.total_key == (total_type or ""))
+    legacy = (ScoreFact.exam_event_id.is_(None) & (ScoreFact.exam_name == exam_name))
+    if exam_date is not None:
+        legacy = legacy & (ScoreFact.exam_date == exam_date)
+    query = query.filter(or_(ScoreFact.exam_event_id.in_(events.event_ids(db, event_id)), legacy)) if event_id else query.filter(legacy)
+    return query.order_by(ScoreFact.id.desc()).first()
+
 
 
 _FACT_VALUE_FIELDS = (
@@ -667,13 +681,24 @@ def _valid_member_row(db: Session, teaching_class_id: int, identity_id: int, as_
 @router.post("/imports/confirm", response_model=ImportsConfirmResponse)
 @domain_endpoint
 def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
-    teacher_id = current_teacher_id(db)
-    # token 校验（R4）：不存在/过期/已消费一律 409，复用 shared._load_preview_batch
     batch = _load_preview_batch(db, req.token)
     snapshot = json.loads(batch.scope_json or "{}")
     if snapshot.get("kind") != "import_preview":
-        raise LinkVersionConflict("token is not an import preview", details={"token": req.token})
+        raise LinkVersionConflict("token is not an import preview")
+    try:
+        claimed = db.execute(update(ImportBatch).where(ImportBatch.id == batch.id,
+            ImportBatch.status == "pending").values(status="applying"))
+        if claimed.rowcount != 1:
+            raise LinkVersionConflict("导入凭据已消费，请重新预览")
+        db.expire_all()
+        return _apply_import_confirm(req, db, batch, snapshot)
+    except Exception:
+        db.rollback()
+        raise
 
+
+def _apply_import_confirm(req, db, batch, snapshot):
+    teacher_id = current_teacher_id(db)
     mode = snapshot.get("mode")
     if mode not in VALID_MODES:
         raise LinkVersionConflict("invalid snapshot mode")
@@ -749,23 +774,21 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
         if f.get("parsed_ok") and f.get("kind") == "class_averages"
     ]
 
-    # 考试日期一致性（契约 §1.2 校验 4 / v2.1 边界裁决）：批内或与库内
-    # 同 exam_name 不同 exam_date → 整批 409，不静默合并不当作修订
-    date_conflicts = _exam_date_conflicts(
-        db,
-        ctx.data_domain,
-        ctx.academic_year_id,
-        [
-            (f.get("exam_name"), f.get("exam_date"))
-            for f in [*files, *average_files]
-        ],
-    )
-    if date_conflicts:
-        raise LinkVersionConflict(
-            "同 exam_name 存在不同 exam_date（批内或与库内），整批拒绝；"
-            "确需重导请先修正来源或显式重命名考试",
-            details={"date_conflicts": date_conflicts},
-        )
+    # Resolve read-only first; event creation is deferred until all preflight checks pass.
+    event_choices = {}
+    for f in [*files, *average_files]:
+        preview = f.get("exam_resolution")
+        choice = req.exam_choices.get(f["filename"])
+        if f.get("batch_date_choice") and choice is None:
+            raise LinkVersionConflict("批内同名考试日期不同，请明确每份文件的考试归属")
+        eid = events.resolve(db, ctx, f["exam_name"], f.get("grade") or ctx.grade,
+                             f.get("exam_date"), preview, choice)
+        f["resolved_event_id"] = eid
+        event_choices[f["filename"]] = eid
+    # Old tokens retain their original date-conflict protection.
+    if any("exam_resolution" not in f for f in [*files, *average_files]) and _exam_date_conflicts(
+            db, ctx.data_domain, ctx.academic_year_id, [(f.get("exam_name"), f.get("exam_date")) for f in [*files, *average_files]]):
+        raise LinkVersionConflict("同 exam_name 存在不同 exam_date，请重新预览并明确选择考试")
 
     # ── 阶段 A：只读预检 + 写入计划（任何冲突在写库前拒绝，零写入）──
     # 撞号检查以 rows 逐行姓名为准：学生聚合清单可能已合并同号行（撞号
@@ -884,7 +907,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
         exams_seen.setdefault(exam_name, exam_date)
         for row in f.get("rows") or []:
             key = (
-                exam_name,
+                (exam_name, f.get("resolved_event_id"), f.get("exam_date")),
                 row["alias"],
                 row.get("subject") or "",
                 row.get("total_type") or "",
@@ -910,6 +933,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                 "exam_date": exam_date,
             }
 
+    average_bindings: list = []
     average_inserts: list = []
     average_revises: list = []
     average_skips = 0
@@ -919,7 +943,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
         exam_date = date.fromisoformat(f["exam_date"]) if f.get("exam_date") else None
         exams_seen.setdefault(exam_name, exam_date)
         for row in f.get("class_averages") or []:
-            key = (exam_name, int(row["class_num"]))
+            key = (exam_name, f.get("resolved_event_id"), f.get("exam_date"), int(row["class_num"]))
             previous = average_rows.get(key)
             if previous is not None and previous["row"] != row:
                 value_conflicts.append(
@@ -949,11 +973,15 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                 WorkspaceClassAverage.data_domain == ctx.data_domain,
                 WorkspaceClassAverage.academic_year_id == ctx.academic_year_id,
                 WorkspaceClassAverage.exam_name == plan["exam_name"],
+                WorkspaceClassAverage.exam_event_id.in_(events.event_ids(db, event_choices[plan["filename"]])) if event_choices[plan["filename"]] else WorkspaceClassAverage.exam_event_id.is_(None),
+                WorkspaceClassAverage.exam_date == plan["exam_date"],
                 WorkspaceClassAverage.grade == plan["grade"],
                 WorkspaceClassAverage.class_num == int(row["class_num"]),
             )
             .one_or_none()
         )
+        if existing is not None:
+            average_bindings.append((existing, plan))
         same = existing is not None and all(
             (
                 existing.class_type == row.get("class_type"),
@@ -990,7 +1018,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
             continue
         existing = _natural_fact(
             db, ctx.data_domain, ctx.academic_year_id, exam_name,
-            ident_id, row.get("subject"), row.get("total_type"),
+            ident_id, row.get("subject"), row.get("total_type"), event_choices[plan["filename"]], plan["exam_date"],
         )
         if existing is None:
             inserts.append(plan)
@@ -1132,6 +1160,26 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                     )
                     members_synced += 1
 
+        created_events = {}
+        for f in [*files, *average_files]:
+            eid = event_choices[f["filename"]]
+            key = (f["exam_name"], f.get("grade") or ctx.grade, f.get("exam_date"))
+            if eid is None:
+                if key not in created_events:
+                    created_events[key] = events.create_event(db, ay.id, key[1], key[0])
+                eid = created_events[key]
+            events.ensure_grade(db, eid, key[1])
+            event_choices[f["filename"]] = eid
+        for existing, plan in average_bindings:
+            if existing.exam_event_id is None:
+                existing.exam_event_id = event_choices[plan["filename"]]
+        for plan in batch_rows.values():
+            existing = _natural_fact(db, ctx.data_domain, ay.id, plan["exam_name"],
+                identity_by_alias[plan["row"]["alias"]], plan["row"].get("subject"), plan["row"].get("total_type"),
+                event_choices[plan["filename"]], plan["exam_date"])
+            if existing is not None and existing.exam_event_id is None:
+                existing.exam_event_id = event_choices[plan["filename"]]
+
         for plan in inserts:
             row = plan["row"]
             ident_id = identity_by_alias[row["alias"]]
@@ -1140,6 +1188,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                     data_domain=ctx.data_domain,
                     academic_year_id=ay.id,
                     exam_name=plan["exam_name"],
+                    exam_event_id=event_choices[plan["filename"]],
                     exam_date=plan["exam_date"],
                     class_ref_id=(
                         ctx.class_ids[0] if mode == "homeroom" else target_tc_id
@@ -1171,6 +1220,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
                     data_domain=ctx.data_domain,
                     academic_year_id=ay.id,
                     exam_name=plan["exam_name"],
+                    exam_event_id=event_choices[plan["filename"]],
                     exam_date=plan["exam_date"],
                     grade=plan["grade"],
                     class_type=row.get("class_type"),
@@ -1183,6 +1233,7 @@ def imports_confirm(req: ImportsConfirmRequest, db: Session = Depends(get_db)):
             )
         for existing, plan in average_revises:
             row = plan["row"]
+            existing.exam_event_id = event_choices[plan["filename"]]
             existing.exam_date = plan["exam_date"]
             existing.class_type = row.get("class_type")
             existing.teacher_name = row.get("teacher_name")

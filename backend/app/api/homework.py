@@ -2465,7 +2465,7 @@ def _exam_exists_in_domain(
         .filter(
             ScoreFact.data_domain == data_domain,
             ScoreFact.academic_year_id == academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .limit(1)
         .first()

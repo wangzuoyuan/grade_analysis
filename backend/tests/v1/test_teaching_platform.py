@@ -403,7 +403,8 @@ def test_legacy_score_date_conflict_does_not_attach_wrong_exam(env):
     e.db.commit()
     e.db.delete(e.db.get(TeachingExamScope,first));e.db.commit()
     p=preview(e,operation='supplement',exam_date='2030-11-02',files=[('补录.xlsx',detail(rows=[['SYN001','合成甲',60,67]]))])
-    assert p['errors'][0]['field']=='exam_date'
+    assert p['exam_resolution']['requires_choice']
+    assert any('补录须先存在' in err['message'] for err in p['errors'])
     confirm(e,p,409,revise=True)
     assert not e.db.query(TeachingExamScope).count()
     assert e.db.query(ScoreFact).one().grade_score is None
@@ -445,7 +446,48 @@ command.upgrade(cfg,'head')
 with engine.connect() as c:
  assert c.execute(text('SELECT score,teaching_exam_id FROM score_fact')).one()==(0,None)
  assert c.execute(text('PRAGMA foreign_key_check')).fetchall()==[]
- assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0019'
+ assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0020'
 '''
     r=subprocess.run([sys.executable,'-c',source],cwd=root,env=env,capture_output=True,text=True)
     assert r.returncode==0,r.stdout+r.stderr
+
+
+def test_canonical_event_reuse_and_same_name_different_date_choice(env):
+    from app.db.workspace_models import WorkspaceExamEvent
+    e=env
+    p=preview(e)
+    assert p['exam_resolution']['selected'] is None and not p['exam_resolution']['requires_choice']
+    first=confirm(e,p)['exam_id']
+    event=e.db.get(TeachingExamScope,first).exam_event_id
+    p=preview(e)
+    assert p['exam_resolution']['selected']==event and not p['exam_resolution']['requires_choice']
+    assert confirm(e,p)['skipped']==1
+    p=preview(e,exam_date='2030-12-01')
+    assert p['exam_resolution']['requires_choice'] and p['exam_resolution']['selected'] is None
+    confirm(e,p,409)
+    assert e.db.query(WorkspaceExamEvent).count()==1
+    second=confirm(e,p,exam_choice='new')['exam_id']
+    assert second!=first and e.db.query(TeachingExamScope).count()==2
+    for eid in (first,second):
+        assert e.client.get(API+f'/exams/{eid}/students').status_code==200
+        assert e.client.get(API+f'/exams/{eid}/compare').status_code==200
+    assert e.db.query(ScoreFact).count()==2
+    for member in e.db.query(TeachingClassMember):
+        member.valid_from=date(2025,9,1)
+    e.db.commit()
+    keys=e.client.get('/api/v1/shared/exams',params={'mode':'teaching','academic_year_id':e.year,'teaching_class_id':e.tc}).json()['exams']
+    assert len({r['exam_key'] for r in keys})==2
+    for r in keys:
+        response=e.client.get('/api/v1/teaching/analysis/exams/'+r['exam_key']+'/students',params={'academic_year_id':e.year,'teaching_class_id':e.tc})
+        assert response.status_code==200 and len(response.json()['students'])==1,response.text
+    assert e.client.get('/api/v1/teaching/analysis/exams/合成期中/students',params={'academic_year_id':e.year,'teaching_class_id':e.tc}).status_code==422
+
+
+def test_event_candidate_drift_rejects_without_scores(env):
+    from app.db.workspace_models import WorkspaceExamEvent
+    e=env
+    stale=preview(e)
+    first=confirm(e,preview(e))
+    original=e.db.query(ScoreFact).count()
+    confirm(e,stale,409)
+    assert e.db.query(ScoreFact).count()==original and e.db.query(WorkspaceExamEvent).count()==1

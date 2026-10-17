@@ -227,7 +227,7 @@ function ConflictChoiceRow({
   value: CanonicalSide | undefined
   onSelect: (side: CanonicalSide) => void
 }) {
-  const key = `${String(item.person_id)}|${item.subject}|${item.exam_name}`
+  const key = JSON.stringify([String(item.person_id), item.subject, item.exam_key ?? item.exam_name])
   const options: Array<{ domain: CanonicalSide; label: string; score: number | null }> = [
     { domain: 'homeroom', label: '班主任域', score: item.homeroom_score },
     { domain: 'teaching', label: '教学域', score: item.teaching_score },
@@ -548,8 +548,8 @@ export function HomeroomScores() {
         const sorted = sortExamsDesc(r.exams ?? [])
         setExams(sorted)
         if (sorted.length > 0) {
-          setSelectedExam(sorted.some((exam) => exam.exam_name === requestedExam) ? requestedExam : sorted[0].exam_name)
-          setFrequencyExamNames(sorted.slice(0, 5).map((exam) => exam.exam_name))
+          setSelectedExam((sorted.find((exam) => (exam.exam_key ?? exam.exam_name) === requestedExam || exam.exam_name === requestedExam)?.exam_key ?? sorted.find((exam) => exam.exam_name === requestedExam)?.exam_name ?? sorted[0].exam_key ?? sorted[0].exam_name))
+          setFrequencyExamNames(sorted.slice(0, 5).map((exam) => exam.exam_key ?? exam.exam_name))
         }
       })
       .catch((err: unknown) => {
@@ -797,8 +797,8 @@ export function HomeroomScores() {
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   const conflictKey = useCallback(
-    (c: Pick<ScoreConflictItem, 'person_id' | 'subject' | 'exam_name'>) =>
-      `${String(c.person_id)}|${c.subject}|${c.exam_name}`,
+    (c: Pick<ScoreConflictItem, 'person_id' | 'subject' | 'exam_name' | 'exam_key'>) =>
+      JSON.stringify([String(c.person_id), c.subject, c.exam_key ?? c.exam_name]),
     [],
   )
 
@@ -849,8 +849,9 @@ export function HomeroomScores() {
   const submitConfirm = useCallback(async () => {
     if (linkId == null) return
     const resolutions: CanonicalResolution[] = Object.entries(choices).map(([key, side]) => {
-      const [pid, subject, examName] = key.split('|')
-      return { person_id: Number(pid), subject, exam_name: examName, canonical_side: side }
+      const [pid, subject, examKey] = JSON.parse(key) as string[]
+      const selected = conflictList?.find(c => String(c.person_id) === pid && c.subject === subject && (c.exam_key ?? c.exam_name) === examKey)
+      return { person_id: Number(pid), subject, exam_name: selected?.exam_name ?? examKey, exam_key: selected?.exam_key, canonical_side: side }
     })
     if (resolutions.length === 0) return
     setSubmitting(true)
@@ -865,7 +866,7 @@ export function HomeroomScores() {
     } finally {
       setSubmitting(false)
     }
-  }, [choices, linkId])
+  }, [choices, linkId, conflictList])
 
   const maxBandCount = useMemo(
     () => Math.max(...(bands?.bands ?? []).map((b) => b.count), 1),
@@ -1221,10 +1222,10 @@ export function HomeroomScores() {
                           <p className="mb-2 text-xs font-medium text-slate-500">选择考试（可多选）</p>
                           <div className="flex flex-wrap gap-2">
                             {(exams ?? []).map((exam) => {
-                              const checked = frequencyExamNames.includes(exam.exam_name)
+                              const checked = frequencyExamNames.includes(exam.exam_key ?? exam.exam_name)
                               return (
                                 <label
-                                  key={exam.exam_name}
+                                  key={exam.exam_key ?? exam.exam_name}
                                   className={cn(
                                     'flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors',
                                     checked
@@ -1240,9 +1241,9 @@ export function HomeroomScores() {
                                         if (checked) {
                                           return current.length === 1
                                             ? current
-                                            : current.filter((name) => name !== exam.exam_name)
+                                            : current.filter((name) => name !== (exam.exam_key ?? exam.exam_name))
                                         }
-                                        return [...current, exam.exam_name]
+                                        return [...current, exam.exam_key ?? exam.exam_name]
                                       })
                                     }
                                   />

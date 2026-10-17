@@ -172,6 +172,7 @@ def test_e01_students_consistent_and_teaching_keys_clean(client, p3_seed, v1_see
         assert "total_type" not in row and "subject" not in row
         assert set(row) <= {
             "person_id", "name", "class_label", "score", "grade_score", "rank", "source_domain",
+        "shared_conflict",
         }
     # stats 响应同样无 totals/subjects（多科）键
     stats = client.get(

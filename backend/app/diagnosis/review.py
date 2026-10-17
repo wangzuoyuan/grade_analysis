@@ -120,7 +120,7 @@ def metric_points(
     meta = metric_meta_or_422(db, ctx, metric)
     unit = unit_of_metric(meta)
     entries = q.readable_facts(db, ctx, member_ids=[person_id])
-    exams = _group_exams(entries)
+    exams = _group_exams(entries, db)
     ordered = _ordered_exam_names(exams)
     source, key = meta["source"], meta["key"]
     points: List[Dict[str, Any]] = []

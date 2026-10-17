@@ -36,6 +36,7 @@ import statistics
 from datetime import date
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from app.api import _queries as q
 from app.analysis import definitions as defs
 from app.core.context import WorkspaceContext
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
@@ -130,7 +131,7 @@ def _exam_rows(db, ctx: WorkspaceContext, exam_name: str):
         .filter(
             ScoreFact.data_domain == ctx.data_domain,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .all()
     )
@@ -152,7 +153,7 @@ def _exam_date_of(db, ctx: WorkspaceContext, exam_name: str) -> Optional[date]:
         .filter(
             ScoreFact.data_domain == ctx.data_domain,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
             ScoreFact.class_ref_id.in_(list(ctx.class_ids)),
         )
         .all()
@@ -169,7 +170,7 @@ def _exam_date_of(db, ctx: WorkspaceContext, exam_name: str) -> Optional[date]:
         .filter(
             ScoreFact.data_domain == other,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .all()
     )
@@ -184,7 +185,7 @@ def _exam_in_domain(db, data_domain: str, academic_year_id: Optional[int], exam_
         .filter(
             ScoreFact.data_domain == data_domain,
             ScoreFact.academic_year_id == academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .limit(1)
         .first()

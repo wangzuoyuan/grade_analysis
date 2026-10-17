@@ -548,8 +548,8 @@ def test_exam_date_conflict_database_and_batch(client, v1_seed, tmp_path):
     assert r.status_code == 409, r.text
     body = r.json()
     assert body["error"] == "link_version_conflict"
-    assert body["date_conflicts"][0]["scope"] == "database"
-    assert body["date_conflicts"][0]["existing_dates"] == ["2025-11-06"]
+    assert prev.json()["items"][0]["exam_resolution"]["requires_choice"]
+    assert body["exam_resolution"]["requires_choice"]
 
     db = _db()
     try:
@@ -605,8 +605,8 @@ def test_exam_date_conflict_database_and_batch(client, v1_seed, tmp_path):
     )
     assert r_batch.status_code == 409
     body_batch = r_batch.json()
-    assert body_batch["date_conflicts"][0]["scope"] == "batch"
-    assert body_batch["date_conflicts"][0]["dates"] == ["2025-11-01", "2025-12-01"]
+    assert all(it["exam_resolution"]["requires_choice"] for it in items)
+    assert "批内同名" in body_batch["detail"]
 
     db = _db()
     try:

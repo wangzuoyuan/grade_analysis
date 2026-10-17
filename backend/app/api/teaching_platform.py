@@ -46,9 +46,17 @@ def scope(db, year_id, grade, subject=None, target=None):
     return ay,subject,ctx,tc
 
 
+from app.api import exam_events as events
+
+
 def get_exam(db,s):
-    return db.query(TeachingExamScope).filter_by(academic_year_id=s["academic_year_id"],
-        grade=s["grade"],subject=s["subject"],exam_name=s["exam_name"]).one_or_none()
+    query = db.query(TeachingExamScope).filter_by(academic_year_id=s["academic_year_id"],
+        grade=s["grade"],subject=s["subject"],exam_name=s["exam_name"],exam_date=date.fromisoformat(s["exam_date"]))
+    if s.get("resolved_event_id"):
+        query = query.filter(TeachingExamScope.exam_event_id.in_(events.event_ids(db, s["resolved_event_id"])))
+    elif s.get("exam_choice") == "new":
+        query = query.filter(TeachingExamScope.exam_event_id.is_(None))
+    return query.order_by(TeachingExamScope.id.desc()).first()
 
 
 def get_roster(db,s):
@@ -184,8 +192,9 @@ def plan(db, s, mapping, ctx=None):
             continue
         ident=mapping.get(alias)
         class_id=assignments.get(alias) if s.get("auto_assign") else s["teaching_class_id"]
-        existing = db.query(ScoreFact).filter_by(data_domain="teaching",academic_year_id=s["academic_year_id"],
-            exam_name=s["exam_name"],identity_id=ident,subject_key=s["subject"],total_key="").one_or_none() if ident else None
+        from app.api.imports import _natural_fact
+        existing = _natural_fact(db, "teaching", s["academic_year_id"], s["exam_name"], ident,
+            s["subject"], None, s.get("resolved_event_id"), date.fromisoformat(s["exam_date"])) if ident else None
         if existing and (existing.class_ref_id!=class_id or existing.teaching_exam_id not in (None,exam.id if exam else None)):
             errors.append({"alias":alias,"message":"已有成绩属于其他班级/考试范围"})
             continue
@@ -296,6 +305,8 @@ async def preview(request: Request, db: Session=Depends(get_db)):
     s={"kind":"teaching_platform","academic_year_id":ay.id,"grade":grade,"subject":subject,
         "exam_name":name,"exam_date":exam_date.isoformat(),"teaching_class_id":target,"operation":operation,"files":files,
         "replace_roster":form.get("replace_roster")=="true","auto_assign":auto}
+    s["exam_resolution"] = events.candidates(db, ctx, name, grade, s["exam_date"])
+    s["resolved_event_id"] = s["exam_resolution"]["selected"]
     students,_,_,_=merged_files(s)
     mapping,new,candidates=identities(db,s,students)
     p=plan(db,s,mapping,ctx)
@@ -308,11 +319,12 @@ async def preview(request: Request, db: Session=Depends(get_db)):
     return {"token":token,"expires_at":expires.isoformat(),"scope":{k:s[k] for k in ("academic_year_id","grade","subject","exam_name","exam_date","operation")},
         "items":[{k:v for k,v in f.items() if k not in ("rows",)} | {"row_count":len(f["rows"])} for f in files],
         **{k:p[k] for k in ("changes","conflicts","errors","roster_changes")},
-        "new_students":new,"identity_candidates":candidates}
+        "new_students":new,"identity_candidates":candidates,"exam_resolution":s["exam_resolution"]}
 
 
 class ConfirmRequest(BaseModel):
     token: str
+    exam_choice: int | str | None = None
     revise: bool=False
     accept_roster_changes: bool=False
     identity_confirmations: dict[str,int]=Field(default_factory=dict)
@@ -336,6 +348,9 @@ def confirm(req: ConfirmRequest, db: Session=Depends(get_db)):
         ay,subject,ctx,tc=scope(db,s["academic_year_id"],s["grade"],s["subject"],s["teaching_class_id"])
         if state(db,s,ctx)!=s["state_digest"]:
             raise LinkVersionConflict("预览后的数据或范围已变化，请重新预览")
+        s["resolved_event_id"] = events.resolve(db, ctx, s["exam_name"], s["grade"], s["exam_date"],
+            s.get("exam_resolution"), req.exam_choice)
+        s["exam_choice"] = req.exam_choice
         students,_,_,_=merged_files(s)
         mapping,new,candidates=identities(db,s,students,req.identity_confirmations,req.identity_new_aliases,True)
         p=plan(db,s,mapping,ctx)
@@ -348,11 +363,15 @@ def confirm(req: ConfirmRequest, db: Session=Depends(get_db)):
         if s["operation"]=="supplement" and new:
             raise LinkVersionConflict("补录不创建学生")
         exam=get_exam(db,s)
+        if s.get("resolved_event_id") is None:
+            s["resolved_event_id"] = events.create_event(db, ay.id, s["grade"], s["exam_name"])
         if not exam:
             exam=TeachingExamScope(academic_year_id=ay.id,grade=s["grade"],subject=subject,
-                exam_name=s["exam_name"],exam_date=date.fromisoformat(s["exam_date"]),class_snapshot=[],aggregates=[])
+                exam_name=s["exam_name"],exam_event_id=s["resolved_event_id"],exam_date=date.fromisoformat(s["exam_date"]),class_snapshot=[],aggregates=[])
             db.add(exam)
             db.flush()
+        events.ensure_grade(db, s["resolved_event_id"], s["grade"])
+        exam.exam_event_id = s["resolved_event_id"]
         prior={"snapshot":exam.class_snapshot,"aggregates":exam.aggregates,"revision":exam.data_revision}
         changed_snapshot=exam.class_snapshot!=p["snapshot"]
         exam.class_snapshot=p["snapshot"]
@@ -418,6 +437,7 @@ def confirm(req: ConfirmRequest, db: Session=Depends(get_db)):
                 existing.data_revision=(existing.data_revision or 1)+1
             else:
                 skipped+=1
+            existing.exam_event_id=exam.exam_event_id
             existing.teaching_exam_id=exam.id
             for k,v in updates.items():
                 setattr(existing,k,v)
@@ -456,8 +476,14 @@ def checked_exam(db,exam_id):
 @domain_endpoint
 def list_exams(academic_year_id:int,grade:int,subject:str|None=None,db:Session=Depends(get_db)):
     ay,subject,_,_=scope(db,academic_year_id,grade,subject)
-    return {"exams":[{"id":e.id,"exam_name":e.exam_name,"exam_date":e.exam_date.isoformat(),"grade":e.grade,"subject":e.subject}
-        for e in db.query(TeachingExamScope).filter_by(academic_year_id=ay.id,grade=grade,subject=subject).order_by(TeachingExamScope.exam_date.desc(),TeachingExamScope.id.desc())]}
+    rows = db.query(TeachingExamScope).filter_by(academic_year_id=ay.id,grade=grade,subject=subject).order_by(TeachingExamScope.exam_date.desc(),TeachingExamScope.id.desc())
+    roots = events.canonical_map(db, ay.id)
+    exams = {}
+    for e in rows:
+        key = roots[e.exam_event_id] if e.exam_event_id else f"platform:{e.id}"
+        exams.setdefault(key, {"id":e.id,"exam_name":events.exam_label(db, f"event:{key}") if e.exam_event_id else e.exam_name,
+            "exam_date":e.exam_date.isoformat(),"grade":e.grade,"subject":e.subject})
+    return {"exams":list(exams.values())}
 
 
 def student_rows(db,exam,ctx,target=None):
@@ -470,8 +496,10 @@ def student_rows(db,exam,ctx,target=None):
     if not ids:
         return []
     members=q.members_at(db,"teaching",ids,exam.exam_date)
-    entries=q.readable_facts(db,ctx,exam.exam_name,member_ids=members,class_ids=ids,teaching_exam_id=exam.id)
-    entries=[e for e in entries if e.fact.teaching_exam_id==exam.id or (e.source_domain=="homeroom" and e.fact.exam_date==exam.exam_date)]
+    selector=f"event:{events.canonical_id(db, exam.exam_event_id)}" if exam.exam_event_id else exam.exam_name
+    entries=q.readable_facts(db,ctx,selector,member_ids=members,class_ids=ids,teaching_exam_id=exam.id)
+    entries=[e for e in entries if e.fact.exam_date==exam.exam_date and
+        (exam.exam_event_id is not None or e.fact.teaching_exam_id==exam.id or e.source_domain=="homeroom")]
     ranks=_rank_map([(e.person_id,e.fact.score) for e in entries])
     names=q.names_for(db,[e.person_id for e in entries])
     labels={c.id:c.label for c in db.query(TeachingClass).filter(TeachingClass.id.in_(ids))}

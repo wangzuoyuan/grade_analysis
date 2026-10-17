@@ -11,6 +11,7 @@
 import { AlertTriangle, FileSpreadsheet } from 'lucide-react'
 
 import type { ImportPreviewItem } from '@/lib/api-v1'
+import { ExamResolutionSelect } from './ExamResolutionSelect'
 import { Badge } from '@/components/ui/badge'
 import {
   Table,
@@ -32,7 +33,7 @@ function examCell(it: ImportPreviewItem): string {
   return `${it.exam_name}（${date}）`
 }
 
-export function ImportsPreviewTable({ items }: { items: ImportPreviewItem[] }) {
+export function ImportsPreviewTable({ items, examChoices = {}, onExamChoice }: { items: ImportPreviewItem[]; examChoices?: Record<string, number | string>; onExamChoice?: (filename: string, choice: number | string) => void }) {
   return (
     <div className="overflow-x-auto">
       <Table>
@@ -63,6 +64,7 @@ export function ImportsPreviewTable({ items }: { items: ImportPreviewItem[] }) {
               </TableCell>
               <TableCell className="whitespace-nowrap text-xs text-slate-600">
                 {examCell(it)}
+                <ExamResolutionSelect resolution={it.exam_resolution} value={examChoices[it.filename]} onChange={v => onExamChoice?.(it.filename, v)}/>
               </TableCell>
               <TableCell className="whitespace-nowrap text-xs text-slate-600">
                 {it.subject ?? '全科'} · {it.class_label ?? '—'}

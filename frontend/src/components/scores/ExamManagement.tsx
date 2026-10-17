@@ -11,6 +11,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { MetricFill } from './MetricFill'
+import { ExamMerge } from './ExamMerge'
 import { ScoreYearPicker } from './ScoreYearPicker'
 
 function ExamRow({ exam, pending, onDelete, mode }: { exam: ManagedExam; pending: boolean; onDelete: (exam: ManagedExam) => void; mode: WorkspaceMode }) {
@@ -23,6 +25,7 @@ function ExamRow({ exam, pending, onDelete, mode }: { exam: ManagedExam; pending
       <p className="text-xs text-slate-500">{exam.grade ? `高${['一', '二', '三'][exam.grade - 1]}` : '年级未注明'}{exam.subject ? ` · ${exam.subject}` : ''} · {exam.dates.join(' / ') || '日期未注明'}</p>
       <p className="break-words text-xs text-slate-500">{exam.classes.length ? exam.classes.join('、') : '全年级统计参照'}</p>
       <p className="text-xs tabular-nums text-slate-600">本域学生 {exam.student_count} 人 · 成绩 {exam.score_count} 条 · 班级均分 {exam.average_count} 行 · 官方质量 {exam.quality_count} 行{exam.projected_students ? ` · 另有 ${exam.projected_students} 位学生的关联成绩` : ''}</p>
+      <details className="text-xs text-slate-600"><summary>查看来源与字段差异</summary><p className="mt-2">来源：{exam.sources?.map(s => s === 'homeroom' ? '班主任工作台' : '教学工作台').join('、') || exam.source_label} · 字段差异 {exam.conflicts?.length ?? 0} 组</p>{exam.conflicts?.map((c, i) => <div key={i}><p className="mt-2 font-medium">{c.name ?? '未命名学生'}</p><p>{Object.entries(c.fields).map(([f, v]) => `${({score:'原始分',grade_score:'等级分',grade_percentile:'年级百分位'} as Record<string,string>)[f] ?? f}：本域 ${v.own ?? '—'} / 关联 ${v.other ?? '—'}`).join('；')}</p>{c.fact_id && !c.fields.score && Object.entries(c.fields).some(([field, value]) => field !== 'score' && value.own == null && value.other != null) ? <MetricFill factId={c.fact_id} mode={mode}/> : null}</div>)}</details>
       {!exam.can_delete && <p className="text-xs text-slate-500">来自{mode === 'homeroom' ? '教学' : '班主任'}工作台，请到来源工作台管理。</p>}
     </div>
     <div className="flex shrink-0 items-center gap-2">
@@ -109,13 +112,14 @@ export function ExamManagement({ mode }: { mode: WorkspaceMode }) {
         <div className="flex flex-wrap items-end gap-3">
           <ScoreYearPicker />
           {mode === 'teaching' && <label className="space-y-1 text-xs text-slate-500"><span className="block">年级</span><select aria-label="考试管理年级" value={grade} onChange={e => { setGrade(e.target.value); setNotice('') }} className="h-9 w-40 rounded-md border border-slate-200 bg-white py-1 pl-2 text-sm"><option value="">全部年级</option><option value="1">高一</option><option value="2">高二</option><option value="3">高三</option></select></label>}
-          <label className="min-w-0 flex-1 space-y-1 text-xs text-slate-500"><span className="block">搜索考试</span><Input aria-label="搜索考试名称" placeholder="输入考试名称" value={search} onChange={e => setSearch(e.target.value)} className="h-9 min-w-0" /></label>
+          <label className="min-w-[180px] flex-1 space-y-1 text-xs text-slate-500"><span className="block">搜索考试</span><Input aria-label="搜索考试名称" placeholder="输入考试名称" value={search} onChange={e => setSearch(e.target.value)} className="h-9 min-w-0" /></label>
           <Button variant="outline" size="sm" onClick={() => { setNonce(n => n + 1); setNotice('') }}><RefreshCw className="h-4 w-4" />刷新</Button>
         </div>
         {notice && <p role="status" className="rounded-lg border border-sky-100 bg-sky-50 p-3 text-sm text-sky-800">{notice}</p>}
         {message && <p role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-700"><AlertCircle className="h-4 w-4 shrink-0" />{message}</p>}
         {!data && !message && <Skeleton className="h-48 w-full" />}
         {data && <p className="text-xs text-slate-500">当前范围共 {data.length} 场，显示 {visible.length} 场。</p>}
+        {data && <ExamMerge key={key} exams={data} mode={mode} query={query} onComplete={() => { setNotice('考试归属已关联，来源成绩已保留。'); refreshScope() }}/>}
         {visible.map(exam => <ExamRow key={exam.key} exam={exam} pending={preparing || deleting} onDelete={prepare} mode={mode} />)}
         {data && !visible.length && <p className="rounded-lg bg-slate-50 p-6 text-center text-sm text-slate-500">{data.length ? '没有匹配的考试，请调整搜索。' : '当前范围暂无考试，可前往数据上传导入。'}</p>}
       </CardContent>

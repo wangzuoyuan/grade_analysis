@@ -142,7 +142,7 @@ export function TeachingScores() {
         const sorted = sortExamsDesc(r.exams ?? [])
         setExams(sorted)
         if (sorted.length > 0) {
-          setSelectedExam(sorted.some((exam) => exam.exam_name === requestedExam) ? requestedExam : sorted[0].exam_name)
+          setSelectedExam((sorted.find((exam) => (exam.exam_key ?? exam.exam_name) === requestedExam || exam.exam_name === requestedExam)?.exam_key ?? sorted.find((exam) => exam.exam_name === requestedExam)?.exam_name ?? sorted[0].exam_key ?? sorted[0].exam_name))
         }
       })
       .catch((err: unknown) => {
@@ -464,6 +464,7 @@ export function TeachingScores() {
                                         : String(g.ranks.get(s.person_id))}
                                     </TableCell>
                                     <TableCell>
+                                      {s.shared_conflict?.fields && <details className="mb-1 text-xs text-amber-700"><summary>来源字段待核对</summary>{Object.entries(s.shared_conflict.fields).map(([field, value]) => <p key={field}>{({score:'原始分',grade_score:'等级分',grade_percentile:'年级百分位'} as Record<string,string>)[field] ?? field}：本域 {value.own ?? '—'} / 关联 {value.other ?? '—'}</p>)}</details>}
                                       {s.source_domain === 'homeroom' ? (
                                         <Badge variant="outline">班主任域投影</Badge>
                                       ) : (

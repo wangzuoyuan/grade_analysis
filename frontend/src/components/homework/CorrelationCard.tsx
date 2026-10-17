@@ -21,11 +21,11 @@ function Coefficient({ title, value, help }: { title: string; value: PersonalCor
   return <div className="min-w-0 rounded-lg border border-sky-100 bg-sky-50/40 p-3">
     <h4 className="text-sm font-medium text-slate-700">{title}</h4>
     <p className="mt-2 text-lg font-semibold tabular-nums text-slate-800">
-      {value.rho == null ? '暂不能判断' : `ρ = ${value.rho.toFixed(3)}`}
+      {value.tau == null ? '先看逐场变化' : `τb = ${value.tau.toFixed(3)}`}
     </p>
-    <p className="mt-1 text-xs text-slate-500">{value.n} 场配对{value.r == null ? '' : ` · Pearson r = ${value.r.toFixed(3)}`}</p>
+    <p className="mt-1 text-xs text-slate-500">{value.n} 场配对{value.rho == null ? '' : ` · Spearman ρ = ${value.rho.toFixed(3)}`}</p>
     {value.reason && <p className="mt-2 text-xs text-amber-700">{personalReason(value.reason)}</p>}
-    {value.rho_without_one && <p className="mt-2 text-xs text-slate-500">删去任一场后 ρ：{value.rho_without_one.map(v => v.toFixed(2)).join(' ～ ')}{value.sensitive ? '（变化较大）' : ''}</p>}
+    {value.tau_without_one && <p className="mt-2 text-xs text-slate-500">删去任一场后 τb：{value.tau_without_one?.map(v => v.toFixed(2)).join(' ～ ')}{value.sensitive ? '（变化较大）' : ''}</p>}
     <p className="mt-2 text-xs leading-relaxed text-slate-500">{help}</p>
   </div>
 }
@@ -85,9 +85,9 @@ function StudentDetail({ student, mode }: { student: PersonalHomeworkStudent; mo
       {high1 && <p className="text-xs text-slate-500">高一百分位图向上代表更靠前；系数使用100−前百分比，使正相关统一表示提交率较高时表现更好。进步以减少的百分位百分点表示。</p>}
     </div>}
     <div className="grid gap-2 xl:grid-cols-3">
-      <Coefficient title="提交率 × 成绩水平" value={student.correlations.submission} help="ρ为正表示该生提交率较高的考试，表现也更好；高一对应前百分比更小，高二三对应等级分更高。相关不表示作业带来了提分。" />
+      <Coefficient title="提交率 × 成绩水平" value={student.correlations.submission} help="τb为正表示该生提交率较高的考试，表现也更好；高一对应前百分比更小，高二三对应等级分更高。相关不表示作业带来了提分。" />
       <Coefficient title="提交率 × 较上次进步" value={student.correlations.progress} help="用本次考前提交率配对相邻两次考试的进步；缺考、指标缺失或跨年级时不补连。" />
-      <Coefficient title="负面评价率 × 成绩水平" value={student.correlations.negative} help="ρ为负表示已评价作业中负面评价较多时表现较差。仅纳入有评价≥3份且覆盖已交作业≥50%的窗口。" />
+      <Coefficient title="负面评价率 × 成绩水平" value={student.correlations.negative} help="τb为负表示已评价作业中负面评价较多时表现较差。仅纳入有评价≥3份且覆盖已交作业≥50%的窗口。" />
     </div>
     <div className="rounded-lg border border-sky-100 bg-sky-50 p-3 text-sm leading-relaxed text-slate-700"><span className="font-medium">跟进建议：</span>{student.advice}</div>
     {student.caveats.length > 0 && <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-amber-800">{student.caveats.map(text => <li key={text}>{text}</li>)}</ul>}
@@ -156,7 +156,7 @@ export function CorrelationCard({ mode, scopeQ, scopeSubject, generation, prefer
         <label className="min-w-0 space-y-1 text-xs text-slate-600"><span>考试范围（当前学年）</span><select aria-label="个人分析考试范围" value={cutoff} onChange={e => setCutoff(e.target.value)} className={selectClass}><option value="parent">截至上方所选考试</option><option value="all">当前学年全部考试</option></select></label>
         <Button variant="outline" disabled={!subject} onClick={() => setNonce(n => n + 1)}><RefreshCw className="mr-1 h-4 w-4" />重新分析</Button>
       </div>
-      <p className="text-xs leading-relaxed text-slate-500">一场考试算一次观察；不含考试当日与考后作业。与上一场考试次日截断，避免重复使用作业。每窗至少3份有效作业、至少6场配对才显示探索相关系数。</p>
+      <p className="text-xs leading-relaxed text-slate-500">一场考试算一次观察；不含考试当日与考后作业。与上一场考试次日截断，避免重复使用作业。1场看当场信息，2至3场看相邻变化；每窗至少3份有效作业、4场有效配对起显示探索性关联。四场不保证关系可靠，四场最多只有3组相邻进步。</p>
       {!subject && <p className="text-sm text-amber-700">请先在设置中配置任教学科。</p>}
       {message && <div role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 p-3 text-sm text-rose-700"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /><span>{message}。可调整学科、年级或考试范围后重试。</span></div>}
       {subject && !data && !message && <div role="status" aria-label="正在分析个人记录"><Skeleton className="h-48 w-full" /></div>}
@@ -175,7 +175,7 @@ export function CorrelationCard({ mode, scopeQ, scopeSubject, generation, prefer
           </div>
           {student && <StudentDetail key={student.person_id} student={student} mode={mode} />}
         </div>
-        <p className="border-t border-slate-100 pt-3 text-xs leading-relaxed text-slate-500">{data.note} Spearman ρ为主，Pearson r为辅。删一场后的范围是敏感性检查，不是置信区间。请假、忘带、出勤不计入提交率分子分母；没有评价不代表优良。这些观察不构成因果结论或提分保证。</p>
+        <p className="border-t border-slate-100 pt-3 text-xs leading-relaxed text-slate-500">{data.note} Kendall τb为主（考虑并列），Spearman ρ供对照。删一场后的范围是敏感性检查，不是置信区间。请假、忘带、出勤不计入提交率分子分母；没有评价不代表优良。这些观察不构成因果结论或提分保证。</p>
       </>}
     </CardContent>
   </Card>

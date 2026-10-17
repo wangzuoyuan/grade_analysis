@@ -57,6 +57,7 @@ from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.api import _queries as q
 from app.analysis import definitions as defs
 from app.core.context import WorkspaceContext
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
@@ -215,7 +216,7 @@ def _exam_anchor(db: Session, ctx: WorkspaceContext, exam_name: str):
         .filter(
             ScoreFact.data_domain == ctx.data_domain,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .all()
     )
@@ -228,7 +229,7 @@ def _exam_anchor(db: Session, ctx: WorkspaceContext, exam_name: str):
             .filter(
                 ScoreFact.data_domain == other,
                 ScoreFact.academic_year_id == ctx.academic_year_id,
-                ScoreFact.exam_name == exam_name,
+                q.exam_predicate(db, ScoreFact, exam_name),
             )
             .all()
             if row[0]
@@ -254,7 +255,7 @@ def _exam_date_of(db: Session, ctx: WorkspaceContext, exam_name: str) -> Optiona
         .filter(
             ScoreFact.data_domain == ctx.data_domain,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
             ScoreFact.class_ref_id.in_(list(ctx.class_ids)),
         )
         .all()
@@ -266,7 +267,7 @@ def _exam_date_of(db: Session, ctx: WorkspaceContext, exam_name: str) -> Optiona
         .filter(
             ScoreFact.data_domain == ctx.data_domain,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .all()
     )
@@ -278,7 +279,7 @@ def _exam_date_of(db: Session, ctx: WorkspaceContext, exam_name: str) -> Optiona
         .filter(
             ScoreFact.data_domain == other,
             ScoreFact.academic_year_id == ctx.academic_year_id,
-            ScoreFact.exam_name == exam_name,
+            q.exam_predicate(db, ScoreFact, exam_name),
         )
         .all()
     )

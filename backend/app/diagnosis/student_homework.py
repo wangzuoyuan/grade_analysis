@@ -10,10 +10,10 @@ from app.analysis.definitions import normalized_percentile
 from app.api import _queries as q
 from app.api import homework as hw
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
-from app.db.workspace_models import AdministrativeClass, TeachingClass, TeachingExamScope
+from app.db.workspace_models import AdministrativeClass, TeachingClass, TeachingExamScope, WorkspaceExamEvent
 from app.diagnosis.correlation import _as_context, _pearson, _spearman
 
-MIN_EXAMS = 6
+MIN_EXAMS = 4
 MIN_HOMEWORK = 3
 MIN_EVALUATIONS = 3
 
@@ -26,28 +26,41 @@ def _rounded(value):
     return round(value, 4) if value is not None else None
 
 
+def _kendall_tau_b(xs, ys):
+    concordance = untied_x = untied_y = 0
+    for i in range(len(xs)):
+        for j in range(i):
+            dx = (xs[i] > xs[j]) - (xs[i] < xs[j])
+            dy = (ys[i] > ys[j]) - (ys[i] < ys[j])
+            concordance += dx * dy
+            untied_x += dx != 0
+            untied_y += dy != 0
+    denominator = math.sqrt(untied_x * untied_y)
+    return concordance / denominator if denominator else None
+
+
 def _correlation(pairs):
-    """Six is an operational guardrail, never a significance claim."""
+    """Four is a display policy, not statistical assurance. Ties use tau-b."""
     n = len(pairs)
-    result = {"n": n, "r": None, "rho": None, "reason": None,
-              "rho_without_one": None, "sensitive": False}
-    if n < MIN_EXAMS:
-        result["reason"] = "insufficient_exams"
-        return result
+    result = {"n": n, "r": None, "rho": None, "tau": None, "reason": None,
+              "rho_without_one": None, "tau_without_one": None, "sensitive": False}
     xs, ys = [p[0] for p in pairs], [p[1] for p in pairs]
-    if len(set(xs)) < 2:
+    if n >= 2 and len(set(xs)) < 2:
         result["reason"] = "homework_unchanged"
-        return result
-    if len(set(ys)) < 2:
+    elif n >= 2 and len(set(ys)) < 2:
         result["reason"] = "achievement_unchanged"
+    elif n < MIN_EXAMS:
+        result["reason"] = "insufficient_exams"
+    if result["reason"]:
         return result
-    result.update(r=_rounded(_pearson(xs, ys)), rho=_rounded(_spearman(xs, ys)))
-    leave_one = [_spearman(xs[:i] + xs[i + 1:], ys[:i] + ys[i + 1:]) for i in range(n)]
-    values = [v for v in leave_one if v is not None]
-    if values:
-        lo, hi = min(values), max(values)
-        result["rho_without_one"] = [_rounded(lo), _rounded(hi)]
-        result["sensitive"] = (len(values) != n or lo <= 0 <= hi or hi - lo > .5)
+    result.update(r=_rounded(_pearson(xs, ys)), rho=_rounded(_spearman(xs, ys)), tau=_rounded(_kendall_tau_b(xs, ys)))
+    for method, name in ((_kendall_tau_b, "tau_without_one"), (_spearman, "rho_without_one")):
+        values = [method(xs[:i] + xs[i + 1:], ys[:i] + ys[i + 1:]) for i in range(n)]
+        valid = [v for v in values if v is not None]
+        if valid:
+            lo, hi = min(valid), max(valid)
+            result[name] = [_rounded(lo), _rounded(hi)]
+            result["sensitive"] |= len(valid) != n or lo <= 0 <= hi or hi - lo > .5
     return result
 
 
@@ -113,6 +126,7 @@ def _catalog(db, ctx, subject):
     platform = {row.id: row for row in db.query(TeachingExamScope).filter(
         TeachingExamScope.academic_year_id == ctx.academic_year_id,
         TeachingExamScope.subject == subject).all()} if ctx.mode == "teaching" else {}
+    roots = q.canonical_map(db, ctx.academic_year_id)
     grouped = {}
     membership_cache = {}
     for entry in q.readable_facts(db, ctx):
@@ -122,8 +136,13 @@ def _catalog(db, ctx, subject):
         cls = classes.get(entry.class_ref_id)
         class_grade = cls.grade if cls is not None else None
         exam = platform.get(f.teaching_exam_id)
-        exam_grade = exam.grade if exam else class_grade
-        conflict = exam is not None and class_grade is not None and exam_grade != class_grade
+        if exam is None and f.exam_event_id is None and entry.projected:
+            candidates = [e for e in platform.values() if e.exam_name == f.exam_name
+                          and e.exam_date == f.exam_date and class_grade in (None, e.grade)]
+            exam = candidates[0] if len(candidates) == 1 else None
+        event = db.get(WorkspaceExamEvent, roots[f.exam_event_id]) if f.exam_event_id else None
+        exam_grade = event.grade if event and event.grade is not None else exam.grade if exam else class_grade
+        conflict = (exam is not None or event is not None) and class_grade is not None and exam_grade != class_grade
         # IDs keep same-name platform exams in different grades separate.
         precision = f.exam_date_precision or "day"
         day = f.exam_date if precision == "day" else None
@@ -133,8 +152,8 @@ def _catalog(db, ctx, subject):
                 membership_cache[membership_key] = set(q.members_at(db, ctx.mode, [entry.class_ref_id], day))
             if entry.person_id not in membership_cache[membership_key]:
                 continue
-        key = f"platform:{exam.id}" if exam else f"legacy:{f.exam_name}:{day or f.source_exam_date}:{exam_grade}"
-        bucket = grouped.setdefault(key, dict(key=key, exam_name=f.exam_name, date=day,
+        key = q.fact_key(db, f, roots) if f.exam_event_id else f"platform:{exam.id}" if exam else f"{q.fact_key(db, f, roots)}:grade:{exam_grade}"
+        bucket = grouped.setdefault(key, dict(key=key, exam_name=event.exam_name if event else f.exam_name, date=day,
             grade=exam_grade, grade_conflict=False, date_conflict=False, classes=set(), facts={}))
         bucket["grade_conflict"] |= conflict
         bucket["date_conflict"] |= day != bucket["date"] or (exam is not None and day is not None and day != exam.exam_date)
@@ -230,12 +249,17 @@ def _summarize(pid, name, alias, labels, timeline, uncertain_order=False):
                     (("submission", level), ("progress", gain), ("negative", quality))}
     if mixed:
         for result in correlations.values():
-            result.update(r=None, rho=None, reason="mixed_grades", rho_without_one=None, sensitive=False)
+            result.update(r=None, rho=None, tau=None, reason="mixed_grades", rho_without_one=None, tau_without_one=None, sensitive=False)
+    if not mixed:
+        if correlations["negative"]["reason"] == "insufficient_exams":
+            correlations["negative"]["reason"] = "insufficient_evaluations"
+        if correlations["progress"]["reason"] == "insufficient_exams":
+            correlations["progress"]["reason"] = "insufficient_progress_pairs"
     caveats = []
     if unordered:
         caveats.append("部分考试日期不完整，无法确认相邻顺序，暂不计算较上次进步。")
     if len(level) < 10:
-        caveats.append("有效考试较少，结果仅供初步观察；6场是展示门槛，不代表统计显著。")
+        caveats.append("有效考试较少，结果仅供初步观察；4场是展示策略，不代表稳定关系或统计显著。")
     if level and max(x for x, _ in level) - min(x for x, _ in level) < .1:
         caveats.append("提交率集中，难以区分变化；请结合明确评价与作业内容观察。")
     if level and len({x for x, _ in level}) < 3:
@@ -280,7 +304,7 @@ def student_homework_analysis(db, scope, subject=None, window_days=14,
     unordered_people = set().union(*(e["members"] for e in exams if e["date"] is None or e["date_conflict"]))
     cutoff_note = ""
     if end_exam_name:
-        matches = [e for e in all_exams if e["exam_name"] == end_exam_name]
+        matches = [e for e in all_exams if e["key"] == end_exam_name or e["exam_name"] == end_exam_name or e["key"].rsplit(":grade:", 1)[0] == end_exam_name or (end_exam_name.startswith("legacy:") and e["exam_name"] == end_exam_name[7:].rsplit("|", 1)[0] and str(e["date"] or "") == end_exam_name.rsplit("|", 1)[1])]
         if len(matches) > 1 and grade is not None:
             matches = [e for e in matches if e["grade"] == grade]
         if not matches:
@@ -318,7 +342,7 @@ def student_homework_analysis(db, scope, subject=None, window_days=14,
         students.append(_summarize(pid, names.get(pid), aliases.get(pid), [c.label for c in own_classes], timeline,
                                    uncertain_order=pid in unordered_people))
     students.sort(key=lambda s: q.roster_sid_sort_key(s["alias"], None, s["name"], s["person_id"]))
-    return dict(calc_version="student-homework-v1", mode=ctx.mode, academic_year_id=ctx.academic_year_id,
+    return dict(calc_version="student-homework-v2", mode=ctx.mode, academic_year_id=ctx.academic_year_id,
                 subject=subject, window_days=window_days, end_exam_name=end_exam_name,
                 minimum_exams=MIN_EXAMS, minimum_homework=MIN_HOMEWORK, students=students,
                 note="高一用年级百分位（越小越靠前），计算系数时转换为100−前百分比；高二、高三用等级分。"

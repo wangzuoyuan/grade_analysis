@@ -106,7 +106,7 @@ def _metric_sides(decomposition, meta, unit):
 
 def _imbalance(db, ctx, pid, decomposition, from_exam, to_exam, member):
     # B3 提供单科前后值，基准百分位按同场可读事实取值，不用名次估算。
-    buckets = _group_exams(q.readable_facts(db, ctx, member_ids=[pid]))
+    buckets = _group_exams(q.readable_facts(db, ctx, member_ids=[pid]), db)
     base = {}
     for side, exam in (("from", from_exam), ("to", to_exam)):
         fact = (buckets.get(exam) or {}).get("totals", {}).get("主三门")

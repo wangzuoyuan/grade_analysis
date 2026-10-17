@@ -33,6 +33,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.orm import validates
 
@@ -351,6 +352,18 @@ class SourceMap(Base):
 # 成绩事实与导入批次
 # ─────────────────────────────────────────────────────────────
 
+class WorkspaceExamEvent(Base):
+    """Stable cross-workspace event identity; merging never rewrites score values."""
+    __tablename__ = "workspace_exam_event"
+    id = Column(Integer, primary_key=True)
+    academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
+    grade = Column(Integer, nullable=True)
+    exam_name = Column(String(128), nullable=False)
+    merged_into_id = Column(Integer, ForeignKey("workspace_exam_event.id"), nullable=True)
+    data_revision = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ScoreFact(Base):
     """按域分区的成绩事实。class_ref_id 为多态引用（不建数据库外键）：
     data_domain='homeroom' 时指 administrative_class.id，
@@ -371,6 +384,7 @@ class ScoreFact(Base):
     data_domain = Column(String(16), nullable=False)
     academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
     exam_name = Column(String(128), nullable=False)
+    exam_event_id = Column(Integer, ForeignKey("workspace_exam_event.id", name="fk_scorefact_event"), nullable=True)
     exam_date = Column(Date, nullable=True)
     # 原库考试日期可能只有 YYYY-MM。exam_date 仅在原始值为完整日时填写；
     # source_exam_date/precision 保留事实，避免为共享门伪造某一天。
@@ -402,11 +416,8 @@ class ScoreFact(Base):
             "data_domain IN ('homeroom', 'teaching')",
             name="ck_score_fact_domain",
         ),
-        UniqueConstraint(
-            "data_domain", "academic_year_id", "exam_name", "identity_id",
-            "subject_key", "total_key",
-            name="uq_score_fact_natural_key",
-        ),
+        Index("uq_score_fact_natural_key", "data_domain", "academic_year_id", text("CASE WHEN exam_event_id IS NULL THEN 'name:' || exam_name ELSE 'event:' || exam_event_id END"),
+              "identity_id", "subject_key", "total_key", unique=True),
         Index("idx_score_fact_scope", "data_domain", "academic_year_id", "identity_id"),
         Index("idx_score_fact_class_ref", "data_domain", "class_ref_id"),
     )
@@ -427,12 +438,13 @@ class TeachingExamScope(Base):
     grade = Column(Integer, nullable=False)
     subject = Column(String(32), nullable=False)
     exam_name = Column(String(128), nullable=False)
+    exam_event_id = Column(Integer, ForeignKey("workspace_exam_event.id", name="fk_teachingexamscope_event"), nullable=True)
     exam_date = Column(Date, nullable=False)
     class_snapshot = Column(JSON, nullable=False, default=list)
     aggregates = Column(JSON, nullable=False, default=list)
     data_revision = Column(Integer, nullable=False, default=1)
     __table_args__ = (
-        UniqueConstraint("academic_year_id", "grade", "subject", "exam_name", name="uq_teaching_exam_scope"),
+        Index("uq_teaching_exam_scope", "academic_year_id", "grade", "subject", text("CASE WHEN exam_event_id IS NULL THEN 'name:' || exam_name ELSE 'event:' || exam_event_id END"), unique=True),
         CheckConstraint("grade IN (1,2,3)", name="ck_teaching_exam_grade"),
     )
 
@@ -478,6 +490,7 @@ class WorkspaceClassAverage(Base):
     data_domain = Column(String(16), nullable=False)
     academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
     exam_name = Column(String(128), nullable=False)
+    exam_event_id = Column(Integer, ForeignKey("workspace_exam_event.id", name="fk_workspaceclassaverage_event"), nullable=True)
     exam_date = Column(Date, nullable=True)
     grade = Column(Integer, nullable=False)
     class_type = Column(String(32), nullable=True)
@@ -495,10 +508,8 @@ class WorkspaceClassAverage(Base):
             "data_domain IN ('homeroom', 'teaching')",
             name="ck_workspace_class_average_domain",
         ),
-        UniqueConstraint(
-            "data_domain", "academic_year_id", "exam_name", "grade", "class_num",
-            name="uq_workspace_class_average_natural_key",
-        ),
+        Index("uq_workspace_class_average_natural_key", "data_domain", "academic_year_id", text("CASE WHEN exam_event_id IS NULL THEN 'name:' || exam_name ELSE 'event:' || exam_event_id END"),
+              "grade", "class_num", unique=True),
         Index(
             "idx_workspace_class_average_scope",
             "data_domain", "academic_year_id", "exam_name", "grade",
@@ -552,6 +563,8 @@ def _sync_score_fact_keys_on_flush(mapper, connection, target):  # noqa: ANN001
     强制覆写 key 列（显式设置的 key 值不生效）。"""
     target.subject_key = target.subject or ""
     target.total_key = target.total_type or ""
+
+
 
 
 class PendingImportRow(Base):
