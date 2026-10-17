@@ -33,7 +33,6 @@ import {
   fetchHomeroomFocus,
   fetchTeachingClassCompare,
   fetchTeachingStats,
-  fetchTeachingStudents,
   homeworkDashboard,
   homeworkCurrentSemester,
   homeworkWarnings,
@@ -42,7 +41,6 @@ import {
   type HomeroomStatsResponse,
   type TeachingClassCompareItem,
   type TeachingStatsResponse,
-  type TeachingStudentsResponse,
   type WorkspaceMode,
   type CurrentSemester,
 } from '@/lib/api-v1'
@@ -51,6 +49,7 @@ import { analysisScopeQuery, formatScore, sortExamsDesc } from '@/components/sco
 import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ClassScopePicker } from '@/components/ClassScopePicker'
 import WeeklyFocusCard from '@/components/WeeklyFocusCard'
+import { TeachingAttention } from './TeachingAttention'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -317,13 +316,10 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
 
       const latest = exams[0]
       const recent = exams.slice(0, 7).reverse()
-      const [latestStats, latestStudents, latestFocus, compare, ...historyStats] = await Promise.all([
+      const [latestStats, latestFocus, compare, ...historyStats] = await Promise.all([
         mode === 'homeroom'
           ? fetchHomeroomStats(latest.exam_name, analysisQ)
           : fetchTeachingStats(latest.exam_name, analysisQ),
-        mode === 'teaching'
-          ? fetchTeachingStudents(latest.exam_name, analysisQ)
-          : Promise.resolve(null),
         mode === 'homeroom'
           ? fetchHomeroomFocus(latest.exam_name, analysisQ).catch(() => null)
           : Promise.resolve(null),
@@ -347,16 +343,6 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
           value: student.xueji_rank == null ? '—' : `第 ${String(student.xueji_rank)} 名`,
           reason: student.issues.join('、'),
         }))
-      } else {
-        focus = (latestStudents as TeachingStudentsResponse).students
-          .slice()
-          .sort((a, b) => (a.score == null ? -1 : b.score == null ? 1 : a.score - b.score))
-          .map((student) => ({
-            id: String(student.person_id),
-            name: student.name ?? '未命名学生',
-            value: student.score == null ? '—' : formatScore(student.score),
-            reason: student.score == null ? '缺考/无有效成绩' : `班内第 ${String(student.rank ?? '—')} 名`,
-          }))
       }
 
       const trend = recent.map((exam, index) => {
@@ -435,6 +421,14 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
         </CardContent>
       </Card>
 
+      {mode === 'teaching' && currentSemester && !scopeLoading && !scopeError ? (
+        <TeachingAttention
+          key={JSON.stringify([analysisQ, generation, nonce])}
+          scopeQuery={{ academic_year_id: analysisQ.academic_year_id,
+            teaching_class_id: typeof analysisQ.teaching_class_id === 'number' ? analysisQ.teaching_class_id : undefined }}
+        />
+      ) : null}
+
       {scopeError && data == null ? (
         <Card><CardContent className="flex items-center gap-3 py-8 text-sm text-amber-700"><AlertCircle className="h-5 w-5" />{scopeError.detail || '当前工作台范围不可用'}</CardContent></Card>
       ) : error ? (
@@ -455,7 +449,7 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
           {mode === 'homeroom' ? (
             <WeeklyFocusCard scopeQuery={analysisQ} />
           ) : null}
-          <Card>
+          {mode === 'homeroom' ? <Card>
               <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>重点关注</CardTitle><CardDescription>缺交、负面评价与忘带汇总，没有考试也会显示</CardDescription></div><div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><Link href={`/${mode}/homework?tab=warnings`}>查看明细 <ArrowRight className="h-4 w-4" /></Link></Button><CardFoldToggle folded={warningsFold.folded} onToggle={warningsFold.toggle} /></div></CardHeader>
               {warningsFold.folded ? null : (
             <CardContent>
@@ -465,7 +459,7 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
               {data.warnings.length === 0 ? <div className="mt-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><CheckCircle2 className="h-4 w-4" />当前筛选下暂无重点作业预警</div> : null}
             </CardContent>
               )}
-          </Card>
+          </Card> : null}
         </>
       ) : data ? (
         <>
@@ -534,7 +528,7 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
             </Card>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          {mode === 'homeroom' ? <div className="grid gap-4 xl:grid-cols-2">
             <Card>
               <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>需关注学生</CardTitle><CardDescription>{mode === 'homeroom' ? '进退步、波动、名次段、偏科与稳定优秀综合标注' : '根据最近考试排序，供教师进一步核查'}</CardDescription></div><div className="flex items-center gap-1"><Button asChild variant="ghost" size="sm"><Link href={scoreHref}>查看成绩 <ArrowRight className="h-4 w-4" /></Link></Button><CardFoldToggle folded={focusFold.folded} onToggle={focusFold.toggle} /></div></CardHeader>
               {focusFold.folded ? null : (
@@ -553,7 +547,7 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
               </CardContent>
               )}
             </Card>
-          </div>
+          </div> : null}
         </>
       ) : null}
     </div>

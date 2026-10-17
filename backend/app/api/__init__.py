@@ -80,6 +80,7 @@ def create_api_router() -> APIRouter:
     from app.api import analysis as analysis_module
     from app.api import teaching_platform
     from app.api import exam_management
+    from app.diagnosis import attention_router
     from app.api import chat as chat_module
     from app.api import homework as homework_module
     from app.api import imports as imports_module
@@ -103,6 +104,7 @@ def create_api_router() -> APIRouter:
     router.include_router(analysis_module.router)
     router.include_router(teaching_platform.router)
     router.include_router(exam_management.router)
+    router.include_router(attention_router.router)
     router.include_router(students_mgmt.router)
     router.include_router(homework_module.router)
     router.include_router(chat_module.router)

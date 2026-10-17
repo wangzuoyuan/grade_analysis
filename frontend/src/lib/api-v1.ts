@@ -1889,6 +1889,26 @@ export function patchFollowUp(
   })
 }
 
+export type AttentionScopeQuery = { academic_year_id?: number; teaching_class_id?: number }
+export function fetchTeachingAttention(q: AttentionScopeQuery = {}): Promise<import('./attention').AttentionResponse> {
+  return request(withQuery(`${API_V1_BASE}/teaching/diagnosis/attention`, q))
+}
+export function saveAttentionSettings(settings: import('./attention').AttentionSettings, q: AttentionScopeQuery) {
+  return request(withQuery(`${API_V1_BASE}/teaching/diagnosis/attention/settings`, q), {
+    method: 'PUT', body: JSON.stringify(settings),
+  })
+}
+export function createAttentionFollowUp(personId: number, payload: { evidence_key: string; measures: string; review_date: string }, q: AttentionScopeQuery) {
+  return request(withQuery(`${API_V1_BASE}/teaching/diagnosis/attention/${personId}/follow-ups`, q), {
+    method: 'POST', body: JSON.stringify(payload),
+  })
+}
+export function finishAttentionFollowUp(noteId: number, result: string, q: AttentionScopeQuery) {
+  return request(withQuery(`${API_V1_BASE}/teaching/diagnosis/attention/follow-ups/${noteId}/finish`, q), {
+    method: 'POST', body: JSON.stringify({ result }),
+  })
+}
+
 /** 复查对照（契约 §5.2）：ready={baseline,latest,change,note}；pending+reason 绝不判定成败。 */
 export interface ReviewContrast {
   calc_version: string
