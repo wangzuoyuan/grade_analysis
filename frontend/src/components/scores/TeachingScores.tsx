@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { AlertCircle, BarChart3, BookOpen, Users } from 'lucide-react'
 
@@ -24,7 +25,7 @@ import {
   type TeachingStudentRow,
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
-import { useWorkspace } from '@/lib/workspace'
+import { useWorkspace, workspaceHref } from '@/lib/workspace'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -389,6 +390,7 @@ export function TeachingScores() {
                   <CardTitle>学生成绩表</CardTitle>
                   <CardDescription>
                     按教学班分组展示，名次在各班内按同分同名次计算；「班主任域投影」行来自行政班导入的任教学科事实（反向投影参与名次计算）。
+                    点击姓名查看个人档案与历次成绩趋势。
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -437,7 +439,13 @@ export function TeachingScores() {
                                 {g.sorted.map((s) => (
                                   <TableRow key={String(s.person_id)}>
                                     <TableCell className="whitespace-nowrap text-sm font-medium text-slate-900">
-                                      {s.name ?? '（未命名）'}
+                                      <Link
+                                        href={workspaceHref(`/student/${encodeURIComponent(String(s.person_id))}`, 'teaching')}
+                                        className="rounded-sm text-brand-700 underline decoration-brand-200 underline-offset-4 hover:text-brand-900 hover:decoration-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                                        title="查看个人档案与成绩趋势"
+                                      >
+                                        {s.name ?? '（未命名）'}
+                                      </Link>
                                     </TableCell>
                                     <TableCell
                                       className={cn(
