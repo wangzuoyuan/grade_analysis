@@ -198,14 +198,13 @@ test('预警时间轴：连续阈值真筛选、旧数据口径与默认已交�
   assert.match(warningsPanel, /disabled=\{teaching\}/, '教学域学科过滤须只读固定')
 })
 
-test('相关性卡：r=null 不可计算态、方向文案、免责声明（P2-C1 起改接诊断端点，y=成绩分数）', () => {
-  assert.match(correlationCard, /diagnosisCorrelation/, '相关性须走 P2 诊断 correlation 端点')
-  assert.match(correlationCard, /corr\.r == null/, '须对 r=null 分支')
-  assert.match(correlationCard, /相关系数不可计算（样本不足或零方差）/, '须显示不可计算文案')
-  assert.match(correlationCard, /correlationDirectionLabel/, '方向文案须由 direction 驱动')
-  assert.match(correlationCard, /ScatterChart/, '须用 recharts 散点')
-  assert.match(correlationCard, /不构成因果/, '必须渲染免责声明')
-  assert.match(correlationCard, /caveats/, '后端 caveats 必须逐条展示')
+test('个人相关性卡：缺失不编造，展示个人时间线与数据限制', () => {
+  assert.match(correlationCard, /studentHomeworkAnalysis/, '应使用逐人端点')
+  assert.match(correlationCard, /value\.rho == null/, '系数缺失须独立呈现')
+  assert.match(correlationCard, /暂不能判断/, '数据不足不能下判断')
+  assert.match(correlationCard, /LineChart/, '个人趋势按多次考试展示')
+  assert.match(correlationCard, /不构成因果/, '保留因果限制')
+  assert.match(correlationCard, /caveats/, '逐人限制必须展示')
 })
 
 test('学期设置卡：auto 推导标注、手工编辑、设当前/恢复自动、422 中文展示（契约 §5）', () => {
@@ -265,8 +264,8 @@ test('请求序号按资源分离（F11）：列表/看板/详情/考试清单�
   assert.match(assignmentTable, /listReqRef/, '批次列表须有独立请求序号')
   assert.match(assignmentTable, /dashReqRef/, '看板须有独立请求序号')
   assert.match(assignmentTable, /detailReqRef/, '行详情须有独立请求序号')
-  assert.match(correlationCard, /examsReqRef/, '考试清单须有独立请求序号')
-  assert.match(correlationCard, /corrReqRef/, '相关性须有独立请求序号')
+  assert.match(correlationCard, /cancelled = true/, '个人分析清理函数拒绝迟到响应')
+  assert.match(correlationCard, /result\?\.key === key/, '范围切换立即隐藏旧分析结果')
   assert.match(warningsPanel, /reqRef/, '预警须有独立请求序号')
   // 回包必须比对序号后再落状态（防迟到回包覆盖新数据）
   assert.match(assignmentTable, /req !== listReqRef\.current/, '列表回包须比对序号')

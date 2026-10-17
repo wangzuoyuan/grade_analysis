@@ -104,3 +104,39 @@ def teaching_diagnosis_correlation(
         metric=metric or f"subject:{ctx.subject}",
         homework_type=homework_type,
     )
+
+
+@router.get("/homeroom/diagnosis/homework-students")
+@domain_endpoint
+def homeroom_student_homework(
+    subject: str,
+    window_days: int = 14,
+    person_id: Optional[int] = None,
+    end_exam_name: Optional[str] = None,
+    grade: Optional[int] = None,
+    academic_year_id: Optional[int] = None,
+    class_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.diagnosis.student_homework import student_homework_analysis
+    ctx = _homeroom_ctx(db, academic_year_id, class_id, None)
+    return student_homework_analysis(db, ctx, subject, window_days,
+        person_id=person_id, end_exam_name=end_exam_name, grade=grade)
+
+
+@router.get("/teaching/diagnosis/homework-students")
+@domain_endpoint
+def teaching_student_homework(
+    window_days: int = 14,
+    person_id: Optional[int] = None,
+    end_exam_name: Optional[str] = None,
+    homework_type: Optional[str] = None,
+    grade: Optional[int] = None,
+    academic_year_id: Optional[int] = None,
+    teaching_class_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.diagnosis.student_homework import student_homework_analysis
+    ctx = _teaching_ctx(db, academic_year_id, teaching_class_id, None, None)
+    return student_homework_analysis(db, ctx, window_days=window_days,
+        homework_type=homework_type, person_id=person_id, end_exam_name=end_exam_name, grade=grade)

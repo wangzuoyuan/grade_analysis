@@ -16,6 +16,8 @@
 
 ## 2. C1 作业×成绩相关性（Pearson + Spearman）
 
+2026-10-17：本节班级接口继续兼容；成绩页面已改为[逐人纵向分析](../contracts/student-homework-analysis.md)。个人分析不借用班级系数、总分段位或月份近似窗口。
+
 服务函数（冻结）：
 
 ```python

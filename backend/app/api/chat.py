@@ -195,6 +195,8 @@ def build_system_prompt(snapshot: dict, time_anchor: Optional[dict] = None) -> s
         + "5. 分析作业与成绩的关系（如“缺交多的学生成绩是否更差”）用 "
         "get_homework_correlation（皮尔逊相关，仅描述统计关联、不构成因果，"
         "回答时必须带上这条口径）。\n"
+        "问某个学生时先查person_id并传给get_homework_correlation，使用个人多次考试分析；"
+        "高一年级百分位、高二高三等级分，不能用班级相关系数推断个人。\n"
         + rule_time
         + rule_auto
     )

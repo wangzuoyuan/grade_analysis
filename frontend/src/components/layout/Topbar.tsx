@@ -23,6 +23,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   upload: '数据上传',
   compare: '班级对比',
   exam: '考试列表',
+  exams: '考试管理',
   student: '学生档案',
   homework: '作业跟进',
   settings: '学期设置',

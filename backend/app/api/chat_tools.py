@@ -1247,6 +1247,19 @@ def _tool_get_homework_correlation(db, snapshot: dict, args: dict) -> dict:
         metric = f"total:{(args.get('total_type') or '').strip() or '主三门'}"
     else:
         metric = f"subject:{subject}"
+    if args.get("person_id") is not None:
+        from app.diagnosis.student_homework import student_homework_analysis
+        person_id, error = _int_or_error(args.get("person_id"), "person_id")
+        if error:
+            return error
+        data = student_homework_analysis(
+            db, scope, subject=subject, window_days=window_days,
+            person_id=person_id, end_exam_name=exam_name,
+            homework_type=(args.get("homework_type") or "").strip() or None,
+        )
+        if resolved:
+            data["exam_resolved"] = resolved
+        return data
     data = exam_homework_correlation(
         db,
         scope,
@@ -2121,6 +2134,9 @@ TOOL_REGISTRY: List[WsToolSpec] = [
     WsToolSpec(
         name="get_homework_correlation",
         description=(
+            "查看单个学生时必须传person_id（先用search_students查身份），返回该生截至exam_name的"
+            "多次考试与考前作业纵向分析：高一年级百分位，高二三等级分，绝不用班级相关推断个人。"
+            "不传person_id时兼容旧班级分析。"
             "计算「作业提交率 × 成绩」的 Pearson r 与 Spearman rho 相关，回答"
             "“交作业越勤的学生成绩是否更好”“缺交和成绩有没有关系”。"
             "X=考前窗口（window_days=14|30，不含考试当日与考后作业）内的作业"
@@ -2134,6 +2150,7 @@ TOOL_REGISTRY: List[WsToolSpec] = [
         ),
         input_schema=_schema_with_year_args(
             {
+                "person_id": {"type": "integer", "description": "个人分析必传，来自当前范围search_students的身份ID"},
                 "exam_name": {"type": "string", "description": _EXAM_NAME_DESC},
                 "subject": {
                     "type": "string",

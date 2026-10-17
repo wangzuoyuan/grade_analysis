@@ -61,7 +61,7 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 | get_scores_table(exam_name, subject?) | 两域 | scores service（经 gated 投影门） |
 | get_homework_summary(from, to) | 两域 | homework dashboard service |
 | get_homework_student(person_id) | 两域 | 学生事件流 service |
-| get_homework_correlation(exam_name, subject?, homework_type?, total_type?) | 两域 | correlation service（p5 §4；homeroom 传 subject，teaching 钉会话学科；r=null 不可计算态；描述统计不构成因果） |
+| get_homework_correlation(exam_name, person_id?, subject?, homework_type?, total_type?) | 两域 | 指定学生必须传 person_id，薄封装 student_homework_analysis，与逐人页面同源；高一百分位、高二三等级分。未传 person_id 兼容旧班级相关，不得用班级系数推断个人 |
 | get_class_comparison(exam_name) | teaching | class-compare service |
 | get_class_averages(exam_name) | homeroom | 官方全年级班级均分表（workspace_class_average 导入事实，ADR-025，非本班成绩反推） |
 | get_weekly_focus() | homeroom | 本周关注四维信号加权（连续缺交/缺交激增/考试关注/谈话待办；天然当前） |

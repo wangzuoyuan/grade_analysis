@@ -16,6 +16,26 @@
 /** 工作台模式：班主任（行政班域）或教学（任教学科域）。 */
 export type WorkspaceMode = 'homeroom' | 'teaching'
 
+export interface ManagedExam {
+  academic_year_id: number; platform_exam_id: number | null
+  key: string; exam_name: string; grade: number | null; subject: string | null
+  dates: string[]; classes: string[]; kind: 'native' | 'platform' | 'linked'; can_delete: boolean
+  student_count: number; score_count: number; average_count: number; quality_count: number
+  projected_students: number; source_label: string
+}
+export interface ExamDeletePreview {
+  token: string; expires_at: string; exam: ManagedExam; pending_imports: number
+}
+export function listManagedExams(mode: WorkspaceMode, q: {academic_year_id?: number; class_id?: number; grade?: number}): Promise<{exams: ManagedExam[]}> {
+  return request(withQuery(`/api/v1/${mode}/exams`, { ...q }))
+}
+export function previewExamDelete(mode: WorkspaceMode, body: {academic_year_id?: number; class_id?: number; exam_key: string}): Promise<ExamDeletePreview> {
+  return request(`/api/v1/${mode}/exams/delete-preview`, { method: 'POST', body: JSON.stringify(body) })
+}
+export function confirmExamDelete(mode: WorkspaceMode, body: {token: string; confirm_name: string}): Promise<{success: boolean; exam: ManagedExam; invalidated_imports: number}> {
+  return request(`/api/v1/${mode}/exams/delete-confirm`, { method: 'POST', body: JSON.stringify(body) })
+}
+
 /** 数据域（与后端 student_identity.data_domain 对应）。 */
 export type DataDomain = 'homeroom' | 'teaching'
 
@@ -2503,8 +2523,16 @@ export function homeworkCorrelation(
   return request<HomeworkCorrelationResponse>(withQuery(`${API_V1_BASE}/homework/correlation`, { mode, ...q }))
 }
 
-/** GET /api/v1/{域}/diagnosis/correlation（P2-C1 作业×成绩 Pearson+Spearman 分层相关性；
- *  考前窗口不含考后作业；note 含「不构成因果或提分保证」）。 */
+/** Personal analysis: same student, subject, year and grade across exams. */
+export function studentHomeworkAnalysis(
+  mode: WorkspaceMode,
+  q: HomeworkScopeQuery & { subject?: string; window_days: 14 | 30; grade?: number;
+    person_id?: number; end_exam_name?: string; homework_type?: string },
+): Promise<import('./student-homework').StudentHomeworkResponse> {
+  return request(withQuery(`${API_V1_BASE}/${mode}/diagnosis/homework-students`, { ...q }))
+}
+
+/** Legacy cross-sectional class analysis, retained for existing consumers. */
 export function diagnosisCorrelation(
   mode: WorkspaceMode,
   q: HomeworkScopeQuery & {

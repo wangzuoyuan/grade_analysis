@@ -13,6 +13,7 @@ import {
   RefreshCw,
   NotebookPen,
   GraduationCap,
+  CalendarDays,
   Contact,
   FlaskConical,
   Pencil,
@@ -52,6 +53,20 @@ const NAV_ITEMS: NavItem[] = [
     icon: Upload,
     match: (p) => p.startsWith('/upload'),
     modes: ['homeroom', 'teaching'],
+  },
+  {
+    href: '/homeroom/exams',
+    label: '考试管理',
+    icon: CalendarDays,
+    match: (p) => p.startsWith('/homeroom/exams'),
+    modes: ['homeroom'],
+  },
+  {
+    href: '/teaching/exams',
+    label: '考试管理',
+    icon: CalendarDays,
+    match: (p) => p.startsWith('/teaching/exams'),
+    modes: ['teaching'],
   },
   {
     href: '/homeroom/scores',
@@ -219,7 +234,7 @@ export function SidebarContent({ teacher, onNameChange }: SidebarContentProps) {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 space-y-1 px-3 py-4">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-4">
         {visibleItems.map((item) => {
           const active = itemActive(item)
           const Icon = item.icon
