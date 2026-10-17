@@ -1430,10 +1430,11 @@ def homeroom_weekly_focus(
                 term_id=term_id,
                 db=db,
             )
-        for fs in focus_res.students:
-            if fs.issues:
-                for issue in fs.issues:
-                    add_signal(fs.person_id, issue, 1)
+            # 无考试是正常空态，其他缺交与谈话信号仍继续汇总。
+            for fs in focus_res.students:
+                if fs.issues:
+                    for issue in fs.issues:
+                        add_signal(fs.person_id, issue, 1)
     except Exception:
         logger.exception("weekly-focus 最近考试关注信号计算失败")
 
