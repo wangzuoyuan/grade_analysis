@@ -6,7 +6,7 @@
 # - :8080 公网入口（宿主 CADDY_PORT，路由器转发）：登录鉴权按后端默认执行；
 #   显式删除客户端伪造的 X-Lan-Bypass-Token 头（同名头只允许 :8090 注入）。
 # - :8090 内网入口（宿主 LAN_PORT）：与公网同构，/api 额外注入
-#   X-Lan-Bypass-Token: {env.LAN_BYPASS_TOKEN}（密钥与后端 AUTH_LAN_BYPASS_TOKEN
+#   X-Lan-Bypass-Token: {env.AUTH_LAN_BYPASS_TOKEN}（密钥与后端同名 env
 #   同源于 backend.env）。后端凭密钥免登录——Docker Desktop 发布端口会把所有
 #   来源改写成网桥网关 IP，公网/内网在 IP 层不可区分，故用密钥而非网段判定。
 #   注意：勿在路由器上映射 8090，该端口只应局域网可达。
@@ -32,7 +32,7 @@
 	handle /api/* {
 		reverse_proxy backend:8000 {
 			header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}
-			header_up X-Lan-Bypass-Token {env.LAN_BYPASS_TOKEN}
+			header_up X-Lan-Bypass-Token {env.AUTH_LAN_BYPASS_TOKEN}
 		}
 	}
 
