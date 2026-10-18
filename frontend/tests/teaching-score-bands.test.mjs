@@ -57,6 +57,17 @@ test('堆叠条段悬浮显示段名/人数/占比（Radix Tooltip，非原生 t
   assert.doesNotMatch(segBlock, /title=\{`\$\{bandLabel/, '段悬浮不得再走原生 title')
 })
 
+test('段位配色采用 Viridis 官方锚点（2026-10-18 用户拍板：不自配色）', () => {
+  assert.match(page, /const VIRIDIS_ANCHORS = \[/, 'Viridis 锚点常量必须在场')
+  // matplotlib 官方 8 点采样的首尾锚点（高分段亮端 → 低分段暗端）
+  assert.match(page, /'#fde725'/, '锚点须含亮端 #fde725（高分段）')
+  assert.match(page, /'#440154'/, '锚点须含暗端 #440154（低分段）')
+  assert.match(page, /感知均匀[\s\S]*?色盲安全/, '须注明色系出处与特性')
+  assert.match(page, /function hexToRgb/, '须有 hex→RGB 解析供插值')
+  assert.match(page, /VIRIDIS_ANCHORS\.length - 2/, '插值须钳制在锚点区间内')
+  assert.doesNotMatch(page, /hsl\(201 74%/, '不得再残留旧的自配 HSL 渐变')
+})
+
 test('跨栈：后端 score-bands 口径（左闭右开/累计自高向下/总体σ/段宽白名单/本班范围）', () => {
   assert.match(backend, /teaching\/analysis\/exams\/\{exam_name\}\/score-bands/, '端点路由必须在场')
   assert.match(backend, /SCORE_BAND_WIDTHS = \(5, 10, 20\)/, '段宽白名单')

@@ -115,10 +115,28 @@ function bandLabel(low: number, high: number | null): string {
   return high == null ? `[${edge(low)}, +∞)` : `[${edge(low)}, ${edge(high)})`
 }
 
-/** 堆叠条段位配色：高分段深、低分段浅（连续插值，任意段宽可用）。 */
+/** 堆叠条段位配色：Viridis 官方 8 点锚点（matplotlib 默认色图，感知均匀、
+ * 全类型色盲安全；分数为量纲——高分段取亮端、低分段取暗端），任意段数线性 RGB 插值。 */
+const VIRIDIS_ANCHORS = [
+  '#fde725', '#a0da39', '#4ac16d', '#1fa187', '#277f8e', '#365c8d', '#46327e', '#440154',
+]
+
+function hexToRgb(hex: string): [number, number, number] {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ]
+}
+
 function bandBarColor(index: number, total: number): string {
   const t = total <= 1 ? 0 : index / (total - 1)
-  return `hsl(201 74% ${Math.round(26 + 62 * t)}%)`
+  const p = t * (VIRIDIS_ANCHORS.length - 1)
+  const i = Math.min(Math.floor(p), VIRIDIS_ANCHORS.length - 2)
+  const f = p - i
+  const a = hexToRgb(VIRIDIS_ANCHORS[i])
+  const b = hexToRgb(VIRIDIS_ANCHORS[i + 1])
+  return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(', ')})`
 }
 
 /** 本段格热力底色：占本班有效人数比例分档（纯静态类，无运行时拼类名）。 */
@@ -351,6 +369,7 @@ function ScoreBandsPanel({
       <p className="text-[10px] leading-relaxed text-slate-400">
         段口左闭右开（90 入 [90,+∞)、89.5 入 [80,90)），累计自高分段向下；缺考（原始分为空）不计入任何段与计量；
         标准差为总体标准差（σ）；等级分（A+~E）分布见「班级对比」页官方质量卡。本卡仅本班口径，不提供年级/官方列。
+        段位配色采用 Viridis 色带（matplotlib 默认色图，色盲安全）。
       </p>
     </div>
   )
