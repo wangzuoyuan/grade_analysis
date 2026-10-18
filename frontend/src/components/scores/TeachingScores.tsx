@@ -9,18 +9,20 @@
  * 绝不冒充年级/官方口径；迟到回包按资源分离的序号丢弃（F11：清单与数据互不作废）。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { AlertCircle, BarChart3, BookOpen, Users } from 'lucide-react'
 
 import {
   fetchTeachingClassCompare,
+  fetchTeachingScoreBands,
   fetchTeachingStats,
   fetchTeachingStudents,
   listExams,
   type ExamSummary,
   type TeachingClassCompareResponse,
+  type TeachingScoreBandsResponse,
   type TeachingStatsResponse,
   type TeachingStudentRow,
 } from '@/lib/api-v1'
@@ -101,6 +103,242 @@ function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse 
   )
 }
 
+/** 分数段段口标签：顶段 [90,+∞)，其余 [80,90)（左闭右开）。 */
+function bandLabel(low: number, high: number | null): string {
+  const edge = (n: number) => (Number.isInteger(n) ? String(n) : String(n))
+  return high == null ? `[${edge(low)}, +∞)` : `[${edge(low)}, ${edge(high)})`
+}
+
+/** 堆叠条段位配色：高分段深、低分段浅（连续插值，任意段宽可用）。 */
+function bandBarColor(index: number, total: number): string {
+  const t = total <= 1 ? 0 : index / (total - 1)
+  return `hsl(201 74% ${Math.round(26 + 62 * t)}%)`
+}
+
+/** 本段格热力底色：占本班有效人数比例分档（纯静态类，无运行时拼类名）。 */
+function bandCellTone(count: number, valid: number): string {
+  if (count <= 0 || valid <= 0) return ''
+  const ratio = count / valid
+  if (ratio >= 0.2) return 'bg-sky-100/70'
+  if (ratio >= 0.1) return 'bg-sky-50'
+  return 'bg-sky-50/50'
+}
+
+/** 分数段分析面板（2026-10-18）：官方《分数段分析》表同构的本班口径。
+ *  各教学班 + 当前范围合并列；本段/累计/累计比例 + 人数/最值/均分/σ；
+ *  全零尾段折叠为一行「(*, 下界)」；缺考列单独计数不入段。 */
+function ScoreBandsPanel({
+  bands,
+  detail,
+}: {
+  bands: TeachingScoreBandsResponse
+  detail: boolean
+}) {
+  const showMerged = bands.classes.length > 1
+  const cols = showMerged ? [...bands.classes, bands.merged] : bands.classes
+  const bandCount = bands.merged.bands.length
+  let lastNonZero = -1
+  for (const c of cols) {
+    c.bands.forEach((b, i) => {
+      if (b.count > 0 && i > lastNonZero) lastNonZero = i
+    })
+  }
+  const visibleIdx: number[] = []
+  for (let i = 0; i <= lastNonZero; i++) visibleIdx.push(i)
+  const collapsedLow =
+    lastNonZero >= 0 && lastNonZero + 1 < bandCount
+      ? bands.merged.bands[lastNonZero].low
+      : null
+  const colKey = (c: (typeof cols)[number]) => String(c.teaching_class_id ?? 'merged')
+  const colLabel = (c: (typeof cols)[number]) =>
+    c.teaching_class_id == null ? `我的 ${String(bands.classes.length)} 个班` : c.class_label
+
+  return (
+    <div className="space-y-4">
+      {/* 段位分布堆叠条：宽度=本段占有效人数比例 */}
+      <div className="space-y-2">
+        {cols.map((c) => (
+          <div key={colKey(c)} className="flex items-center gap-3">
+            <span
+              className="w-32 shrink-0 truncate text-xs text-slate-500"
+              title={`${colLabel(c)}（${String(c.valid_count)} 人）`}
+            >
+              {colLabel(c)} <span className="text-slate-400">{String(c.valid_count)} 人</span>
+            </span>
+            <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100">
+              {c.bands.map((b, i) =>
+                b.count > 0 && c.valid_count > 0 ? (
+                  <div
+                    key={i}
+                    className="h-full"
+                    title={`${bandLabel(b.low, b.high)}：${String(b.count)} 人`}
+                    style={{
+                      width: `${String((b.count / c.valid_count) * 100)}%`,
+                      background: bandBarColor(i, c.bands.length),
+                    }}
+                  />
+                ) : null,
+              )}
+            </div>
+            <span className="w-16 shrink-0 text-right text-xs tabular-nums text-slate-500">
+              均 {formatScore(c.avg)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+        {visibleIdx.map((i) => {
+          const b = bands.merged.bands[i]
+          return (
+            <span key={i} className="inline-flex items-center gap-1">
+              <span
+                className="inline-block h-2 w-2 rounded-sm"
+                style={{ background: bandBarColor(i, bandCount) }}
+              />
+              {bandLabel(b.low, b.high)}
+            </span>
+          )
+        })}
+      </div>
+
+      {visibleIdx.length === 0 ? (
+        <p className="py-4 text-sm text-slate-500">本场考试当前范围没有可计入分数段的有效成绩。</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table wrapperClassName="lg:overflow-x-clip">
+            <TableHeader>
+              <TableRow>
+                <TableHead rowSpan={2} className="text-xs">
+                  分数段
+                </TableHead>
+                {cols.map((c) => (
+                  <TableHead
+                    key={colKey(c)}
+                    colSpan={detail ? 3 : 1}
+                    className="whitespace-nowrap text-center text-xs"
+                  >
+                    {colLabel(c)}
+                    <span className="ml-1 font-normal text-slate-400">{String(c.valid_count)} 人</span>
+                  </TableHead>
+                ))}
+              </TableRow>
+              {detail ? (
+                <TableRow>
+                  {cols.map((c) => (
+                    <Fragment key={colKey(c)}>
+                      <TableHead className="text-right text-xs">本段</TableHead>
+                      <TableHead className="text-right text-xs">累计</TableHead>
+                      <TableHead className="text-right text-xs">比例%</TableHead>
+                    </Fragment>
+                  ))}
+                </TableRow>
+              ) : (
+                <TableRow>
+                  {cols.map((c) => (
+                    <TableHead key={colKey(c)} className="text-right text-xs">
+                      人数
+                    </TableHead>
+                  ))}
+                </TableRow>
+              )}
+            </TableHeader>
+            <TableBody>
+              {visibleIdx.map((i) => {
+                const proto = bands.merged.bands[i]
+                return (
+                  <TableRow key={i}>
+                    <TableCell className="whitespace-nowrap text-xs font-medium text-slate-600">
+                      {bandLabel(proto.low, proto.high)}
+                    </TableCell>
+                    {cols.map((c) => {
+                      const b = c.bands[i]
+                      return detail ? (
+                        <Fragment key={colKey(c)}>
+                          <TableCell
+                            className={cn(
+                              'text-right tabular-nums text-xs',
+                              b.count > 0 ? 'text-slate-700' : 'text-slate-300',
+                              bandCellTone(b.count, c.valid_count),
+                            )}
+                          >
+                            {String(b.count)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums text-xs text-slate-500">
+                            {String(b.cumulative)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums text-xs text-slate-400">
+                            {b.cumulative_pct == null ? '—' : b.cumulative_pct.toFixed(1)}
+                          </TableCell>
+                        </Fragment>
+                      ) : (
+                        <TableCell
+                          key={colKey(c)}
+                          className={cn(
+                            'text-right tabular-nums text-xs',
+                            b.count > 0 ? 'text-slate-700' : 'text-slate-300',
+                            bandCellTone(b.count, c.valid_count),
+                          )}
+                        >
+                          {String(b.count)}
+                        </TableCell>
+                      )
+                    })}
+                  </TableRow>
+                )
+              })}
+              {collapsedLow != null && (
+                <TableRow>
+                  <TableCell className="whitespace-nowrap text-xs text-slate-400">
+                    (*, {String(collapsedLow)})
+                  </TableCell>
+                  {cols.map((c) => (
+                    <TableCell
+                      key={colKey(c)}
+                      colSpan={detail ? 3 : 1}
+                      className="text-right tabular-nums text-xs text-slate-300"
+                    >
+                      0
+                    </TableCell>
+                  ))}
+                </TableRow>
+              )}
+              {(
+                [
+                  ['有效人数', (c: (typeof cols)[number]) => String(c.valid_count)],
+                  ['最高分', (c: (typeof cols)[number]) => formatScore(c.max)],
+                  ['最低分', (c: (typeof cols)[number]) => formatScore(c.min)],
+                  ['平均分', (c: (typeof cols)[number]) => formatScore(c.avg)],
+                  ['标准差 σ', (c: (typeof cols)[number]) => formatScore(c.stddev)],
+                ] as const
+              ).map(([label, value], rowIdx) => (
+                <TableRow
+                  key={label}
+                  className={rowIdx === 0 ? 'border-t-2 border-slate-200' : undefined}
+                >
+                  <TableCell className="whitespace-nowrap text-xs text-slate-500">{label}</TableCell>
+                  {cols.map((c) => (
+                    <TableCell
+                      key={colKey(c)}
+                      colSpan={detail ? 3 : 1}
+                      className="text-right tabular-nums text-xs font-medium text-slate-900"
+                    >
+                      {value(c)}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+      <p className="text-[10px] leading-relaxed text-slate-400">
+        段口左闭右开（90 入 [90,+∞)、89.5 入 [80,90)），累计自高分段向下；缺考（原始分为空）不计入任何段与计量；
+        标准差为总体标准差（σ）；等级分（A+~E）分布见「班级对比」页官方质量卡。本卡仅本班口径，不提供年级/官方列。
+      </p>
+    </div>
+  )
+}
+
 export function TeachingScores() {
   const { filter, generation, switching, scope } = useWorkspace()
   const searchParams = useSearchParams()
@@ -117,6 +355,14 @@ export function TeachingScores() {
   const [students, setStudents] = useState<TeachingStudentRow[] | null>(null)
   const [compare, setCompare] = useState<TeachingClassCompareResponse | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
+
+  // 分数段分析卡：独立请求序号（F11 同模式），段宽切换只重拉本卡
+  const [bandWidth, setBandWidth] = useState(10)
+  const [bandDetail, setBandDetail] = useState(true)
+  const [bands, setBands] = useState<TeachingScoreBandsResponse | null>(null)
+  const [bandsError, setBandsError] = useState<string | null>(null)
+  const [bandsNonce, setBandsNonce] = useState(0)
+  const bandsReqRef = useRef(0)
 
   // 请求序号按资源分离（F11）：考试清单与 stats+students+对比各自比对各自序号，
   // 任一资源重拉绝不使另一资源的合法回包失效（否则切考试后骨架永久加载）
@@ -179,6 +425,24 @@ export function TeachingScores() {
         setDataError(apiErrorMessage(err))
       })
   }, [selectedExam, scopeQ])
+
+  // 分数段分析（同考试/同范围；段宽变化仅重拉本卡，不影响 stats/students/compare）
+  useEffect(() => {
+    if (selectedExam == null) return
+    const req = ++bandsReqRef.current
+    setBands(null)
+    setBandsError(null)
+    fetchTeachingScoreBands(selectedExam, scopeQ, bandWidth)
+      .then((r) => {
+        if (req !== bandsReqRef.current) return
+        setBands(r)
+      })
+      .catch((err: unknown) => {
+        if (req !== bandsReqRef.current) return
+        setBands(null)
+        setBandsError(apiErrorMessage(err))
+      })
+  }, [selectedExam, scopeQ, bandWidth, bandsNonce])
 
   // 分班展示：按教学班分组，名次在各班内按同分同名次（min-rank）计算；
   // 分组顺序跟随班级对比卡的后端顺序，未知归属（label 缺失）排最后。
@@ -380,6 +644,68 @@ export function TeachingScores() {
                         同分同名次（min-rank）；缺考不计入均分与名次分母；名次在当前范围成员内计算，学生成绩表分班展示、名次为各班内名次。
                       </p>
                     </>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* 分数段分析卡（官方《分数段分析》表同构的本班口径，2026-10-18） */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex flex-wrap items-center gap-2">
+                    分数段分析（原始分 · {String(bandWidth)} 分一段）
+                    {bands?.small_sample === true && <Badge variant="warning">样本&lt;5</Badge>}
+                  </CardTitle>
+                  <CardDescription>
+                    各教学班与当前范围合并列的「本段 / 累计 / 累计比例」，底部为人数、最值、均分与标准差；
+                    数据由本域学生明细实时计算（含班主任域投影行），缺考不计入任何段与计量。
+                  </CardDescription>
+                  <div className="flex flex-wrap items-center gap-2 pt-1 print:hidden">
+                    <label className="flex items-center gap-1.5 text-xs text-slate-500">
+                      段宽
+                      <select
+                        aria-label="分数段宽"
+                        value={String(bandWidth)}
+                        onChange={(e) => setBandWidth(Number(e.target.value))}
+                        className="rounded-md border border-slate-200 bg-white py-1.5 pl-2 text-xs"
+                      >
+                        <option value="10">10 分</option>
+                        <option value="5">5 分</option>
+                        <option value="20">20 分</option>
+                      </select>
+                    </label>
+                    <Button
+                      size="sm"
+                      variant={bandDetail ? 'default' : 'outline'}
+                      onClick={() => setBandDetail(true)}
+                    >
+                      本段 / 累计 / 比例
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={bandDetail ? 'outline' : 'default'}
+                      onClick={() => setBandDetail(false)}
+                    >
+                      仅人数
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {bandsError != null ? (
+                    <div className="flex flex-col items-center gap-3 py-6 text-center">
+                      <AlertCircle className="h-6 w-6 text-amber-400" />
+                      <p className="text-sm text-slate-600">{bandsError}</p>
+                      <Button variant="outline" size="sm" onClick={() => setBandsNonce((n) => n + 1)}>
+                        重试
+                      </Button>
+                    </div>
+                  ) : bands == null ? (
+                    <div className="space-y-2">
+                      <Skeleton className="h-4 w-full" />
+                      <Skeleton className="h-28 w-full" />
+                      <Skeleton className="h-4 w-2/3" />
+                    </div>
+                  ) : (
+                    <ScoreBandsPanel bands={bands} detail={bandDetail} />
                   )}
                 </CardContent>
               </Card>

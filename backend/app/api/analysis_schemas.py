@@ -316,6 +316,48 @@ class ClassCompareResponse(BaseModel):
     small_sample: bool = False
 
 
+class TeachingScoreBand(BaseModel):
+    """单个分数段（左闭右开，90 入顶段、89.5 入 [80,90)）：顶段
+    high=None 表示 [low,+∞)；count 为本段人数，cumulative 自高分段
+    向下累计，cumulative_pct 为累计比例（%），valid_count=0 时 None。"""
+
+    low: float
+    high: Optional[float] = None
+    count: int = 0
+    cumulative: int = 0
+    cumulative_pct: Optional[float] = None
+
+
+class TeachingScoreBandClass(BaseModel):
+    """分数段分析的单列（一个教学班，或 merged 当前范围合并列——
+    teaching_class_id=None）。stddev 为总体标准差（σ）；缺考
+    （score NULL）不计入任何段与计量，单独计 missing_count。"""
+
+    teaching_class_id: Optional[int] = None
+    class_label: str
+    valid_count: int = 0
+    missing_count: int = 0
+    max: Optional[float] = None
+    min: Optional[float] = None
+    avg: Optional[float] = None
+    stddev: Optional[float] = None
+    bands: List[TeachingScoreBand] = Field(default_factory=list)
+
+
+class TeachingScoreBandsResponse(BaseModel):
+    """分数段分析（2026-10-18，官方《分数段分析》表同构的本班口径）：
+    仅当前范围所教教学班，不做年级/官方口径（官方班级均分表走
+    class-compare/班级对比页）。"""
+
+    metadata: AnalysisMetadata
+    subject: str
+    band_width: int = 10
+    score_basis: str = "raw"
+    classes: List[TeachingScoreBandClass] = Field(default_factory=list)
+    merged: TeachingScoreBandClass
+    small_sample: bool = False
+
+
 class WeeklyFocusStudent(BaseModel):
     student_id: str
     name: str

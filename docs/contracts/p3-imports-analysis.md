@@ -164,6 +164,15 @@
 - `GET class-compare?exam_name=` → `{classes: [{teaching_class_id, class_label, member_count,
   subject_avg, score_basis, source: estimated}]}`（E04：本班样本均分一律标 `estimated`；
   官方班均表未入库前不提供 `official`，绝不拿班内样本冒充年级/官方口径）
+- `GET exams/{exam_name}/score-bands?band_width=&teaching_class_id=`（2026-10-18，官方《分数段
+  分析》表同构的本班口径）→ `{metadata, subject, band_width, score_basis, classes: [...], merged,
+  small_sample}`；每个班级列 `{teaching_class_id, class_label, valid_count, missing_count, max, min,
+  avg, stddev, bands: [{low, high, count, cumulative, cumulative_pct}]}`，`merged` 为当前范围合并列
+  （teaching_class_id=null）。段口左闭右开（90 入顶段 `[90,+∞)`、89.5 入 `[80,90)`、0 入 `[0,10)`），
+  顶段下界=严格小于 100 的最大段宽整数倍；`band_width ∈ {5,10,20}`（缺省 10，非法 422）；
+  累计自高分段向下、比例分母=valid_count（0 人时 null）；`stddev` 为总体标准差 σ；成员口径同
+  stats/students（F08 考试时点名册 + F09 readable_facts 含 H 域反向投影行）；仅本班口径，
+  绝不提供年级/官方列（官方班级均分走班级对比页）。
 
 ### 2.3 计量规则（E02/E04 红线，两域统一）
 
@@ -177,7 +186,9 @@
 
 - `/homeroom/scores`：考试选择（/shared/exams）→ 考试概览、完整年级班均表（班型分组、各科、总分/排名、
   分组平均/最高/最低及导出）、学生明细、名次段位、排名频次、区间筛选、重点关注。
-- `/teaching/scores`：考试选择 → 单科 stats + 学生行（rank/grade_score/source_domain）+ 班级对比卡。
+- `/teaching/scores`：考试选择 → 单科 stats + 分数段分析卡（本段/累计/累计比例 + 人数/最值/均分/σ，
+  段宽 5/10/20，多班范围含合并列；全零尾段折叠）+ 学生行（rank/grade_score/source_domain，分班展示）
+  + 班级对比卡。
 - `/upload`（重构）：mode 感知（当前工作台决定导入域与范围参数），preview 表格展示 items/warnings，
   confirm 含 revise 开关（冲突时提示）；沿用既有拖拽/文件选择 UI 模式。
 - 旧 /exam、/student 页暂不迁移（P4 处理），但顶部工作台切换器保持可用。

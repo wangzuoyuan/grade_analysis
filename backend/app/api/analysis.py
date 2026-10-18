@@ -15,6 +15,9 @@
 - teaching：build_teaching_params（teaching_class_id 缺省=全部所教班并集）；
   成员事实 = teaching 域该班行 + 经 §1.4.1 投影门的 H 域反向投影行
   （两者都算分母/名次，投影行标 source_domain）。
+- teaching score-bands（2026-10-18）：官方《分数段分析》表同构的本班
+  口径——当前范围每教学班一列 + 合并列，左闭右开 10 分段（5/20 可选）
+  的本段/累计/累计比例 + 人数/最值/均分/σ；不做年级/官方口径。
 - 计量红线（§2.3）：缺考 NULL 不进均分/名次分母、单独 missing_count、
   绝不转 0；同分同名次（min-rank，1,2,2,4）且只在班内成员计算；
   valid_count < 5 → small_sample；未知字段缺省不编造；空成员 200 空态。
@@ -64,6 +67,9 @@ from app.api.analysis_schemas import (
     TeachingAnalysisStudent,
     TeachingExamStatsResponse,
     TeachingExamStudentsResponse,
+    TeachingScoreBand,
+    TeachingScoreBandClass,
+    TeachingScoreBandsResponse,
     TrendExamPoint,
     TrendYearGroup,
     TrendsResponse,
@@ -1272,6 +1278,137 @@ def teaching_exam_students(
             teaching_class_id=class_ids[0] if teaching_class_id is not None else None,
         ),
         students=students,
+    )
+
+
+# ────────────────────── teaching：分数段分析（§2.2，官方分数段表同构） ──────────────────────
+
+
+SCORE_BAND_WIDTHS = (5, 10, 20)
+
+
+def _score_band_edges(width: int) -> List[float]:
+    """分数段下界序列（降序）：顶段下界 = 严格小于满分 100 的最大 width
+    整数倍（10 分段 → [90,+∞)，与官方《分数段分析》导出表同构），
+    依次降至 0（[0,width) 为底段）。"""
+    top = 100 - width if 100 % width == 0 else (100 // width) * width
+    return [float(top - width * i) for i in range(top // width + 1)]
+
+
+def _score_band_class(
+    teaching_class_id: Optional[int],
+    class_label: str,
+    rows: List[Tuple[int, Optional[float], Optional[float], str, Optional[str]]],
+    width: int,
+) -> TeachingScoreBandClass:
+    """单列（一个教学班或当前范围合并）的分数段统计。段口左闭右开：
+    90 入顶段 [90,+∞)、89.5 入 [80,90)、0 入 [0,10)（0 分计入段与
+    均分，E02）；累计自高分段向下；σ 为总体标准差；缺考（score NULL）
+    不计入任何段与计量，单独 missing_count。"""
+    edges = _score_band_edges(width)
+    idx_of = {edge: i for i, edge in enumerate(edges)}
+    valid = [score for _, score, _, _, _ in rows if score is not None]
+    counts = [0] * len(edges)
+    for score in valid:
+        if score >= edges[0]:
+            counts[0] += 1
+        else:
+            counts[idx_of[float(int(score // width)) * width]] += 1
+    bands: List[TeachingScoreBand] = []
+    cumulative = 0
+    for i, edge in enumerate(edges):
+        cumulative += counts[i]
+        bands.append(
+            TeachingScoreBand(
+                low=edge,
+                high=None if i == 0 else edges[i - 1],
+                count=counts[i],
+                cumulative=cumulative,
+                cumulative_pct=(
+                    round(cumulative / len(valid) * 100, 2) if valid else None
+                ),
+            )
+        )
+    stddev = None
+    if valid:
+        mean = sum(valid) / len(valid)
+        stddev = round(
+            (sum((s - mean) ** 2 for s in valid) / len(valid)) ** 0.5, 2
+        )
+    return TeachingScoreBandClass(
+        teaching_class_id=teaching_class_id,
+        class_label=class_label,
+        valid_count=len(valid),
+        missing_count=len(rows) - len(valid),
+        max=max(valid) if valid else None,
+        min=min(valid) if valid else None,
+        avg=_avg(valid),
+        stddev=stddev,
+        bands=bands,
+    )
+
+
+@router.get(
+    "/teaching/analysis/exams/{exam_name}/score-bands",
+    response_model=TeachingScoreBandsResponse,
+)
+@domain_endpoint
+def teaching_exam_score_bands(
+    exam_name: str,
+    band_width: int = 10,
+    teaching_class_id: Optional[int] = None,
+    academic_year_id: Optional[int] = None,
+    term_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+) -> TeachingScoreBandsResponse:
+    """分数段分析：当前范围每个教学班一列 + merged（当前范围合并）
+    一列，本段/累计/累计比例与 人数/最高/最低/均分/σ。成员与计量口径
+    同 stats/students（F08 考试时点名册 + F09 readable_facts，含 H 域
+    反向投影行）；仅本班口径，绝不提供年级/官方列（官方班级均分走
+    班级对比页）。"""
+    if band_width not in SCORE_BAND_WIDTHS:
+        raise InvalidScopeParam(
+            f"band_width must be one of {SCORE_BAND_WIDTHS}",
+            details={"param": "band_width"},
+        )
+    teacher_id = current_teacher_id(db)
+    params, subject, class_ids = q.build_teaching_params(
+        db, academic_year_id, teaching_class_id, None, term_id
+    )
+    ctx = resolve_workspace_context(db, teacher_id, "teaching", params)
+    if not _exam_exists_for_teaching(db, ctx.academic_year_id, exam_name):
+        raise ResourceOutOfScope(
+            "exam not found in teaching domain", details={"exam_name": exam_name}
+        )
+    member_ids = _exam_member_ids(db, ctx, exam_name)
+    labels = _class_labels(db, class_ids)
+    classes: List[TeachingScoreBandClass] = []
+    merged_rows: List[
+        Tuple[int, Optional[float], Optional[float], str, Optional[str]]
+    ] = []
+    small_sample = False
+    for tc_id in class_ids:
+        rows = _teaching_member_rows(db, ctx, [tc_id], subject, exam_name, member_ids)
+        entry = _score_band_class(tc_id, labels.get(tc_id, ""), rows, band_width)
+        if entry.valid_count < 5:
+            small_sample = True
+        classes.append(entry)
+        merged_rows.extend(rows)
+    merged = _score_band_class(None, "当前范围合并", merged_rows, band_width)
+    if merged.valid_count < 5:
+        small_sample = True
+    return TeachingScoreBandsResponse(
+        metadata=_analysis_metadata(
+            ctx,
+            "exam",
+            teaching_class_id=class_ids[0] if teaching_class_id is not None else None,
+        ),
+        subject=subject,
+        band_width=band_width,
+        score_basis="raw",
+        classes=classes,
+        merged=merged,
+        small_sample=small_sample,
     )
 
 

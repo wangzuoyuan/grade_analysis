@@ -817,6 +817,41 @@ export interface TeachingClassCompareResponse {
   small_sample?: boolean
 }
 
+/** 单个分数段（左闭右开，90 入顶段；顶段 high=null 表示 [low,+∞)）。 */
+export interface TeachingScoreBand {
+  low: number
+  high: number | null
+  count: number
+  /** 自高分段向下累计人数。 */
+  cumulative: number
+  /** 累计比例（%）；valid_count=0 时为 null（不编造）。 */
+  cumulative_pct: number | null
+}
+
+/** 分数段分析的班级列；merged 合并列 teaching_class_id=null。stddev 为总体标准差 σ。 */
+export interface TeachingScoreBandClass {
+  teaching_class_id: number | null
+  class_label: string
+  valid_count: number
+  missing_count: number
+  max: number | null
+  min: number | null
+  avg: number | null
+  stddev: number | null
+  bands: TeachingScoreBand[]
+}
+
+/** GET /api/v1/teaching/analysis/exams/{exam_name}/score-bands 的响应（本班口径）。 */
+export interface TeachingScoreBandsResponse {
+  metadata: ResponseMetadata
+  subject: string
+  band_width: number
+  score_basis: 'raw' | 'grade'
+  classes: TeachingScoreBandClass[]
+  merged: TeachingScoreBandClass
+  small_sample?: boolean
+}
+
 /* ------------------------------------------------------------------ */
 /* 请求基础设施                                                        */
 /* ------------------------------------------------------------------ */
@@ -1262,6 +1297,20 @@ export function fetchTeachingClassCompare(
 ): Promise<TeachingClassCompareResponse> {
   return request<TeachingClassCompareResponse>(
     withQuery(`${API_V1_BASE}/teaching/analysis/class-compare`, { exam_name: examName, ...q }),
+  )
+}
+
+/** GET /api/v1/teaching/analysis/exams/{exam_name}/score-bands（本班口径，10 分段默认） */
+export function fetchTeachingScoreBands(
+  examName: string,
+  q: AnalysisScopeQuery = {},
+  bandWidth: number = 10,
+): Promise<TeachingScoreBandsResponse> {
+  return request<TeachingScoreBandsResponse>(
+    withQuery(`${API_V1_BASE}/teaching/analysis/exams/${encodeURIComponent(examName)}/score-bands`, {
+      ...q,
+      band_width: bandWidth,
+    }),
   )
 }
 
