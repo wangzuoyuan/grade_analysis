@@ -11,8 +11,10 @@
   exam_name 不同 exam_date（批内或与库内）→ 整批 409（v2.1 边界裁决）；
   身份解析（F06/v2.2-G06）：本学年 alias 命中直接接续；历史学年 alias
   命中与未证实覆盖文件日期的 NULL 学年命中只出 identity_candidates，须
-  identity_confirmations 逐项显式确认（伪造 person → 422），同名不消
-  歧、撞号整文件拒绝；NULL 学年登记仅在自身有效期明确覆盖目标文件日期
+  identity_confirmations 逐项显式确认（伪造 person → 422）或
+  identity_new_aliases 显式新建（跨学年同号异名也归候选，可消歧；历
+  史学生记录不动），同名不消歧、**本学年**同号异名整文件 409 拒绝；
+  NULL 学年登记仅在自身有效期明确覆盖目标文件日期
   时按已知身份命中。成员有效期（F07）取 max(学年 start_date, 文件日期)，
   绝不取今天；一切接续既有人路径补登本学年 alias 并补建目标班学籍/
   成员行（G06：不再只给候选确认分支补学籍）。写入分两阶段——先只读预检
@@ -245,22 +247,28 @@ def _resolve_file_students(
       解析为该 identity（known，可自动接续）；
     - 历史学年 alias 命中 / 未证实覆盖的 NULL 学年命中 → 仅生成
       identity_candidates（person_id/学年/依据），不进 known 也不进
-      new_students，confirm 须逐项显式确认；
+      new_students，confirm 须逐项显式确认（接续 identity_confirmations
+      或显式新建 identity_new_aliases，二者皆可消歧，绝不自动认定）；
     - 无匹配 → new_students；
-    - 撞号 = 命中身份（含历史候选的主候选）但 display_name 与文件姓名
-      不同（H 撞号防呆：preview 计 warning，confirm 整文件 409 拒绝）。"""
+    - 撞号 = **本学年在册命中**（_current_alias_row）但 display_name 与
+      文件姓名不同（H 撞号防呆：preview 计 warning，confirm 整文件 409
+      拒绝）。跨学年/未标学年的历史同号即便姓名不同也只算候选——那是
+      学号被新一届学生复用的正常形态，由用户在候选清单里显式选择
+      接续还是新建，历史学生记录不动。"""
     identity_by_alias: dict = {}
     new_students: list = []
     conflicts: list = []
     candidates: list = []
     ids_needed = []
     matched_rows: dict = {}
+    current_matched: set = set()
     for stu in students:
         alias = stu["alias"]
         row = _current_alias_row(db, domain, alias, academic_year_id, file_date)
         if row is not None:
             identity_by_alias[alias] = row.identity_id
             matched_rows[alias] = row
+            current_matched.add(alias)
             ids_needed.append(row.identity_id)
             continue
         hist = _historical_alias_rows(db, domain, alias, academic_year_id)
@@ -304,9 +312,9 @@ def _resolve_file_students(
         c["name"] = names.get(c["person_id"])
         c["academic_year_name"] = year_names.get(c["academic_year_id"])
     for stu in students:
-        row = matched_rows.get(stu["alias"])
-        if row is None:
-            continue
+        if stu["alias"] not in current_matched:
+            continue  # 历史命中（跨学年/未标学年）不构成撞号：留在候选清单待显式消歧
+        row = matched_rows[stu["alias"]]
         display = names.get(row.identity_id)
         if display and stu.get("name") and display != stu["name"]:
             conflicts.append(
@@ -624,7 +632,10 @@ class ImportsConfirmRequest(BaseModel):
     identity_confirmations: Dict[str, int] = {}
     # F06 完备性补全（集成者接线）：显式声明"按新学生建档"的候选 alias——
     # 用户对历史候选的另一种合法决定。完备性 = 每个候选 alias 必须出现在
-    # confirmations 或本列表；出现在本列表的不接续，按新学生建档。
+    # confirmations 或本列表；出现在本列表的不接续，按新学生建档（新身份
+    # 独立入库，历史学生记录不变）。声明必须是预览候选清单里出现过的
+    # alias（伪造/未在预览出现 → 422）；本学年同号异名的撞号拒绝不受
+    # 本声明影响。
     identity_new_aliases: List[str] = []
 
 
@@ -864,9 +875,28 @@ def _apply_import_confirm(req, db, batch, snapshot):
     # v2.2/G06：未标学年（NULL）的登记同样是合法持有证据——它正是
     # unmarked_alias 候选的来源；仍排除"本学年已标记"行（那类命中本就
     # 走 known 路径，不构成候选）
+    file_alias_names: dict = {}
+    for f in files:
+        for stu in f.get("students") or []:
+            file_alias_names.setdefault(stu["alias"], stu.get("name"))
+    # declared_new 只接受预览候选清单里出现过的 alias：伪造/未在预览出现
+    # 的声明无效（422），绝不静默忽略，也不允许借声明绕过本学年撞号
+    invalid_new = sorted(a for a in declared_new if a not in candidate_registry)
+    if invalid_new:
+        raise InvalidScopeParam(
+            "identity_new_aliases 含未出现在候选清单的学号（历史同号候选不存在），声明无效",
+            details={"invalid_aliases": invalid_new},
+        )
     for alias in candidate_registry:
         if alias in declared_new:
-            continue  # 用户显式选择按新学生建档：不接续，写入阶段走新学生路径
+            # 用户显式选择按新学生建档：不接续历史 identity，补进新建档
+            # 队列（解析阶段该 alias 走的是 candidates 而非 new_students，
+            # 不补进来写入阶段会 KeyError——对照 teaching_platform.identities
+            # 的显式 append）
+            new_students.append(
+                {"name": file_alias_names.get(alias), "alias": alias}
+            )
+            continue
         person_id = confirmations[alias]
         holds = (
             db.query(WsStudentAlias)
@@ -898,27 +928,35 @@ def _apply_import_confirm(req, db, batch, snapshot):
     skips = 0
     revises: list = []
     value_conflicts: list = []
+    in_batch_conflicts: list = []
     exams_seen: dict = {}
-    # 批内自然键去重：多文件重复提交同键行时同值合并、异值计冲突
+    # 批内自然键去重：多文件重复提交同键行时同值合并、异值计冲突。
+    # 学生维度按**解析后的 identity_id** 去重（尚未建档的新学号才按 alias）：
+    # 同一学生同批用新旧两个学号出现时是一行事实，按原始 alias 去重会让
+    # 两行都进 inserts 撞 uq_score_fact_natural_key（4C）。
     batch_rows: dict = {}
     for f in files:
         exam_name = f.get("exam_name")
         exam_date = date.fromisoformat(f["exam_date"]) if f.get("exam_date") else None
         exams_seen.setdefault(exam_name, exam_date)
         for row in f.get("rows") or []:
+            ident_id = identity_by_alias.get(row["alias"])
+            person_key = ("known", ident_id) if ident_id is not None else ("alias", row["alias"])
             key = (
                 (exam_name, f.get("resolved_event_id"), f.get("exam_date")),
-                row["alias"],
+                person_key,
                 row.get("subject") or "",
                 row.get("total_type") or "",
             )
             seen = batch_rows.get(key)
             if seen is not None:
                 if _same_row_value(seen["row"], row):
-                    continue  # 批内同键同值：只处理一次
-                value_conflicts.append(
+                    seen.setdefault("aliases", {seen["row"]["alias"]}).add(row["alias"])
+                    continue  # 批内同键同值：只处理一次（同一人多学号合并为一行）
+                in_batch_conflicts.append(
                     {
                         "person": row.get("name") or row["alias"],
+                        "aliases": sorted({seen["row"]["alias"], row["alias"]}),
                         "subject": row.get("total_type") or row.get("subject"),
                         "exam_name": exam_name,
                         "existing_score": seen["row"].get("score"),
@@ -965,37 +1003,49 @@ def _apply_import_confirm(req, db, batch, snapshot):
                 "grade": int(f["grade"]),
             }
 
+    def _same_average_values(existing, row) -> bool:
+        return (
+            existing.class_type == row.get("class_type")
+            and existing.teacher_name == row.get("teacher_name")
+            and (existing.subject_averages or {}) == (row.get("subject_averages") or {})
+            and (existing.total_averages or {}) == (row.get("total_averages") or {})
+        )
+
     for plan in average_rows.values():
         row = plan["row"]
-        existing = (
-            db.query(WorkspaceClassAverage)
-            .filter(
-                WorkspaceClassAverage.data_domain == ctx.data_domain,
-                WorkspaceClassAverage.academic_year_id == ctx.academic_year_id,
+        # 查重按与库唯一约束 uq_workspace_class_average_natural_key
+        # (data_domain, academic_year_id, event_or_name, grade, class_num)
+        # 一致的自然键口径：事件路径按归并集 exam_event_id 集合定位，
+        # legacy 路径按 (exam_event_id IS NULL, exam_name) 定位；不再用
+        # exam_name/exam_date 过滤——改名/改日期时旧口径查不到既有行，
+        # INSERT 撞唯一约束（4A）；归并集内两行同键命中时 one_or_none
+        # 抛 MultipleResultsFound（4B）。集合内多行 = 归并的正常产物：
+        # 同值幂等 skip、异值按修订流程统一更新或可读 409。
+        base_query = db.query(WorkspaceClassAverage).filter(
+            WorkspaceClassAverage.data_domain == ctx.data_domain,
+            WorkspaceClassAverage.academic_year_id == ctx.academic_year_id,
+            WorkspaceClassAverage.grade == plan["grade"],
+            WorkspaceClassAverage.class_num == int(row["class_num"]),
+        )
+        eid = event_choices[plan["filename"]]
+        if eid:
+            matches = base_query.filter(
+                WorkspaceClassAverage.exam_event_id.in_(events.event_ids(db, eid))
+            ).order_by(WorkspaceClassAverage.id).all()
+        else:
+            matches = base_query.filter(
+                WorkspaceClassAverage.exam_event_id.is_(None),
                 WorkspaceClassAverage.exam_name == plan["exam_name"],
-                WorkspaceClassAverage.exam_event_id.in_(events.event_ids(db, event_choices[plan["filename"]])) if event_choices[plan["filename"]] else WorkspaceClassAverage.exam_event_id.is_(None),
-                WorkspaceClassAverage.exam_date == plan["exam_date"],
-                WorkspaceClassAverage.grade == plan["grade"],
-                WorkspaceClassAverage.class_num == int(row["class_num"]),
-            )
-            .one_or_none()
-        )
-        if existing is not None:
-            average_bindings.append((existing, plan))
-        same = existing is not None and all(
-            (
-                existing.class_type == row.get("class_type"),
-                existing.teacher_name == row.get("teacher_name"),
-                (existing.subject_averages or {}) == (row.get("subject_averages") or {}),
-                (existing.total_averages or {}) == (row.get("total_averages") or {}),
-            )
-        )
-        if existing is None:
+            ).order_by(WorkspaceClassAverage.id).all()
+        has_event_bound = any(m.exam_event_id is not None for m in matches)
+        for m in matches:
+            average_bindings.append((m, plan, has_event_bound))
+        if not matches:
             average_inserts.append(plan)
-        elif same:
+        elif all(_same_average_values(m, row) for m in matches):
             average_skips += 1
         elif req.revise:
-            average_revises.append((existing, plan))
+            average_revises.extend((m, plan, has_event_bound) for m in matches)
         else:
             value_conflicts.append(
                 {
@@ -1036,6 +1086,14 @@ def _apply_import_confirm(req, db, batch, snapshot):
                     "new_score": row.get("score"),
                 }
             )
+    if in_batch_conflicts:
+        # 同一学生（同一解析后身份，可能是新旧两个学号）同批同键数值不同：
+        # 批内自相矛盾无法用 revise 消解（没有"哪行是对的"的依据），
+        # 整批 409 列出学号对与两值，零写入。
+        raise LinkVersionConflict(
+            "同一学生的多个学号同批出现且数值不同，请核对后重传",
+            details={"conflicts": in_batch_conflicts},
+        )
     if value_conflicts:
         # revise=false：不同值 → 整批 409 + conflicts 列表，零写入
         raise LinkVersionConflict(
@@ -1170,8 +1228,11 @@ def _apply_import_confirm(req, db, batch, snapshot):
                 eid = created_events[key]
             events.ensure_grade(db, eid, key[1])
             event_choices[f["filename"]] = eid
-        for existing, plan in average_bindings:
-            if existing.exam_event_id is None:
+        for existing, plan, has_event_bound in average_bindings:
+            # legacy 行补挂事件：仅当该自然键的归并集内还没有事件行占用
+            # （事件键已被占时再挂会撞唯一约束——legacy 行与事件行是两个
+            # 不同的库内自然键，归并后按集合语义并存）
+            if existing.exam_event_id is None and not has_event_bound:
                 existing.exam_event_id = event_choices[plan["filename"]]
         for plan in batch_rows.values():
             existing = _natural_fact(db, ctx.data_domain, ay.id, plan["exam_name"],
@@ -1231,9 +1292,10 @@ def _apply_import_confirm(req, db, batch, snapshot):
                     source=f"import:{plan['filename']}",
                 )
             )
-        for existing, plan in average_revises:
+        for existing, plan, has_event_bound in average_revises:
             row = plan["row"]
-            existing.exam_event_id = event_choices[plan["filename"]]
+            if existing.exam_event_id is None and not has_event_bound:
+                existing.exam_event_id = event_choices[plan["filename"]]
             existing.exam_date = plan["exam_date"]
             existing.class_type = row.get("class_type")
             existing.teacher_name = row.get("teacher_name")

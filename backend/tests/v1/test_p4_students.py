@@ -65,11 +65,15 @@ def test_i01_create_student_lands_identity_alias_enrollment(client, v1_seed):
         alias = db.query(wm.WsStudentAlias).filter_by(identity_id=pid).one()
         assert alias.alias_value == "2025H6-07"
         assert alias.academic_year_id == v1_seed.ay_id
-        assert alias.valid_from == date.today()  # 学年起点与今天较晚者
+        # 问题8 新语义：学籍生效日 = max(学年首, 今天) 再夹到学年末——
+        # 旧断言 date.today() 在「今天已晚于种子学年结束日（2026-07-15）」时
+        # 恰好复现审查报告问题8（历史学年补录写出界日期），按夹紧口径更新。
+        clamped_today = min(max(date(2025, 9, 1), date.today()), date(2026, 7, 15))
+        assert alias.valid_from == clamped_today
         enr = db.query(wm.Enrollment).filter_by(identity_id=pid).one()
         assert enr.admin_class_id == v1_seed.h6_id
         assert enr.status == "active"
-        assert enr.valid_from == max(date(2025, 9, 1), date.today())
+        assert enr.valid_from == clamped_today
     finally:
         db.close()
 

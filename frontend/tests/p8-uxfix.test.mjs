@@ -26,7 +26,7 @@ test('UX02：学生检索按 v1 作用域解析，搜索/学年/班级齐全，�
   assert.match(studentList, /teaching_class_id: Number\(id\)/, '「全部」须按班级目录逐班取数，不得向 v1 传空范围')
   assert.match(studentList, /merged\.set\(String\(s\.person_id\), s\)/, '多班名册须按 person 去重合并')
   assert.match(studentList, /listExams\('teaching', scopeQ\)/, '考试清单须走 v1 shared/exams')
-  assert.match(studentList, /fetchTeachingStudents\(latest\.exam_name, scopeQ\)/, '最新成绩/名次须走 v1 教学分析')
+  assert.match(studentList, /fetchTeachingStudents\(latest\.exam_key \?\? latest\.exam_name, scopeQ\)/, '最新成绩/名次须走 v1 教学分析（exam_key 定位，问题 3）')
   assert.match(studentList, /debouncedQuery/, '搜索须有防抖')
   assert.match(studentList, /ScoreYearPicker/, '须提供学年切换')
   assert.match(studentList, /ClassScopePicker/, '须提供教学班筛选')

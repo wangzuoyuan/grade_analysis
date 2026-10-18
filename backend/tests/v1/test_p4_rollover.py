@@ -478,7 +478,10 @@ def test_confirm_member_drift_409(client, v1_seed):
 
     token = _preview(client, v1_seed)["token"]
 
-    # preview 后旧学年成员漂移（乙离班）
+    # preview 后旧学年成员漂移（乙离班）。2026-10-18 起取样时点 =
+    # min(今天, 源学年结束日 2026-07-15)（问题13.4），离班日必须落在
+    # 学年内才会被取样发现；落在学年结束日之后（延续期）的离班不属于
+    # 源学年名册口径，不再计为漂移。
     db = _db()
     try:
         enr = (
@@ -488,7 +491,7 @@ def test_confirm_member_drift_409(client, v1_seed):
             )
             .one()
         )
-        enr.valid_to = date(2026, 9, 10)
+        enr.valid_to = date(2026, 6, 30)
         db.commit()
     finally:
         db.close()

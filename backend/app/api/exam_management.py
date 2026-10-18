@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import update
+from sqlalchemy import or_, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
@@ -335,10 +335,66 @@ def _mappings(db, g):
     return maps, projections
 
 
+def _own_teaching_class_ids(db, ctx):
+    """本人该学年同学科【全部】教学班 id（含 status='inactive' 停用班）。
+
+    工作台 ctx.class_ids 只含在用班（build_teaching_params/延续口径均过滤
+    active），日常读写统计沿用该口径不变；停用班的历史数据仍属本人合法
+    范围（首版单教师：同学科教学班均归本人）。未换届延续时连同被延续
+    学年一并纳入。
+    """
+    year_ids = [ctx.academic_year_id]
+    if getattr(ctx, 'carried_from_academic_year_id', None):
+        year_ids.append(ctx.carried_from_academic_year_id)
+    return {row[0] for row in db.query(TeachingClass.id).filter(
+        TeachingClass.academic_year_id.in_(year_ids),
+        TeachingClass.subject == ctx.subject).all()}
+
+
+def _adopt_inactive_class_facts(db, ctx, g):
+    """删除路径专用：把停用教学班的本场考试成绩并入待删范围。
+
+    背景：两个班共用一场教学平台联考（同一 TeachingExamScope），其中一
+    班停用后 _catalog 只看在用班，停用班成绩会被「范围外成绩」守卫当成
+    他人数据，导致整场考试永远无法删除。本人的历史数据属本人合法范围，
+    整场删除时一并处理；他人/其他范围的成绩仍由下方守卫阻止。
+    只按考试归属（事件树或平台考试引用）收敛，不按同名猜测；无事件与
+    平台引用的 legacy 分组本就不触发该守卫，不扩展。
+    """
+    extra_class_ids = _own_teaching_class_ids(db, ctx) - set(ctx.class_ids)
+    exam_ids = [e.id for e in g['exams']]
+    if not extra_class_ids or not (exam_ids or g['event_id']):
+        return
+    matchers = [ScoreFact.teaching_exam_id.in_(exam_ids)] if exam_ids else []
+    if g['event_id']:
+        matchers.append(ScoreFact.exam_event_id.in_(events.event_ids(db, g['event_id'])))
+    known = {f.id for f in g['facts']}
+    query = db.query(ScoreFact).filter(ScoreFact.data_domain == 'teaching',
+        ScoreFact.academic_year_id == ctx.academic_year_id,
+        ScoreFact.subject == ctx.subject, ScoreFact.total_type.is_(None),
+        ScoreFact.class_ref_id.in_(extra_class_ids), or_(*matchers))
+    if known:
+        query = query.filter(~ScoreFact.id.in_(known))
+    adopted = query.order_by(ScoreFact.id).all()
+    if not adopted:
+        return
+    labels = {c.id: c.label for c in db.query(TeachingClass).filter(
+        TeachingClass.id.in_({f.class_ref_id for f in adopted})).all()}
+    for f in adopted:
+        g['facts'].append(f)
+        if f.exam_date:
+            g['dates'].add(f.exam_date.isoformat())
+        if labels.get(f.class_ref_id):
+            g['class_labels'].add(labels[f.class_ref_id])
+    g['sources'].add(ctx.mode)
+
+
 def _plan(db, ctx, key):
     g = _catalog(db, ctx).get(key)
     if g is None or not _public(g)['can_delete']:
         raise ResourceOutOfScope('该考试没有可删除的本工作台数据；关联成绩请在来源工作台管理')
+    if ctx.mode == 'teaching':
+        _adopt_inactive_class_facts(db, ctx, g)
     for exam in g['exams']:
         all_references = {f[0] for f in db.query(ScoreFact.id).filter_by(teaching_exam_id=exam.id)}
         if all_references - {f.id for f in g['facts']}:

@@ -234,9 +234,13 @@ def _priority_persons(cls: dict, excluded_ids: set) -> List[dict]:
 # ────────────────────────── sections 四摘要 ──────────────────────────
 
 
-def _trend_changes(cls: dict) -> dict:
+def _trend_changes(cls: dict, teaching: bool = False) -> dict:
     """趋势摘要：近方向进步/退步人数（B1 trend.direction_recent 直接计数；
-    「持平/数据不足」不属于任一桶，如实不计）。"""
+    「持平/数据不足」不属于任一桶，如实不计）。
+
+    教学域（12.2）：trend 恒 not_computable（teaching_no_total，教学域只存
+    任教学科无总分名次序列），0 不是「无人进退步」——额外标注不可计算，
+    计数字段保持既有形状与数值（前端兼容，仅增量键）。"""
     improving = declining = 0
     for row in cls.get("students") or []:
         features = row.get("features")
@@ -247,12 +251,19 @@ def _trend_changes(cls: dict) -> dict:
             improving += 1
         elif direction == "退步":
             declining += 1
-    return {"improving_n": improving, "declining_n": declining}
+    payload = {"improving_n": improving, "declining_n": declining}
+    if teaching:
+        payload["status"] = "not_computable"
+        payload["missing_reason"] = "teaching_no_total"
+    return payload
 
 
-def _structure(cls: dict) -> dict:
+def _structure(cls: dict, teaching: bool = False) -> dict:
     """结构摘要：最近一场段位人数（B1 current_level.bands 布尔直接计数；
-    名次不可得的学生三段全 False → 不进任何桶，如实不估算）。"""
+    名次不可得的学生三段全 False → 不进任何桶，如实不估算）。
+
+    教学域（12.2）：段位依赖主三门名次（teaching_no_total），三段 0 是
+    口径不适用而非「无临界/薄弱」——额外标注不可计算。"""
     counts = {"high_score": 0, "critical": 0, "weak": 0}
     for row in cls.get("students") or []:
         features = row.get("features")
@@ -262,7 +273,11 @@ def _structure(cls: dict) -> dict:
         for key in counts:
             if bands.get(key):
                 counts[key] += 1
-    return {"band_counts": counts}
+    payload = {"band_counts": counts}
+    if teaching:
+        payload["status"] = "not_computable"
+        payload["missing_reason"] = "teaching_no_total"
+    return payload
 
 
 def _homework(cls: dict, excluded_ids: set) -> dict:
@@ -364,6 +379,7 @@ def action_summary(db: Session, scope, academic_year_id: int) -> dict:
     from app.api.homework import _stats_excluded_ids
 
     excluded_ids = _stats_excluded_ids(db, ctx.data_domain, ctx.class_ids)  # ADR-023
+    teaching = ctx.data_domain == "teaching" or ctx.mode == "teaching"
     as_of = ctx.as_of
     return {
         "calc_version": CALC_VERSION,
@@ -375,8 +391,8 @@ def action_summary(db: Session, scope, academic_year_id: int) -> dict:
             for row in cls["students"]
         ],
         "sections": {
-            "trend_changes": _trend_changes(cls),
-            "structure": _structure(cls),
+            "trend_changes": _trend_changes(cls, teaching),
+            "structure": _structure(cls, teaching),
             "homework": _homework(cls, excluded_ids),
             "follow_ups": _follow_ups(db, ctx, cls, as_of),
         },

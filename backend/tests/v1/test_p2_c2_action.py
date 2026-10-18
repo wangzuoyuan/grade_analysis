@@ -312,8 +312,10 @@ def test_action_summary_homogeneous_with_b1_b2(client, p2c2_seed):
 
 
 def test_teaching_domain_summary(client, p2c2_seed):
-    """教学域：仅任教学科——无总分/名次 → 结构计数如实全 0；作业风险与
-    待办仍按本域口径输出（甲·T 连缺 2 天 + 本周未关闭跟进）。"""
+    """教学域：仅任教学科——无总分/名次 → 结构/趋势计数如实全 0 并标注
+    not_computable（2026-10-18 修复 12.2：口径不适用 ≠ 「无人进退步/无临界」，
+    额外携带 status/missing_reason 增量键）；作业风险与待办仍按本域口径
+    输出（甲·T 连缺 2 天 + 本周未关闭跟进）。"""
     s = p2c2_seed.seed
     resp = _get(client, "/teaching/diagnosis/action-summary", academic_year_id=s.ay_id)
     assert resp.status_code == 200, resp.text
@@ -321,9 +323,15 @@ def test_teaching_domain_summary(client, p2c2_seed):
 
     assert body["calc_version"] == "p2-v1"
     assert body["sections"]["structure"] == {
-        "band_counts": {"high_score": 0, "critical": 0, "weak": 0}
+        "band_counts": {"high_score": 0, "critical": 0, "weak": 0},
+        "status": "not_computable",
+        "missing_reason": "teaching_no_total",
     }
-    assert body["sections"]["trend_changes"] == {"improving_n": 0, "declining_n": 0}
+    assert body["sections"]["trend_changes"] == {
+        "improving_n": 0, "declining_n": 0,
+        "status": "not_computable",
+        "missing_reason": "teaching_no_total",
+    }
     assert body["sections"]["homework"] == {"risk_n": 1, "missing_30d_total": 2, "stats_excluded_n": 0}
     assert body["sections"]["follow_ups"] == {"open_n": 1, "due_this_week": 1}
 
@@ -336,7 +344,7 @@ def test_teaching_domain_summary(client, p2c2_seed):
 
 def test_teaching_empty_scope_all_zero(client, p2c2_seed):
     """T8（戊·T/己·T）：无作业无档案无类型命中 → 优先关注空、四摘要全零
-    （空态如实输出 0/空列表，不编造）。"""
+    （空态如实输出 0/空列表，不编造）；教学域结构/趋势另标注口径不可计算。"""
     s = p2c2_seed.seed
     resp = _get(client, "/teaching/diagnosis/action-summary",
                 teaching_class_id=s.t8_id, academic_year_id=s.ay_id)
@@ -344,8 +352,10 @@ def test_teaching_empty_scope_all_zero(client, p2c2_seed):
     body = resp.json()
     assert body["priority_persons"] == []
     assert body["sections"] == {
-        "trend_changes": {"improving_n": 0, "declining_n": 0},
-        "structure": {"band_counts": {"high_score": 0, "critical": 0, "weak": 0}},
+        "trend_changes": {"improving_n": 0, "declining_n": 0,
+                          "status": "not_computable", "missing_reason": "teaching_no_total"},
+        "structure": {"band_counts": {"high_score": 0, "critical": 0, "weak": 0},
+                      "status": "not_computable", "missing_reason": "teaching_no_total"},
         "homework": {"risk_n": 0, "missing_30d_total": 0, "stats_excluded_n": 0},
         "follow_ups": {"open_n": 0, "due_this_week": 0},
     }

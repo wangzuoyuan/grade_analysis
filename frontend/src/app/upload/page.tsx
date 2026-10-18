@@ -36,6 +36,7 @@ import {
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
+import { useClassScope } from '@/lib/class-scope'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -117,7 +118,9 @@ export default function UploadPage() {
 }
 
 function LegacyUploadPage() {
-  const { mode, filter, switching } = useWorkspace()
+  const { mode, filter, switching, refreshScope } = useWorkspace()
+  // 导入可能新建首个班级（名册/成绩明细），班级目录（范围栏/侧栏）也要跟着刷新（14.3）
+  const { refresh: refreshClassScope } = useClassScope()
 
   const [files, setFiles] = useState<File[]>([])
   const [isDragging, setIsDragging] = useState(false)
@@ -263,6 +266,10 @@ function LegacyUploadPage() {
       )
       if (req !== reqRef.current) return
       setResult(r)
+      // 全局范围与班级目录刷新（14.3）：新名册/新班级无需手动刷新浏览器，
+      // 返回工作台首页与范围栏即为最新口径
+      refreshScope()
+      refreshClassScope()
       setPreview(null)
     setExamChoices({})
       setFiles([])

@@ -52,6 +52,7 @@ import {
 import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
 import { clearPageDraft, loadPageDraft, savePageDraft } from '@/lib/page-draft'
+import type { TeachingSyncNewStudentDecision } from '@/lib/api-v1'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -119,7 +120,7 @@ function LinkGuidance({ detail }: { detail?: string | null }) {
 }
 
 export function TeachingMembersManager() {
-  const { filter, setFilter, scope, generation, switching } = useWorkspace()
+  const { filter, setFilter, scope, generation, switching, refreshScope } = useWorkspace()
 
   // 配置（学年 + 关联）与班级目录
   const [config, setConfig] = useState<SharedConfig | null>(null)
@@ -148,6 +149,8 @@ export function TeachingMembersManager() {
   const [addError, setAddError] = useState<string | null>(null)
   const [addRejectedByLink, setAddRejectedByLink] = useState(false)
   const [addNotice, setAddNotice] = useState<string | null>(null)
+  // 问题8：入班生效日（默认今天；历史日期用于补录，学年范围由后端校验）
+  const [addEffectiveOn, setAddEffectiveOn] = useState(() => new Date().toISOString().slice(0, 10))
 
   // 移除成员（写 valid_to）
   const [removing, setRemoving] = useState<TeachingMember | null>(null)
@@ -161,12 +164,17 @@ export function TeachingMembersManager() {
   const [importError, setImportError] = useState<string | null>(null)
   const [importRejectedByLink, setImportRejectedByLink] = useState(false)
   const [importResult, setImportResult] = useState<string | null>(null)
+  // 问题8：批量导入的成员生效日（预览/确认必须一致；默认今天）
+  const [importEffectiveOn, setImportEffectiveOn] = useState(() => new Date().toISOString().slice(0, 10))
 
   // 从行政班同步（关联班专用）
   const [syncPreview, setSyncPreview] = useState<TeachingSyncPreview | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState<string | null>(null)
   const [syncNotice, setSyncNotice] = useState<string | null>(null)
+  // 问题7/8：同步生效日 + 未配对学生的逐人决定（'skip' | 'new' | 候选 person_id 数字）
+  const [syncEffectiveOn, setSyncEffectiveOn] = useState(() => new Date().toISOString().slice(0, 10))
+  const [syncDecisions, setSyncDecisions] = useState<Record<number, 'skip' | 'new' | number>>({})
 
   const yearId = typeof filter.academic_year_id === 'number'
     ? filter.academic_year_id
@@ -296,6 +304,7 @@ export function TeachingMembersManager() {
     setSyncPreview(null)
     setSyncError(null)
     setSyncNotice(null)
+    setSyncDecisions({})
   }, [selectedClassId])
 
   // 添加成员表单草稿（S07 同思路：切走不丢，提交成功清除）
@@ -341,12 +350,14 @@ export function TeachingMembersManager() {
       await addTeachingMember(selectedClassId, {
         name: addName.trim(),
         ...(addAlias.trim() !== '' ? { alias: addAlias.trim() } : {}),
+        ...(addEffectiveOn.trim() !== '' ? { effective_on: addEffectiveOn.trim() } : {}),
       })
       clearPageDraft(DRAFT_ROUTE, 'add-member')
       setAddName('')
       setAddAlias('')
       setAddNotice('已添加成员')
       setMembersNonce((n) => n + 1)
+      refreshScope()
     } catch (err) {
       // 关联班：后端 409 拒绝建教学域身份 → 引导到班主任侧/配对
       if (err instanceof ApiV1Error && err.status === 409) {
@@ -380,7 +391,11 @@ export function TeachingMembersManager() {
     setImportRejectedByLink(false)
     setImportResult(null)
     try {
-      const p = await importTeachingMembersPreview(selectedClassId, importText)
+      const p = await importTeachingMembersPreview(
+        selectedClassId,
+        importText,
+        importEffectiveOn.trim() !== '' ? importEffectiveOn.trim() : undefined,
+      )
       setImportPreview(p)
     } catch (err) {
       setImportPreview(null)
@@ -398,14 +413,23 @@ export function TeachingMembersManager() {
     setImporting(true)
     setImportError(null)
     try {
-      const r = await importTeachingMembersConfirm(selectedClassId, importPreview.token)
+      const r = await importTeachingMembersConfirm(
+        selectedClassId,
+        importPreview.token,
+        importEffectiveOn.trim() !== '' ? importEffectiveOn.trim() : undefined,
+      )
       const o = r as Record<string, unknown>
       const added = typeof o.added_count === 'number' ? o.added_count : null
-      setImportResult(added != null ? `导入完成：新增 ${String(added)} 人。` : '导入完成。')
+      const restored = typeof o.restored_count === 'number' ? o.restored_count : null
+      const parts: string[] = []
+      if (added != null && added > 0) parts.push(`新增 ${String(added)} 人`)
+      if (restored != null && restored > 0) parts.push(`恢复 ${String(restored)} 人`)
+      setImportResult(parts.length > 0 ? `导入完成：${parts.join('，')}。` : '导入完成：没有需要新增或恢复的成员。')
       setImportPreview(null)
       clearPageDraft(DRAFT_ROUTE, 'import-text')
       setImportText('')
       setMembersNonce((n) => n + 1)
+      refreshScope()
     } catch (err) {
       // token 过期/名册漂移：预览作废，需重新预览
       setImportPreview(null)
@@ -421,8 +445,13 @@ export function TeachingMembersManager() {
     setSyncError(null)
     setSyncNotice(null)
     try {
-      const p = await syncFromHomeroomPreview(selectedClassId)
+      const p = await syncFromHomeroomPreview(
+        selectedClassId,
+        syncEffectiveOn.trim() !== '' ? syncEffectiveOn.trim() : undefined,
+      )
       setSyncPreview(p)
+      // 新预览重置逐人决定（默认全部跳过，由教师显式确认）
+      setSyncDecisions({})
     } catch (err) {
       setSyncPreview(null)
       setSyncError(apiErrorMessage(err))
@@ -432,14 +461,43 @@ export function TeachingMembersManager() {
   }
 
   async function handleSyncConfirm() {
-    if (selectedClassId == null) return
+    if (selectedClassId == null || syncPreview == null) return
     setSyncing(true)
     setSyncError(null)
     try {
-      await syncFromHomeroomConfirm(selectedClassId)
+      const decisions: TeachingSyncNewStudentDecision[] = (syncPreview.unpaired ?? [])
+        .filter((e) => typeof e.homeroom_person_id === 'number')
+        .map((e) => {
+          const hId = e.homeroom_person_id as number
+          const choice = syncDecisions[hId] ?? 'skip'
+          if (choice === 'new') {
+            return { homeroom_person_id: hId, action: 'new' as const }
+          }
+          if (typeof choice === 'number') {
+            return {
+              homeroom_person_id: hId,
+              action: 'pair' as const,
+              teaching_person_id: choice,
+            }
+          }
+          return { homeroom_person_id: hId, action: 'skip' as const }
+        })
+      const r = await syncFromHomeroomConfirm(selectedClassId, {
+        ...(syncEffectiveOn.trim() !== '' ? { effective_on: syncEffectiveOn.trim() } : {}),
+        ...(decisions.length > 0 ? { new_students: decisions } : {}),
+      })
+      const o = r as Record<string, unknown>
+      const added = typeof o.added_count === 'number' ? o.added_count : 0
+      const restored = typeof o.restored_count === 'number' ? o.restored_count : 0
+      const paired = typeof o.paired_count === 'number' ? o.paired_count : 0
+      const parts: string[] = []
+      if (added > 0) parts.push(`新增 ${String(added)} 人`)
+      if (restored > 0) parts.push(`恢复 ${String(restored)} 人`)
+      if (paired > 0) parts.push(`新建配对 ${String(paired)} 人`)
       setSyncPreview(null)
-      setSyncNotice('已按行政班名册交集同步成员。')
+      setSyncNotice(parts.length > 0 ? `同步完成：${parts.join('，')}。` : '同步完成：两边已一致。')
       setMembersNonce((n) => n + 1)
+      refreshScope()
     } catch (err) {
       setSyncError(apiErrorMessage(err))
     } finally {
@@ -552,21 +610,40 @@ export function TeachingMembersManager() {
                   <CardTitle className="text-base">从行政班同步成员</CardTitle>
                   <CardDescription>
                     该班为关联班（与行政班 #{String(activeLink.admin_class_id)} 关联）：
-                    成员按配对交集从班主任名册投影，差异预览后确认。
+                    成员按配对交集从班主任名册投影；行政班新增的未配对学生需要逐人确认入班身份。
                   </CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => void handleSyncPreview()} disabled={syncing}>
-                  <ArrowRightLeft className="h-4 w-4" aria-hidden="true" />
-                  预览差异
-                </Button>
+                <div className="flex items-end gap-2">
+                  <div className="space-y-1">
+                    <label htmlFor="sync-effective-on" className="text-xs font-medium text-slate-500">
+                      生效日期
+                    </label>
+                    <Input
+                      id="sync-effective-on"
+                      type="date"
+                      className="w-40"
+                      value={syncEffectiveOn}
+                      onChange={(e) => setSyncEffectiveOn(e.target.value)}
+                      disabled={syncing}
+                      aria-label="同步生效日期"
+                    />
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => void handleSyncPreview()} disabled={syncing}>
+                    <ArrowRightLeft className="h-4 w-4" aria-hidden="true" />
+                    预览差异
+                  </Button>
+                </div>
               </CardHeader>
               {syncPreview != null || syncError != null || syncNotice != null ? (
-                <CardContent className="space-y-3 border-t border-slate-100 pt-4">
+                <CardContent className="space-y-4 border-t border-slate-100 pt-4">
                   {syncError ? <p role="alert" className="text-sm text-danger-500">{syncError}</p> : null}
                   {syncNotice ? <p role="status" className="text-sm text-success-600">{syncNotice}</p> : null}
                   {syncPreview != null ? (
                     <>
                       <div className="overflow-x-auto">
+                        <p className="mb-2 text-xs font-semibold text-slate-500">
+                          已配对学生（按行政班名册交集入班）
+                        </p>
                         <Table>
                           <TableHeader>
                             <TableRow>
@@ -588,15 +665,94 @@ export function TeachingMembersManager() {
                             {(syncPreview.to_add ?? []).length === 0 ? (
                               <TableRow>
                                 <TableCell colSpan={3} className="text-xs text-slate-400">
-                                  没有需要新增的成员，两边已一致。
+                                  没有需要新增的已配对成员。
                                 </TableCell>
                               </TableRow>
                             ) : null}
                           </TableBody>
                         </Table>
                       </div>
+                      <div className="overflow-x-auto">
+                        <p className="mb-2 text-xs font-semibold text-slate-500">
+                          未配对的行政班学生（需逐人确认，默认跳过）
+                        </p>
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-xs">姓名</TableHead>
+                              <TableHead className="whitespace-nowrap text-xs">学号</TableHead>
+                              <TableHead className="text-xs">入班身份决定</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(syncPreview.unpaired ?? []).map((e, i) => {
+                              const hId = typeof e.homeroom_person_id === 'number' ? e.homeroom_person_id : null
+                              if (hId == null) return null
+                              const choice = syncDecisions[hId] ?? 'skip'
+                              return (
+                                <TableRow key={`unpaired-${String(hId)}-${String(i)}`}>
+                                  <TableCell className="whitespace-nowrap text-sm">{e.name ?? '—'}</TableCell>
+                                  <TableCell className="whitespace-nowrap font-mono text-xs text-slate-600">
+                                    {e.alias ?? '—'}
+                                  </TableCell>
+                                  <TableCell>
+                                    <Select
+                                      value={
+                                        choice === 'skip'
+                                          ? 'skip'
+                                          : choice === 'new'
+                                            ? 'new'
+                                            : `pair:${String(choice)}`
+                                      }
+                                      onValueChange={(v) => {
+                                        setSyncDecisions((prev) => {
+                                          const next = { ...prev }
+                                          if (v === 'skip' || v === 'new') next[hId] = v
+                                          else if (v.startsWith('pair:')) {
+                                            const pid = Number(v.slice(5))
+                                            if (Number.isFinite(pid)) next[hId] = pid
+                                          }
+                                          return next
+                                        })
+                                      }}
+                                      disabled={syncing}
+                                    >
+                                      <SelectTrigger aria-label={`选择 ${e.name ?? ''} 的入班身份`} className="h-8 w-64">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="skip">本次跳过（不进教学班）</SelectItem>
+                                        <SelectItem value="new">新建教学身份并入班</SelectItem>
+                                        {(e.candidates ?? []).map((c) =>
+                                          typeof c.person_id === 'number' ? (
+                                            <SelectItem key={String(c.person_id)} value={`pair:${String(c.person_id)}`}>
+                                              {`配对既有身份：${c.name ?? '（未命名）'}${c.alias ? `（${c.alias}）` : ''}`}
+                                            </SelectItem>
+                                          ) : null,
+                                        )}
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                </TableRow>
+                              )
+                            })}
+                            {(syncPreview.unpaired ?? []).length === 0 ? (
+                              <TableRow>
+                                <TableCell colSpan={3} className="text-xs text-slate-400">
+                                  行政班在册学生都已配对。
+                                </TableCell>
+                              </TableRow>
+                            ) : null}
+                          </TableBody>
+                        </Table>
+                        {(syncPreview.unpaired ?? []).length > 0 ? (
+                          <p className="mt-1 text-xs text-slate-400">
+                            候选身份按「姓名或学号完全一致」提示，仅供人工核对；系统绝不自动认定同人。
+                          </p>
+                        ) : null}
+                      </div>
                       <div className="flex justify-end gap-2">
-                        <Button variant="outline" size="sm" onClick={() => setSyncPreview(null)} disabled={syncing}>
+                        <Button variant="outline" size="sm" onClick={() => { setSyncPreview(null); setSyncDecisions({}) }} disabled={syncing}>
                           取消
                         </Button>
                         <Button size="sm" onClick={() => void handleSyncConfirm()} disabled={syncing}>
@@ -792,6 +948,20 @@ export function TeachingMembersManager() {
                         disabled={adding}
                       />
                     </div>
+                    <div className="space-y-1">
+                      <label htmlFor="tm-add-effective-on" className="text-xs font-medium text-slate-500">
+                        入班生效日
+                      </label>
+                      <Input
+                        id="tm-add-effective-on"
+                        type="date"
+                        className="w-40"
+                        value={addEffectiveOn}
+                        onChange={(e) => setAddEffectiveOn(e.target.value)}
+                        disabled={adding}
+                        aria-label="入班生效日期"
+                      />
+                    </div>
                     <Button onClick={() => void handleAdd()} disabled={adding || addName.trim() === ''}>
                       {adding ? (
                         <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
@@ -818,6 +988,20 @@ export function TeachingMembersManager() {
                       <p className="text-xs text-slate-500">
                         每行一条，支持「学号 姓名」或单独姓名；先预览解析结果，确认后才写入。
                       </p>
+                      <div className="space-y-1">
+                        <label htmlFor="tm-import-effective-on" className="text-xs font-medium text-slate-500">
+                          入班生效日（补录历史名册可选历史日期）
+                        </label>
+                        <Input
+                          id="tm-import-effective-on"
+                          type="date"
+                          className="w-44"
+                          value={importEffectiveOn}
+                          onChange={(e) => setImportEffectiveOn(e.target.value)}
+                          disabled={importing}
+                          aria-label="批量导入生效日期"
+                        />
+                      </div>
                       <textarea
                         aria-label="批量导入文本"
                         className="min-h-[140px] w-full rounded-md border border-slate-200 p-2 text-sm"

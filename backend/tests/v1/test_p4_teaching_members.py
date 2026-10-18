@@ -72,7 +72,12 @@ def test_unlinked_class_manual_add_remove_and_two_phase_import(client, v1_seed):
         json={"token": preview_body["token"]},
     )
     assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json() == {"added_count": 2, "invalid_count": 0}
+    # 问题5 新语义：响应区分 added / restored（此处两行均为全新身份）。
+    assert confirmed.json() == {
+        "added_count": 2,
+        "restored_count": 0,
+        "invalid_count": 0,
+    }
 
     replay = client.post(
         f"{API}/teaching/classes/{v1_seed.t8_id}/members/import",
@@ -145,7 +150,10 @@ def test_linked_class_sync_uses_confirmed_pairs_only(client, v1_seed):
         json={"confirm": True},
     )
     assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["added_count"] == 1
+    # 问题5 新语义：已结束成员行（valid_to=2026-07-14）经同步恢复——
+    # 隔日恢复新开一段 [恢复日, ∞)，计 restored 而非 added。
+    assert confirmed.json()["restored_count"] == 1
+    assert confirmed.json()["added_count"] == 0
 
     roster = client.get(f"{API}/teaching/classes/{v1_seed.t6_id}/members").json()
     assert v1_seed.jia_t_id in {row["person_id"] for row in roster["active"]}

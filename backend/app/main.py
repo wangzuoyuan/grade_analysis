@@ -40,21 +40,28 @@ app = FastAPI(title="学情追踪 API", version="2.2.4", lifespan=_lifespan)
 if _MCP_MOUNT is not None:
     app.mount(MCP_MOUNT_PATH, _MCP_MOUNT.app)
 
-# 生产同源（经反代）时无需 CORS；本地 dev 前端 3000 → 后端 8000 跨源需放行。
-# 额外可用 CORS_ORIGINS（逗号分隔）显式追加来源。
+# CORS：显式名单。本地 dev 前端 3000 → 后端 8000 需放行；生产同源经反代
+# 不依赖 CORS。额外来源用 CORS_ORIGINS（逗号分隔）显式追加。
+# 不再用宽泛正则放行任意域名的 :3000 端口（2026-10 安全修复，审查问题 15）；
+# allow_credentials 只对这份显式名单生效。
 _cors_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+_cors_origins += [
     o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_origin_regex=r"http://[\w.\-]+:3000",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 登录鉴权：内网免登录、外网（命中 PUBLIC_HOST）才要求会话。
+# 登录鉴权：设了 APP_PASSWORD 后默认所有 /api 要求登录（下列白名单除外）；
+# 可选内网免登录只经 AUTH_BYPASS_NETWORKS / AUTH_TRUSTED_PROXY_NETWORKS
+# 显式网络边界生效，绝不信任 Host 头（语义详见 app/auth.py）。
 from app.auth import COOKIE_NAME, auth_required_for, verify_token  # noqa: E402
 
 _AUTH_ALLOWLIST = {"/api/login", "/api/logout", "/api/auth/status", "/api/health"}

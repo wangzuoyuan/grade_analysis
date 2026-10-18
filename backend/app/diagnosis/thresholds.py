@@ -27,6 +27,13 @@ TREND_DIRECTION_RECENT_N = 3      # direction_recent 回看的相邻变化次数
 HOMEWORK_WINDOW_7D = 7            # 作业行为近窗（天，含当日）
 HOMEWORK_WINDOW_30D = 30          # 作业行为远窗（天，含当日）
 
+# 教学域总分口径缺失的 missing_reason 专用词（2026-10-18 审查修复 12.2）：
+# 教学域独立来源只存任教学科、绝无总分行，段位/趋势/稳定性/偏科等
+# 总分依赖指标结构性不可算——用本词区分「数据没导」(no_main3_row) 与
+# 「口径本来就不适用」(teaching_no_total)，B2 类型引擎据此把总分依赖的
+# 学生类型标为不可计算。班主任域不使用本词（行为不变）。
+TEACHING_NO_TOTAL = "teaching_no_total"
+
 
 def get_trend_thresholds(db) -> dict:
     """读取全局自定义值；无行时使用出厂默认，始终以当前请求的会话读取。"""

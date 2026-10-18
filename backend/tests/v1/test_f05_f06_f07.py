@@ -5,7 +5,8 @@
 - F06 身份候选：历史学年同号同名 → preview 出 identity_candidates
   （known 不计）；confirm 无确认 → 409 附完整候选清单（零写入）；
   带identity_confirmations → 接续旧 identity（补登本学年 alias）；
-  确认伪造 person → 422；跨届同号不同名 → 撞号整文件拒绝。
+  确认伪造 person → 422；跨届同号不同名 → 同样归候选（审查问题 2
+  修复：本学年同号异名才整文件撞号拒绝，历史同号异名可显式消歧）。
   未标学年（NULL）的 alias 登记不再默认视为本学年身份（契约 v2.2/G06，
   旧例外违反永久身份红线）：无有效期证据时进候选，仅当该行自身
   valid_from/valid_to 明确覆盖目标文件日期才直接命中 known。
@@ -370,7 +371,9 @@ def test_f06_forged_and_cross_cohort_name_mismatch(client, v1_seed, tmp_path):
     finally:
         db.close()
 
-    # 跨届同号不同名：撞号防呆 → confirm 整文件 409（优先于候选确认）
+    # 跨届同号不同名：学号被新一届学生复用的正常形态 → 归候选而非撞号
+    # （审查问题 2 修复：历史同号异名可经 identity_new_aliases 显式新建
+    # 消歧，历史学生记录不动；不声明仍 409 候选清单引导，零写入）。
     bad = _write_grade23_xlsx(
         tmp_path / "F06撞号.xlsx",
         [_student_row("2023H6-88", "秦别人", chinese=66, math=77)],
@@ -381,7 +384,8 @@ def test_f06_forged_and_cross_cohort_name_mismatch(client, v1_seed, tmp_path):
     )
     assert prev_bad.status_code == 200
     item = prev_bad.json()["items"][0]
-    assert any("同学号不同姓名" in w for w in item["warnings"])
+    assert item["identity_candidates"]  # 候选清单，而非撞号警告
+    assert not any("同学号不同姓名" in w for w in item["warnings"])
 
     r = client.post(
         f"{API}/imports/confirm", json={"token": prev_bad.json()["token"]}
@@ -389,7 +393,7 @@ def test_f06_forged_and_cross_cohort_name_mismatch(client, v1_seed, tmp_path):
     assert r.status_code == 409
     body = r.json()
     assert body["error"] == "link_version_conflict"
-    assert body["conflicts"]  # 撞号冲突，而非候选清单
+    assert body["identity_candidates"]  # 候选清单引导（显式确认或新建）
 
     db = _db()
     try:

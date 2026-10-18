@@ -52,8 +52,10 @@ from app.diagnosis.features import (
     _consecutive_weak_exams,
     _group_exams,
     _ordered_exam_names,
+    resolve_exam_key,
     student_features,
 )
+from app.diagnosis.thresholds import TEACHING_NO_TOTAL
 from app.diagnosis.types import classify_student
 
 # 本波口径版本（契约 p2 §0：本波版本号 p2-v1；B1/B2 数据自身仍携带 p1-v1）
@@ -95,9 +97,10 @@ def student_report(
     features = student_features(db, scope, person_id, academic_year_id)
     types = classify_student(features)
 
-    anchor, exams, ordered, anchor_source = _resolve_anchor(
-        db, scope, person_id, features, exam_name
+    anchor, anchor_label, exams, ordered, anchor_source = _resolve_anchor(
+        db, scope, person_id, exam_name
     )
+    teaching = (getattr(scope, "data_domain", None) or getattr(scope, "mode", None)) == "teaching"
 
     return {
         "person_id": person_id,
@@ -107,11 +110,14 @@ def student_report(
         "data_domain": scope.data_domain,
         "calc_version": CALC_VERSION,
         "as_of": scope.as_of.isoformat(),
-        "exam_name": anchor,
+        # 展示字段一律人类可读考试名（修复 3：绝不出 event:123 内部编号）；
+        # 稳定定位键另附 exam_key（无事件事实 exam_key==exam_name）。
+        "exam_name": anchor_label,
+        "exam_key": anchor,
         "exam_name_source": anchor_source,
         "layer_legend": LAYER_LEGEND,
         "learning_state": _learning_state(features, types),
-        "subject_performance": _subject_performance(features, exams, ordered, anchor),
+        "subject_performance": _subject_performance(features, exams, ordered, anchor, teaching),
         "behavior": _behavior(features),
         "teacher_observations": _teacher_observations(db, scope, person_id),
         "suggestions": _suggestions_section(features, types),
@@ -126,24 +132,35 @@ def _resolve_anchor(
     db: Session,
     scope,
     person_id: int,
-    features: dict,
     exam_name: Optional[str],
-) -> Tuple[Optional[str], Dict[str, dict], List[str], str]:
+) -> Tuple[Optional[str], Optional[str], Dict[str, dict], List[str], str]:
     """解析 subject_performance 的锚定考试（缺省=最近一场有数据考试）。
 
-    返回 (anchor, exams, ordered, source)；exams/ordered 与 B1 特征层同源
-    （readable_facts → _group_exams → _ordered_exam_names）。"""
+    返回 (anchor_key, anchor_label, exams, ordered, source)；anchor_key 是
+    ``_group_exams`` 分组 key（event:N / 无事件=考试名，入参传 key 或唯一
+    考试名均解析到同一 bucket，修复 3），anchor_label 为人类可读考试名。
+    exams/ordered 与 B1 特征层同源（readable_facts → _group_exams →
+    _ordered_exam_names）。"""
     entries = q.readable_facts(db, scope, member_ids=[person_id])
     exams = _group_exams(entries, db)
     ordered = _ordered_exam_names(exams)
     if exam_name is None or exam_name == "":
-        return (ordered[-1] if ordered else None), exams, ordered, "default_latest"
-    if exam_name not in exams:
+        latest = ordered[-1] if ordered else None
+        label = exams[latest]["exam_name"] if latest is not None else None
+        return latest, label, exams, ordered, "default_latest"
+    resolved = resolve_exam_key(exams, exam_name)
+    if resolved is None:
         raise InvalidScopeParam(
             "exam_name not found in the student's readable exams",
-            details={"exam_name": exam_name, "available_exams": ordered},
+            details={
+                "exam_name": exam_name,
+                # 双标清单（修复 3）：同名多场时只有 exam_key 能唯一定位
+                "available_exams": [
+                    f"{exams[key].get('exam_name', key)} ({key})" for key in ordered
+                ],
+            },
         )
-    return exam_name, exams, ordered, "explicit"
+    return resolved, exams[resolved].get("exam_name", resolved), exams, ordered, "explicit"
 
 
 # ────────────────────────────── 节 1：学习状态（规则判断层） ──────────────────────────────
@@ -161,6 +178,7 @@ def _learning_state(features: dict, types: dict) -> dict:
         "classification_status": types["classification_status"],
         "evidence": types["evidence"],
         "latest_exam_name": current_level.get("exam_name"),
+        "latest_exam_key": current_level.get("exam_key"),
         "latest_exam_as_of": current_level.get("as_of"),
         "main3": current_level.get("main3"),
         "bands": current_level.get("bands"),
@@ -177,8 +195,9 @@ def _subject_performance(
     exams: Dict[str, dict],
     ordered: List[str],
     anchor: Optional[str],
+    teaching: bool = False,
 ) -> dict:
-    """各科百分位与偏科。
+    """各科百分位与偏科（anchor 为分组 key；输出人类可读名 + exam_key）。
 
     锚定=最近一场时直接复用 B1 current_level.subjects 与 imbalance（逐字段
     同源）；锚定=更早一场时按同一批共享定义重建（normalized_percentile /
@@ -188,6 +207,7 @@ def _subject_performance(
         return {
             "layer": "fact",
             "exam_name": None,
+            "exam_key": None,
             "subjects": [],
             "imbalance": _imbalance_payload("not_computable", NO_EXAM_DATA),
         }
@@ -195,7 +215,8 @@ def _subject_performance(
         current_level = features["indicators"]["current_level"]
         return {
             "layer": "fact",
-            "exam_name": anchor,
+            "exam_name": current_level.get("exam_name", exams[anchor].get("exam_name", anchor)),
+            "exam_key": anchor,
             "subjects": current_level["subjects"],
             "imbalance": _imbalance_payload(
                 features["indicators"]["imbalance"]["status"],
@@ -224,20 +245,23 @@ def _subject_performance(
     ordered_upto = ordered[: ordered.index(anchor) + 1]
     return {
         "layer": "fact",
-        "exam_name": anchor,
+        "exam_name": bucket.get("exam_name", anchor),
+        "exam_key": anchor,
         "subjects": subjects,
-        "imbalance": _imbalance_for_anchor(exams, ordered_upto, bucket),
+        "imbalance": _imbalance_for_anchor(exams, ordered_upto, bucket, teaching),
     }
 
 
 def _imbalance_for_anchor(
-    exams: Dict[str, dict], ordered_upto: List[str], bucket: dict
+    exams: Dict[str, dict], ordered_upto: List[str], bucket: dict, teaching: bool = False
 ) -> dict:
     """锚定考试的偏科：与 B1 _imbalance_indicator 同一口径（共享定义 +
     连续场数从锚定场向前数，任一侧缺失即断）。"""
     main3_row = bucket["totals"].get(DEFAULT_TOTAL_TYPE)
     if main3_row is None:
-        return _imbalance_payload("not_computable", NO_MAIN3_ROW)
+        return _imbalance_payload(
+            "not_computable", TEACHING_NO_TOTAL if teaching else NO_MAIN3_ROW
+        )
     if main3_row.score is None:
         return _imbalance_payload("not_computable", MAIN3_ABSENT)
     base = defs.normalized_percentile(main3_row.grade_percentile)

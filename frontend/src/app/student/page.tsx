@@ -154,8 +154,9 @@ export default function StudentSearchPage() {
           throw new Error('ROSTER_FAILED')
         }
         const latest = exs[0] ?? null
+        // 定位用 exam_key（"event:N" 稳定编号，同名不同场可区分）；legacy 数据回退 exam_name
         const scoreRows = latest
-          ? ((await fetchTeachingStudents(latest.exam_name, scopeQ)).students ?? [])
+          ? ((await fetchTeachingStudents(latest.exam_key ?? latest.exam_name, scopeQ)).students ?? [])
           : []
         const merged = new Map<string, WorkspaceStudent>()
         for (const r of rosResults) {

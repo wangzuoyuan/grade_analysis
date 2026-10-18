@@ -750,7 +750,10 @@ class TestTeachingScopeIsolation:
         assert homeroom_body["main_type"] == "稳定临界型"
 
         teaching_body = _types(client, "teaching", v1_seed.jia_t_id)
-        assert teaching_body["classification_status"] == "classified"
+        # 2026-10-18 修复 12.2：教学域只存任教学科、无总分口径 → 总分依赖的
+        # 学生类型整体不可计算（not_computable）；作业风险仍按作业数据判定
+        # （可为主类型）。班主任域不经过该门（对照组保持既有判定）。
+        assert teaching_body["classification_status"] == "not_computable"
         # 教学域无总分行/名次 → 名次类类型全部不可判；作业风险来自 T6 批次
         assert teaching_body["main_type"] == "作业风险型"
         assert all(
@@ -761,6 +764,10 @@ class TestTeachingScopeIsolation:
             item for item in teaching_body["evidence"] if item["type"] == "作业风险型"
         )
         assert "缺交 3 次" in hw_ev["basis"]
+        caliber_ev = next(
+            item for item in teaching_body["evidence"] if item["type"] == "类型不可计算"
+        )
+        assert "教学域只存任教学科" in caliber_ev["basis"]
 
     def test_teaching_out_of_scope_person_404(self, client, v1_seed, b2_seed):
         """非教学班成员访问教学端点 → 404（绝不跨域取数）。"""

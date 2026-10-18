@@ -115,7 +115,7 @@ export interface DiagnosisTypes {
   main_type: string | null
   secondary_tags: string[]
   evidence: Array<{ type: string; basis: string }>
-  classification_status: 'classified' | 'insufficient_data'
+  classification_status: 'classified' | 'insufficient_data' | 'not_computable'
 }
 
 /* ------------------------------------------------------------------ */
@@ -570,6 +570,8 @@ export function DiagnosisCard({
   }
 
   const insufficient = types.classification_status === 'insufficient_data'
+  // 教学域无总分口径：总分依赖的类型不可计算（作业风险型可单独成立）
+  const notComputable = types.classification_status === 'not_computable'
   const validExamCount = features?.data_quality?.valid_exam_count ?? null
 
   return (
@@ -580,6 +582,13 @@ export function DiagnosisCard({
           学情诊断
           {insufficient ? (
             <Badge variant="secondary">数据不足，不强行归类</Badge>
+          ) : notComputable ? (
+            <>
+              <Badge variant="secondary">类型不可计算（教学域无总分口径）</Badge>
+              {types.main_type ? (
+                <Badge variant={diagnosisTypeTone(types.main_type)}>{types.main_type}</Badge>
+              ) : null}
+            </>
           ) : (
             <Badge variant={diagnosisTypeTone(types.main_type)}>{types.main_type}</Badge>
           )}

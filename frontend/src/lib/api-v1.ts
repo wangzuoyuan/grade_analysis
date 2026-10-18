@@ -1306,6 +1306,9 @@ export interface HomeroomStudentCreateRequest {
   name: string
   alias?: string
   seat_no?: string
+  /** 入班/学籍生效日（ISO 日期，问题8）：缺省=今天（后端夹到学年内）；
+   * 历史日期用于补录，越界返回可读 422。 */
+  effective_on?: string
 }
 
 /** PATCH /api/v1/homeroom/students/{person_id} 的请求体：仅本班当期在班成员，越界 404。 */
@@ -1677,7 +1680,7 @@ export function listTeachingMembers(teachingClassId: number): Promise<TeachingMe
 /** POST /api/v1/teaching/classes/{teaching_class_id}/members：建 teaching 域 identity + member(source='manual')；关联班 409 引导。 */
 export function addTeachingMember(
   teachingClassId: number,
-  req: { name: string; alias?: string },
+  req: { name: string; alias?: string; effective_on?: string },
 ): Promise<HomeroomMutationResult> {
   return request<HomeroomMutationResult>(
     `${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(teachingClassId))}/members`,
@@ -1721,21 +1724,24 @@ export interface TeachingImportResult {
 export function importTeachingMembersPreview(
   teachingClassId: number,
   text: string,
+  effectiveOn?: string,
 ): Promise<TeachingImportPreview> {
   return request<TeachingImportPreview>(
     `${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(teachingClassId))}/members/import`,
-    { method: 'POST', body: JSON.stringify({ text }) },
+    { method: 'POST', body: JSON.stringify({ text, ...(effectiveOn ? { effective_on: effectiveOn } : {}) }) },
   )
 }
 
-/** POST /api/v1/teaching/classes/{id}/members/import {token}：按预览确认入库。 */
+/** POST /api/v1/teaching/classes/{id}/members/import {token}：按预览确认入库；
+ * effective_on 必须与预览一致（漂移 409 重新预览）。 */
 export function importTeachingMembersConfirm(
   teachingClassId: number,
   token: string,
+  effectiveOn?: string,
 ): Promise<TeachingImportResult> {
   return request<TeachingImportResult>(
     `${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(teachingClassId))}/members/import`,
-    { method: 'POST', body: JSON.stringify({ token }) },
+    { method: 'POST', body: JSON.stringify({ token, ...(effectiveOn ? { effective_on: effectiveOn } : {}) }) },
   )
 }
 
@@ -1746,10 +1752,33 @@ export interface TeachingSyncDiffEntry {
   [key: string]: unknown
 }
 
+/** 未配对行政班学生的教学域候选身份（问题7；仅提示，教师显式确认）。 */
+export interface TeachingSyncCandidate {
+  person_id?: number
+  name?: string | null
+  alias?: string | null
+  [key: string]: unknown
+}
+
+/** 「行政班在册、未配对」学生条目（问题7 死锁入口的预览清单）。 */
+export interface TeachingSyncUnpairedEntry {
+  homeroom_person_id?: number
+  name?: string | null
+  alias?: string | null
+  candidates?: TeachingSyncCandidate[]
+  [key: string]: unknown
+}
+
 /** sync-from-homeroom 预览的响应（字段未冻结，宽容读取）。 */
 export interface TeachingSyncPreview {
   to_add?: TeachingSyncDiffEntry[]
   already_synced?: TeachingSyncDiffEntry[]
+  /** 问题7：未配对行政班学生（含教学域候选清单）。 */
+  unpaired?: TeachingSyncUnpairedEntry[]
+  /** 本次预览解析到的生效日与学年合法范围（问题8：前端日期输入约束）。 */
+  effective_on?: string | null
+  valid_from?: string | null
+  valid_to?: string | null
   [key: string]: unknown
 }
 
@@ -1758,19 +1787,47 @@ export interface TeachingSyncResult {
   [key: string]: unknown
 }
 
+/** 问题7：对未配对行政班学生的逐人显式决定（new/pair/skip）。 */
+export interface TeachingSyncNewStudentDecision {
+  homeroom_person_id: number
+  action: 'new' | 'pair' | 'skip'
+  teaching_person_id?: number
+  effective_on?: string
+}
+
 /** POST /api/v1/teaching/classes/{id}/sync-from-homeroom（不带 confirm）：仅 active link 可用，差异预览先行。 */
-export function syncFromHomeroomPreview(teachingClassId: number): Promise<TeachingSyncPreview> {
+export function syncFromHomeroomPreview(
+  teachingClassId: number,
+  effectiveOn?: string,
+): Promise<TeachingSyncPreview> {
   return request<TeachingSyncPreview>(
     `${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(teachingClassId))}/sync-from-homeroom`,
-    { method: 'POST', body: JSON.stringify({ confirm: false }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({ confirm: false, ...(effectiveOn ? { effective_on: effectiveOn } : {}) }),
+    },
   )
 }
 
-/** POST /api/v1/teaching/classes/{id}/sync-from-homeroom {confirm:true}：按 LinkedStudent 交集同步（source='link_projection'）。 */
-export function syncFromHomeroomConfirm(teachingClassId: number): Promise<TeachingSyncResult> {
+/** POST /api/v1/teaching/classes/{id}/sync-from-homeroom {confirm:true}：按 LinkedStudent 交集同步
+ * （source='link_projection'）；new_students 逐生显式决定入班+配对（问题7），effective_on 生效日（问题8）。 */
+export function syncFromHomeroomConfirm(
+  teachingClassId: number,
+  opts?: {
+    effective_on?: string
+    new_students?: TeachingSyncNewStudentDecision[]
+  },
+): Promise<TeachingSyncResult> {
   return request<TeachingSyncResult>(
     `${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(teachingClassId))}/sync-from-homeroom`,
-    { method: 'POST', body: JSON.stringify({ confirm: true }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        confirm: true,
+        ...(opts?.effective_on ? { effective_on: opts.effective_on } : {}),
+        ...(opts?.new_students ? { new_students: opts.new_students } : {}),
+      }),
+    },
   )
 }
 

@@ -391,11 +391,17 @@ def test_teaching_rollover_undo_clean_roundtrip(client, seed):
     body = r.json()
     assert body["undone"] == 2
     assert body["conflicted"] == []
-    assert body["class_removed"] is True  # 成员/成绩/关联/作业均无残留
+    # 2026-10-18 起撤销只删本次换届真正创建的教学班（问题13.1）：本轮
+    # confirm 复用了既有同标签班（class_created=False），撤销后班级保留，
+    # 不再物理删除换届前已存在的班；保留名单如实返回。
+    assert body["class_removed"] is False
+    assert body["kept_reused_class_labels"] == ["物A1"]
+    assert body["carryover_restored"] == 0
 
     db = _db()
     try:
-        assert db.get(wm.TeachingClass, new_class_id) is None
+        # 复用班保留：班级行仍在，成员行已全部回滚
+        assert db.get(wm.TeachingClass, new_class_id) is not None
         members = (
             db.query(wm.TeachingClassMember)
             .filter_by(teaching_class_id=new_class_id)

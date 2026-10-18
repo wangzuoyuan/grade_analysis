@@ -13,8 +13,9 @@
 
 规范化行结构（JSON 可序列化，直接进 scope_json）：
 ``{"alias": 学号, "name": 姓名, "subject": 学科|None, "total_type": 总分口径|None,
-    "score": 原始分|None, "grade_score": 等级分|None}``——score None 表示
-缺考（有行无分），绝不转 0；解析器层面"原始分与等级分/百分位全空"的
+    "score": 原始分|None, "grade_score": 等级分|None, "grade_percentile": 年级百分位|None,
+    "xueji_rank": 学籍名次|None, "grade_rank": 年级名次|None}``——score 与三指标
+None 表示缺考或未提供（有行无值），绝不转 0；解析器层面"原始分与等级分/百分位全空"的
 学科格不产生行（H/T 解析器既有语义，保持不动）。
 """
 
@@ -189,6 +190,9 @@ def parse_homeroom_file(
                 "total_type": None,
                 "score": row.get("raw_score"),
                 "grade_score": row.get("grade_score"),
+                "grade_percentile": row.get("grade_percentile"),
+                "xueji_rank": row.get("xueji_rank"),
+                "grade_rank": row.get("grade_rank"),
             }
         )
     for row in parsed.get("total_scores") or []:
@@ -202,6 +206,9 @@ def parse_homeroom_file(
                 "total_type": row.get("total_type"),
                 "score": row.get("total_score"),
                 "grade_score": None,
+                "grade_percentile": row.get("grade_percentile"),
+                "xueji_rank": row.get("xueji_rank"),
+                "grade_rank": row.get("grade_rank"),
             }
         )
     warnings.extend(_missing_count_warning(rows))
@@ -292,6 +299,9 @@ def parse_teaching_file(
                 "total_type": None,
                 "score": row.get("raw_score"),
                 "grade_score": row.get("grade_score"),
+                "grade_percentile": row.get("grade_percentile"),
+                "xueji_rank": row.get("xueji_rank"),
+                "grade_rank": row.get("grade_rank"),
             }
         )
     if dropped_subject_rows:

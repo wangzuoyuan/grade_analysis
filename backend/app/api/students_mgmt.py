@@ -44,6 +44,7 @@ from app.api.students_mgmt_schemas import (
     RolloverConfirmRequest,
     RolloverConfirmResponse,
     RolloverConflictedStudent,
+    RolloverCarryoverPlan,
     RolloverPreviewResponse,
     RolloverPreviewStudent,
     RolloverUndoResponse,
@@ -63,6 +64,7 @@ from app.api.students_mgmt_schemas import (
     TeachingMembersResponse,
     TeachingRolloverClassResult,
     TeachingRolloverConfirmResponse,
+    TeachingSyncNewStudentDecision,
     TeachingSyncRequest,
 )
 from app.core.context import WorkspaceContext, resolve_workspace_context
@@ -406,10 +408,39 @@ def _apply_follow_up_done(note: WsStudentNote, value: int) -> None:
 # ────────────────────────────── §3 教学班成员 ──────────────────────────────
 
 
+def _resolve_effective_on(
+    raw: Optional[str], ay: AcademicYear, default: date, param: str = "effective_on"
+) -> date:
+    """问题8：显式成员生效日解析 + 学年范围校验；缺省沿用调用方默认。
+
+    - 缺省（None/空串）→ default（调用方语义：今天，教学域已夹到学年内），
+      行为与旧版完全一致；
+    - 显式传入 → 必须 ay.start_date <= d <= ay.end_date，越界可读 422
+      （detail 附合法范围），绝不静默夹紧、绝不默认回填学年首日。
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    effective = _parse_iso_date(raw, param)
+    if effective < ay.start_date or effective > ay.end_date:
+        raise InvalidScopeParam(
+            "生效日期必须在所选学年范围内",
+            details={
+                "param": param,
+                "effective_on": effective.isoformat(),
+                "valid_from": ay.start_date.isoformat(),
+                "valid_to": ay.end_date.isoformat(),
+            },
+        )
+    return effective
+
+
 def _teaching_class_scope(
-    db: Session, teaching_class_id: int
+    db: Session, teaching_class_id: int, effective_on_raw: Optional[str] = None
 ) -> tuple[TeachingClass, AcademicYear, WorkspaceContext, date]:
-    """解析单个教学班并把写入日期夹在所属学年内。"""
+    """解析单个教学班并把写入日期夹在所属学年内。
+
+    effective_on_raw（问题8）：显式生效日（学年内校验）；缺省保持
+    min(max(今天, 学年首), 学年末) 的旧时间轴。"""
     tc = db.get(TeachingClass, teaching_class_id)
     if tc is None:
         raise ResourceOutOfScope(
@@ -417,7 +448,8 @@ def _teaching_class_scope(
         )
     ctx = _teaching_ctx(db, tc.academic_year_id, tc.id, subject=tc.subject)
     ay = db.get(AcademicYear, tc.academic_year_id)
-    effective_on = min(max(ctx.as_of, ay.start_date), ay.end_date)
+    default = min(max(ctx.as_of, ay.start_date), ay.end_date)
+    effective_on = _resolve_effective_on(effective_on_raw, ay, default)
     return tc, ay, ctx, effective_on
 
 
@@ -474,6 +506,58 @@ def _active_teaching_member_ids(
     }
 
 
+def _upsert_teaching_member(
+    db: Session, tc: TeachingClass, identity_id: int, effective_on: date, source: str
+) -> str:
+    """写入/恢复教学班成员行（问题5 统一恢复语义），返回计数口径：
+
+    - "added"：全新加入（该班从未有此人行）；
+    - "restored"：恢复——
+      a) 同 (班,人,valid_from==effective_on) 的已结束行 → 原地重开
+         （valid_to=None），同日移除再导入的必经路径，避开
+         uq_teaching_member (teaching_class_id, identity_id, valid_from) 唯一约束；
+      b) 更早入班且已结束（valid_to < effective_on）→ 新开一段
+         [effective_on, ∞)，保留中间离班空档的真实性（该期间考试不算他成员）；
+    - "present"：已有开放行覆盖 effective_on（调用方按 active ids 先跳过，
+      此处仅兜底，不计入任何计数）。
+
+    反复移除/恢复：a) 路径恒定一行；b) 路径每段行 valid_from 互不相同、
+    时间段不重叠，均不撞唯一约束、不产生重复行。"""
+    prior = (
+        db.query(TeachingClassMember)
+        .filter(
+            TeachingClassMember.teaching_class_id == tc.id,
+            TeachingClassMember.identity_id == identity_id,
+        )
+        .order_by(
+            TeachingClassMember.valid_from.desc(), TeachingClassMember.id.desc()
+        )
+        .first()
+    )
+    if prior is not None and prior.valid_from == effective_on:
+        # 同日行（含同日移除产生的空区间行）→ 原地重开，不新建行
+        if prior.valid_to is None:
+            return "present"
+        prior.valid_to = None
+        return "restored"
+    if (
+        prior is not None
+        and prior.valid_from <= effective_on
+        and (prior.valid_to is None or prior.valid_to >= effective_on)
+    ):
+        # 兜底：已有行覆盖 effective_on（调用方按 active ids 先跳过，正常到不了这里）
+        return "present"
+    db.add(
+        TeachingClassMember(
+            teaching_class_id=tc.id,
+            identity_id=identity_id,
+            valid_from=effective_on,
+            source=source,
+        )
+    )
+    return "restored" if prior is not None else "added"
+
+
 @router.get(
     "/teaching/classes/{teaching_class_id}/members",
     response_model=TeachingMembersResponse,
@@ -519,7 +603,9 @@ def create_teaching_member(
     req: StudentCreateRequest,
     db: Session = Depends(get_db),
 ):
-    tc, ay, _ctx, effective_on = _teaching_class_scope(db, teaching_class_id)
+    tc, ay, _ctx, effective_on = _teaching_class_scope(
+        db, teaching_class_id, req.effective_on
+    )
     _reject_direct_linked_roster_change(db, tc, effective_on)
     name = (req.name or "").strip()
     if not name:
@@ -584,11 +670,10 @@ def remove_teaching_member(
         raise ResourceOutOfScope(
             "person not in current teaching roster", details={"person_id": person_id}
         )
-    member.valid_to = (
-        effective_on - timedelta(days=1)
-        if member.valid_from < effective_on
-        else effective_on
-    )
+    # 问题5 同日移除边界：一律 valid_to = 生效日前一天——更早入班者与原实现
+    # 一致（移除当天即不在班）；同日入班者得到空区间（valid_to < valid_from），
+    # 当天即不在班，不再被 [from,to] 闭区间判为当天仍在册。
+    member.valid_to = effective_on - timedelta(days=1)
     db.commit()
     identity = db.get(WsStudentIdentity, person_id)
     alias = q.aliases_for(db, [person_id], "teaching", ay.id).get(person_id)
@@ -641,7 +726,9 @@ def import_teaching_members(
     req: TeachingMemberImportRequest,
     db: Session = Depends(get_db),
 ):
-    tc, ay, _ctx, effective_on = _teaching_class_scope(db, teaching_class_id)
+    tc, ay, _ctx, effective_on = _teaching_class_scope(
+        db, teaching_class_id, req.effective_on
+    )
     _reject_direct_linked_roster_change(db, tc, effective_on)
     has_text = req.text is not None
     has_token = req.token is not None
@@ -703,6 +790,7 @@ def import_teaching_members(
     _reject_direct_linked_roster_change(db, tc, effective_on)
 
     added_count = 0
+    restored_count = 0
     invalid_count = 0
     for line in snapshot.get("lines") or []:
         if line.get("kind") == "invalid":
@@ -734,20 +822,24 @@ def import_teaching_members(
                         valid_from=effective_on,
                     )
                 )
-        if identity.id not in current_ids:
-            db.add(
-                TeachingClassMember(
-                    teaching_class_id=tc.id,
-                    identity_id=identity.id,
-                    valid_from=effective_on,
-                    source="text_import",
-                )
-            )
-            current_ids.append(identity.id)
+        # 问题5：已结束成员行 → 恢复（同日原地重开/隔日新开一段），
+        # 计数区分 restored；不撞 (班,人,valid_from) 唯一约束。
+        outcome = _upsert_teaching_member(
+            db, tc, identity.id, effective_on, "text_import"
+        )
+        if outcome == "added":
             added_count += 1
+        elif outcome == "restored":
+            restored_count += 1
+        if outcome != "present":
+            current_ids.append(identity.id)
     batch.status = "confirmed"
     db.commit()
-    return {"added_count": added_count, "invalid_count": invalid_count}
+    return {
+        "added_count": added_count,
+        "restored_count": restored_count,
+        "invalid_count": invalid_count,
+    }
 
 
 def _sync_diff(
@@ -787,6 +879,79 @@ def _sync_diff(
     return to_add, already
 
 
+def _sync_unpaired(
+    db: Session,
+    tc: TeachingClass,
+    link: HomeroomTeachingLink,
+    effective_on: date,
+) -> list[dict]:
+    """问题7：行政班在册、未配对的学生清单（配对未建者不可能出现在教学班
+    名册——T 域名册只收 teaching 域身份，条件「不在该教学班名册」自然成立）。
+
+    每人附教学域候选身份：现有 teaching 域身份中显示名或学号与该生
+    **完全一致**者（仅提示，供教师显式确认；绝不自动认定）。已在本 link
+    配对过的教学身份不出现在候选里。"""
+    pairs = q.linked_students_for_link(db, link.id)
+    paired_h = {p.homeroom_identity_id for p in pairs}
+    paired_t = {p.teaching_identity_id for p in pairs}
+    roster = q.homeroom_roster(db, link.admin_class_id, effective_on, tc.academic_year_id)
+    unpaired: list[dict] = []
+    for item in roster:
+        if item["person_id"] in paired_h:
+            continue
+        name = item.get("name")
+        alias = item.get("alias")
+        candidate_ids: set = set()
+        if name:
+            candidate_ids.update(
+                row[0]
+                for row in (
+                    db.query(WsStudentIdentity.id)
+                    .filter(
+                        WsStudentIdentity.data_domain == "teaching",
+                        WsStudentIdentity.display_name == name,
+                    )
+                    .all()
+                )
+            )
+        if alias:
+            candidate_ids.update(
+                row[0]
+                for row in (
+                    db.query(WsStudentAlias.identity_id)
+                    .filter(
+                        WsStudentAlias.data_domain == "teaching",
+                        WsStudentAlias.alias_value == alias,
+                    )
+                    .all()
+                )
+            )
+        candidate_ids -= paired_t
+        candidates = sorted(candidate_ids)
+        cand_names = q.names_for(db, candidates)
+        cand_aliases = q.aliases_for(db, candidates, "teaching", tc.academic_year_id)
+        unpaired.append(
+            {
+                "homeroom_person_id": item["person_id"],
+                "name": name,
+                "alias": alias,
+                "candidates": [
+                    {
+                        "person_id": cid,
+                        "name": cand_names.get(cid),
+                        "alias": cand_aliases.get(cid),
+                    }
+                    for cid in candidates
+                ],
+            }
+        )
+    return unpaired
+
+
+# 问题7：sync 决策动作枚举（new=新建教学身份 / pair=选用既有身份 / skip=不动）
+SYNC_DECISION_ACTIONS = ("new", "pair", "skip")
+
+
 @router.post("/teaching/classes/{teaching_class_id}/sync-from-homeroom")
 @domain_endpoint
 def sync_teaching_members_from_homeroom(
@@ -794,7 +959,20 @@ def sync_teaching_members_from_homeroom(
     req: TeachingSyncRequest,
     db: Session = Depends(get_db),
 ):
-    tc, _ay, _ctx, effective_on = _teaching_class_scope(db, teaching_class_id)
+    """行政班 → 教学班名册同步（关联班专用）。
+
+    预览（confirm=False）：已配对方的差异（to_add/already_synced，既有语义）
+    + 问题7 新增「未配对行政班学生」清单 unpaired（含教学域候选，仅提示）。
+    确认（confirm=True）：
+    - 已配对方按 _upsert_teaching_member 写入/恢复（问题5 统一恢复语义）；
+    - new_students 逐生显式决定（new/pair/skip）+ 生效日期（问题8）：
+      「创建或选定教学身份 → 写 TeachingClassMember → 建 LinkedStudent 配对」
+      在同一事务内完成——全部校验通过后才写入、最后统一 commit，任一步
+      失败直接 raise（未提交会话由 get_db 关闭回滚），绝不留半套记录；
+      绝不按姓名/学号自动认定身份。"""
+    tc, ay, _ctx, effective_on = _teaching_class_scope(
+        db, teaching_class_id, req.effective_on
+    )
     link = _active_teaching_link(db, tc, effective_on)
     if link is None:
         raise LinkVersionConflict(
@@ -802,19 +980,143 @@ def sync_teaching_members_from_homeroom(
             details={"teaching_class_id": tc.id},
         )
     to_add, already = _sync_diff(db, tc, link, effective_on)
+    unpaired = _sync_unpaired(db, tc, link, effective_on)
     if not req.confirm:
-        return {"to_add": to_add, "already_synced": already, "link_version": link.version}
+        return {
+            "to_add": to_add,
+            "already_synced": already,
+            "unpaired": unpaired,
+            "effective_on": effective_on.isoformat(),
+            "valid_from": ay.start_date.isoformat(),
+            "valid_to": ay.end_date.isoformat(),
+            "link_version": link.version,
+        }
+
+    added_count = 0
+    restored_count = 0
+    # ── 已配对方：既有同步语义 + 问题5 恢复（同日原地重开/隔日新开一段）──
     for item in to_add:
+        outcome = _upsert_teaching_member(
+            db, tc, item["person_id"], effective_on, "link_projection"
+        )
+        if outcome == "added":
+            added_count += 1
+        elif outcome == "restored":
+            restored_count += 1
+
+    # ── 未配对学生逐人决定（问题7）：先全量校验，再统一写入 ──
+    decisions = req.new_students or []
+    unpaired_by_h = {row["homeroom_person_id"]: row for row in unpaired}
+    seen_h: set = set()
+    seen_t: set = set()
+    for decision in decisions:
+        h_id = decision.homeroom_person_id
+        if h_id in seen_h:
+            raise InvalidScopeParam(
+                "同一学生在请求内出现多个决定",
+                details={"homeroom_person_id": h_id},
+            )
+        seen_h.add(h_id)
+        if decision.action not in SYNC_DECISION_ACTIONS:
+            raise InvalidScopeParam(
+                "action 必须是 new / pair / skip 之一",
+                details={"homeroom_person_id": h_id, "action": decision.action},
+            )
+        if decision.action == "skip":
+            continue
+        # 漂移门：该生必须仍是「行政班在册且未配对」（否则重新预览）
+        entry = unpaired_by_h.get(h_id)
+        if entry is None:
+            raise LinkVersionConflict(
+                "学生的配对状态或行政班名册已变化，请重新预览",
+                details={"homeroom_person_id": h_id},
+            )
+        # 逐人生效日（问题8）：请求级日期 → 缺省今天（已夹学年）
+        _resolve_effective_on(decision.effective_on, ay, effective_on)
+        if decision.action == "new":
+            alias = entry.get("alias")
+            if alias:
+                conflicts = _alias_conflicts(db, "teaching", alias, 0, ay)
+                if conflicts:
+                    raise InvalidScopeParam(
+                        "该学号在教学域已属于其他身份：请改选候选身份配对，或先处理学号冲突",
+                        details={"conflicts": _conflict_details(db, conflicts)},
+                    )
+        else:
+            t_id = decision.teaching_person_id
+            identity = db.get(WsStudentIdentity, t_id) if t_id is not None else None
+            if t_id is None or identity is None or identity.data_domain != "teaching":
+                raise ResourceOutOfScope(
+                    "teaching person not found",
+                    details={"teaching_person_id": t_id},
+                )
+            if t_id in seen_t or t_id in {
+                ls.teaching_identity_id
+                for ls in q.linked_students_for_link(db, link.id)
+            }:
+                # 伪造/复用已配对他人的教学身份（同 h 不同 t / 同 t 不同 h 均拒）
+                raise LinkVersionConflict(
+                    "该教学身份已配对给其他学生，请重新预览",
+                    details={"teaching_person_id": t_id},
+                )
+            seen_t.add(t_id)
+
+    # 全部校验通过 → 统一写入（单事务；中途 raise 未提交即整体回滚）
+    paired_count = 0
+    for decision in decisions:
+        if decision.action == "skip":
+            continue
+        h_id = decision.homeroom_person_id
+        entry = unpaired_by_h[h_id]
+        member_effective = _resolve_effective_on(
+            decision.effective_on, ay, effective_on
+        )
+        if decision.action == "new":
+            identity = WsStudentIdentity(
+                data_domain="teaching", display_name=entry.get("name")
+            )
+            db.add(identity)
+            db.flush()
+            if entry.get("alias"):
+                # 学号沿行政班学号在教学域独立登记（显式确认的一部分；
+                # 冲突已在校验段拒绝），供教学平台按学号分班等解析使用
+                db.add(
+                    WsStudentAlias(
+                        identity_id=identity.id,
+                        alias_value=entry["alias"],
+                        data_domain="teaching",
+                        academic_year_id=ay.id,
+                        alias_scope=str(ay.id),
+                        source="link_projection",
+                        valid_from=member_effective,
+                    )
+                )
+            t_id = identity.id
+        else:
+            t_id = decision.teaching_person_id
+        outcome = _upsert_teaching_member(
+            db, tc, t_id, member_effective, "link_projection"
+        )
+        if outcome == "added":
+            added_count += 1
+        elif outcome == "restored":
+            restored_count += 1
         db.add(
-            TeachingClassMember(
-                teaching_class_id=tc.id,
-                identity_id=item["person_id"],
-                valid_from=effective_on,
-                source="link_projection",
+            LinkedStudent(
+                link_id=link.id,
+                homeroom_identity_id=h_id,
+                teaching_identity_id=t_id,
+                confirm_basis=f"sync_confirm:{effective_on.isoformat()}",
             )
         )
+        paired_count += 1
     db.commit()
-    return {"added_count": len(to_add), "link_version": link.version}
+    return {
+        "added_count": added_count,
+        "restored_count": restored_count,
+        "paired_count": paired_count,
+        "link_version": link.version,
+    }
 
 
 # ────────────────────────────── §2.1 名册 CRUD ──────────────────────────────
@@ -829,7 +1131,9 @@ def create_student(
     db: Session = Depends(get_db),
 ):
     """新建学生：identity(homeroom) + alias(本学年) + Enrollment(active)。
-    alias 同学年同域已属他人 → 422 列冲突人（绝不自动改名合并）。"""
+    alias 同学年同域已属他人 → 422 列冲突人（绝不自动改名合并）。
+    问题8：effective_on 显式入班日（学年内校验）；缺省=今天并夹到学年
+    范围内——历史学年补录不再写出晚于学年结束日的 valid_from。"""
     ctx = _homeroom_ctx(db, academic_year_id, class_id)
     name = (req.name or "").strip()
     if not name:
@@ -847,8 +1151,12 @@ def create_student(
                 details={"conflicts": _conflict_details(db, conflicts)},
             )
 
-    # 学籍/学号生效日 = 学年 start_date 与今天较晚者（与导入口径一致）
-    valid_from = max(ay.start_date, ctx.as_of)
+    # 学籍/学号生效日 = 显式传入（学年内校验）或「学年 start_date 与今天
+    # 较晚者，再夹到学年 end_date」（与导入口径一致；问题8 补上限处理：
+    # 历史学年补录不写晚于学年结束日的日期）。绝不默认回填学年首日。
+    valid_from = _resolve_effective_on(
+        req.effective_on, ay, min(max(ay.start_date, ctx.as_of), ay.end_date)
+    )
     identity = WsStudentIdentity(data_domain="homeroom", display_name=name)
     db.add(identity)
     db.flush()
@@ -1100,6 +1408,204 @@ def _row_drifted(current: Dict[str, Optional[str]], snap: Dict) -> bool:
     return False
 
 
+# ────────────────────── 换届共用助手（问题9/13） ──────────────────────
+
+
+def _roster_as_of_for(from_year: AcademicYear) -> date:
+    """换届名册取样时点（问题13.4）：min(今天, 源学年结束日)。
+
+    源学年 Enrollment/成员的 valid_to 常在学年末截止；学年结束后补做换届
+    若按今天取样会得到空名册。取样时点夹到源学年结束日即可取到完整名册；
+    学年未结束时即今天（行为与旧版一致）。"""
+    today = date.today()
+    end = from_year.end_date
+    if end is not None and today > end:
+        return end
+    return today
+
+
+def _carryover_score_facts(db: Session, data_domain: str, from_class_id: int, to_year_id: int):
+    """延续期写入的成绩事实（问题9）：academic_year_id=目标学年但
+    class_ref_id 仍指来源学年班级——正式换届建新班后在两个学年都不可读。"""
+    return (
+        db.query(ScoreFact)
+        .filter(
+            ScoreFact.data_domain == data_domain,
+            ScoreFact.academic_year_id == to_year_id,
+            ScoreFact.class_ref_id == from_class_id,
+        )
+        .all()
+    )
+
+
+def _carryover_assignments(db: Session, data_domain: str, from_class_id: int, to_year_id: int):
+    """延续期写入的作业批次（问题9，口径同 _carryover_score_facts）。"""
+    return (
+        db.query(HomeworkAssignment)
+        .filter(
+            HomeworkAssignment.data_domain == data_domain,
+            HomeworkAssignment.academic_year_id == to_year_id,
+            HomeworkAssignment.class_ref_id == from_class_id,
+        )
+        .all()
+    )
+
+
+def _stray_enrollments(db: Session, from_class_id: int, to_year: AcademicYear):
+    """延续期误入来源班的学籍（问题9）：create_student 在未换届延续态下把
+    Enrollment 写进旧学年 admin_class_id，valid_from 落在目标学年区间。
+
+    查证说明：valid_from >= to_year.start_date 的行不可能是来源学年的正常
+    在班记录（来源学年在此之前已结束）；取样时点夹到学年结束日（13.4）后，
+    这些行也不会进换届名册，必须由承接归位到新班。"""
+    return (
+        db.query(Enrollment)
+        .filter(
+            Enrollment.admin_class_id == from_class_id,
+            Enrollment.valid_from >= to_year.start_date,
+        )
+        .all()
+    )
+
+
+def _carryover_plan(
+    db: Session,
+    data_domain: str,
+    from_class_ids: List[int],
+    to_year: AcademicYear,
+) -> RolloverCarryoverPlan:
+    """换届预览的延续期承接清单（只读影响预览，不做任何写入）。"""
+    facts: List[ScoreFact] = []
+    assignments: List[HomeworkAssignment] = []
+    strays: List[Enrollment] = []
+    for cid in from_class_ids:
+        facts.extend(_carryover_score_facts(db, data_domain, cid, to_year.id))
+        assignments.extend(_carryover_assignments(db, data_domain, cid, to_year.id))
+        if data_domain == "homeroom":
+            strays.extend(_stray_enrollments(db, cid, to_year))
+    stray_names = (
+        q.names_for(db, sorted({e.identity_id for e in strays})) if strays else {}
+    )
+    return RolloverCarryoverPlan(
+        score_facts=len(facts),
+        homework_assignments=len(assignments),
+        stray_enrollments=len(strays),
+        exam_names=sorted({f.exam_name for f in facts if f.exam_name}),
+        homework_subjects=sorted({a.subject for a in assignments}),
+        stray_student_names=[
+            stray_names.get(pid) or f"#{pid}"
+            for pid in sorted({e.identity_id for e in strays})
+        ],
+    )
+
+
+def _restore_carryover_moves(db: Session, moved: List[dict]) -> int:
+    """按 confirm 快照把延续期迁移行回迁到来源班（问题9 undo）。
+
+    仅当行当前仍指向迁移目标班时回迁——后续若被重新指到别处，保留现状
+    不覆盖。返回实际回迁行数。"""
+    restored = 0
+    for m in moved:
+        table = m.get("table")
+        row_id = m.get("id")
+        from_class_id = m.get("from_class_id")
+        to_class_id = m.get("to_class_id")
+        if table == "score_fact":
+            row = db.get(ScoreFact, row_id)
+            if row is not None and row.class_ref_id == to_class_id:
+                row.class_ref_id = from_class_id
+                restored += 1
+        elif table == "homework_assignment":
+            row = db.get(HomeworkAssignment, row_id)
+            if row is not None and row.class_ref_id == to_class_id:
+                row.class_ref_id = from_class_id
+                restored += 1
+        elif table == "enrollment":
+            row = db.get(Enrollment, row_id)
+            if row is not None and row.admin_class_id == to_class_id:
+                row.admin_class_id = from_class_id
+                restored += 1
+    return restored
+
+
+def _moved_ids_for(moves: List[dict], table: str, to_class_id: int) -> set:
+    """某班某表的迁移行 id 集合（undo 残留检查需排除将被回迁的行）。"""
+    return {
+        m["id"] for m in moves if m.get("table") == table and m.get("to_class_id") == to_class_id
+    }
+
+
+def _post_rollover_write_reasons(
+    db: Session,
+    pid: int,
+    confirmed_at: Optional[datetime],
+    data_domain: str,
+    to_year_id: Optional[int],
+    to_year_start: Optional[date],
+    target_class_ids: List[int],
+) -> List[str]:
+    """换届后新写入检测（问题13.2 按实际依赖收窄）。
+
+    撤销回滚的是目标学年目标班上的学籍/成员/学号行，因此只检查会受其
+    影响的写入：本域目标学年且挂在目标班上的成绩；挂在目标班作业批次上
+    的提交记录；本域、日期落在目标学年的档案。旧学年补录（无论成绩/作业/
+    档案）与另一工作台的写入不再误阻撤销；目标班上的真实新写入仍然阻断
+    （保护语义不变）。"""
+    if confirmed_at is None:
+        return []
+    reasons: List[str] = []
+    fact_filters = [
+        ScoreFact.data_domain == data_domain,
+        ScoreFact.identity_id == pid,
+        ScoreFact.created_at >= confirmed_at,
+    ]
+    if to_year_id is not None:
+        fact_filters.append(ScoreFact.academic_year_id == to_year_id)
+    if target_class_ids:
+        fact_filters.append(ScoreFact.class_ref_id.in_(target_class_ids))
+    if (
+        db.query(ScoreFact)
+        .filter(*fact_filters)
+        .first()
+        is not None
+    ):
+        reasons.append("成绩")
+    assignment_filters = [
+        HomeworkAssignment.data_domain == data_domain,
+        HomeworkSubmission.person_id == pid,
+        HomeworkSubmission.created_at >= confirmed_at,
+        HomeworkAssignment.id == HomeworkSubmission.assignment_id,
+    ]
+    if to_year_id is not None:
+        assignment_filters.append(HomeworkAssignment.academic_year_id == to_year_id)
+    if target_class_ids:
+        assignment_filters.append(HomeworkAssignment.class_ref_id.in_(target_class_ids))
+    if (
+        db.query(HomeworkSubmission)
+        .join(HomeworkAssignment, HomeworkAssignment.id == HomeworkSubmission.assignment_id)
+        .filter(*assignment_filters)
+        .first()
+        is not None
+    ):
+        reasons.append("作业")
+    note_filters = [
+        WsStudentNote.data_domain == data_domain,
+        WsStudentNote.person_id == pid,
+        WsStudentNote.created_at >= confirmed_at,
+        _human_notes_filter(),
+    ]
+    if to_year_start is not None:
+        note_filters.append(WsStudentNote.date >= to_year_start)
+    if (
+        db.query(WsStudentNote)
+        .filter(*note_filters)
+        .first()
+        is not None
+    ):
+        reasons.append("档案")
+    return reasons
+
+
 @router.get("/homeroom/rollover/preview", response_model=RolloverPreviewResponse)
 @domain_endpoint
 def rollover_preview(
@@ -1153,7 +1659,8 @@ def rollover_preview(
             details={"from_academic_year_id": from_year.id},
         )
 
-    roster = q.homeroom_roster(db, from_class.id, date.today())
+    as_of = _roster_as_of_for(from_year)
+    roster = q.homeroom_roster(db, from_class.id, as_of)
     students = [
         RolloverPreviewStudent(
             person_id=item["person_id"],
@@ -1164,6 +1671,51 @@ def rollover_preview(
         )
         for item in roster
     ]
+    # 取样口径（13.4）：取样时点不在班的成员逐人列出原因——已离班者不随
+    # 届；延续期新建学籍（valid_from 落在目标学年）不进名册，由承接迁入。
+    roster_ids = {item["person_id"] for item in roster}
+    latest_by_pid: Dict[int, Enrollment] = {}
+    for row in db.query(Enrollment).filter(Enrollment.admin_class_id == from_class.id).all():
+        cur = latest_by_pid.get(row.identity_id)
+        if cur is None or (row.valid_from or date.min) > (cur.valid_from or date.min):
+            latest_by_pid[row.identity_id] = row
+    excluded_rows = [r for r in latest_by_pid.values() if r.identity_id not in roster_ids]
+    excluded_names = (
+        q.names_for(db, [r.identity_id for r in excluded_rows]) if excluded_rows else {}
+    )
+    excluded_students: List[RolloverPreviewStudent] = []
+    for row in excluded_rows:
+        if row.valid_from is not None and row.valid_from > as_of:
+            if row.valid_from >= to_year.start_date:
+                note = (
+                    f"延续期新建学籍（{row.valid_from.isoformat()} 入班），"
+                    "确认换届时随承接迁入新班"
+                )
+            else:
+                note = (
+                    f"计划 {row.valid_from.isoformat()} 入班，晚于取样时点，"
+                    "不随本届名册"
+                )
+        else:
+            left = row.valid_to.isoformat() if row.valid_to else "—"
+            note = f"已于 {left} 离班（{row.status}），不随本届换届"
+        excluded_students.append(
+            RolloverPreviewStudent(
+                person_id=row.identity_id,
+                name=excluded_names.get(row.identity_id),
+                current_alias=None,
+                next_alias=None,
+                note=note,
+            )
+        )
+    carryover_plan = _carryover_plan(db, "homeroom", [from_class.id], to_year)
+    if from_year.end_date is not None and date.today() > from_year.end_date:
+        basis = (
+            f"源学年已结束（{from_year.end_date.isoformat()}），"
+            f"名册按学年结束日 {as_of.isoformat()} 取样，含届末仍在班成员"
+        )
+    else:
+        basis = f"名册按今天（{as_of.isoformat()}）取样"
     snapshot = {
         "kind": "rollover_preview",
         "from_academic_year_id": from_year.id,
@@ -1173,6 +1725,7 @@ def rollover_preview(
         "class_num": class_num,
         "member_ids": [item["person_id"] for item in roster],
         "member_aliases": {str(item["person_id"]): item["alias"] for item in roster},
+        "roster_as_of": as_of.isoformat(),
     }
     token = secrets.token_hex(16)
     expires_at = datetime.utcnow() + timedelta(minutes=q.PREVIEW_TTL_MINUTES)
@@ -1192,6 +1745,10 @@ def rollover_preview(
         from_year=RolloverYearInfo(id=from_year.id, name=from_year.name),
         to_year=RolloverYearInfo(id=to_year.id, name=to_year.name),
         students=students,
+        roster_as_of=as_of.isoformat(),
+        roster_basis=basis,
+        excluded_students=excluded_students,
+        carryover=carryover_plan,
     )
 
 
@@ -1219,9 +1776,14 @@ def rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends(get_db))
     if (grade, class_num) != (snapshot.get("grade"), snapshot.get("class_num")):
         raise LinkVersionConflict("教师班级绑定已变化，请重新预览")
 
-    # 旧学年成员漂移校验（R4 校验 3）
+    # 旧学年成员漂移校验（R4 校验 3）——取样时点与 preview 同口径
+    # （13.4：min(今天, 源学年结束日)），补做换届不因取样日漂移误报。
+    from_year = db.get(AcademicYear, snapshot.get("from_academic_year_id"))
     current_ids = {
-        item["person_id"] for item in q.homeroom_roster(db, from_class.id, date.today())
+        item["person_id"]
+        for item in q.homeroom_roster(
+            db, from_class.id, _roster_as_of_for(from_year) if from_year else date.today()
+        )
     }
     if current_ids != set(snapshot.get("member_ids") or []):
         raise LinkVersionConflict(
@@ -1395,6 +1957,53 @@ def rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends(get_db))
                     "identity_id": pid,
                 }
 
+    # 问题9：延续期写入承接——academic_year_id=目标学年但 class_ref_id 仍指
+    # 来源班的成绩/作业、valid_from 落在目标学年的学籍，随本届换届迁入新班
+    # （academic_year_id 本就是目标学年，只归位班级引用；来源学年正常数据
+    # 一律不动）。迁移逐行记入快照，undo 按班级命运回迁（见 rollover_undo）。
+    carryover_moves: List[dict] = []
+    for fact in _carryover_score_facts(db, "homeroom", from_class.id, to_year.id):
+        fact.class_ref_id = new_class.id
+        carryover_moves.append(
+            {
+                "table": "score_fact",
+                "id": fact.id,
+                "from_class_id": from_class.id,
+                "to_class_id": new_class.id,
+            }
+        )
+    for assignment in _carryover_assignments(db, "homeroom", from_class.id, to_year.id):
+        assignment.class_ref_id = new_class.id
+        carryover_moves.append(
+            {
+                "table": "homework_assignment",
+                "id": assignment.id,
+                "from_class_id": from_class.id,
+                "to_class_id": new_class.id,
+            }
+        )
+    for stray in _stray_enrollments(db, from_class.id, to_year):
+        # 幂等守卫（redo 场景）：同 (新班,人,valid_from) 已有行则不动
+        exists = (
+            db.query(Enrollment.id)
+            .filter(
+                Enrollment.admin_class_id == new_class.id,
+                Enrollment.identity_id == stray.identity_id,
+                Enrollment.valid_from == stray.valid_from,
+            )
+            .one_or_none()
+        )
+        if exists is None:
+            stray.admin_class_id = new_class.id
+            carryover_moves.append(
+                {
+                    "table": "enrollment",
+                    "id": stray.id,
+                    "from_class_id": from_class.id,
+                    "to_class_id": new_class.id,
+                }
+            )
+
     # confirm 快照落台账：undo 按此精确回滚（created_* 只含本次新建行）
     snapshot["confirmed_at"] = datetime.utcnow().isoformat()
     snapshot["new_class_id"] = new_class.id
@@ -1405,6 +2014,7 @@ def rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends(get_db))
     snapshot["enrollment_snapshots"] = enrollment_snapshots
     snapshot["created_alias_snapshots"] = created_alias_snapshots
     snapshot["closed_alias_snapshots"] = closed_alias_snapshots
+    snapshot["carryover_moves"] = carryover_moves
     batch.scope_json = json.dumps(snapshot, ensure_ascii=False)
     batch.status = "confirmed"
     db.commit()
@@ -1413,6 +2023,7 @@ def rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends(get_db))
         class_id=new_class.id,
         academic_year_id=to_year.id,
         class_created=class_created,
+        carryover_moved=len(carryover_moves),
     )
 
 
@@ -1424,7 +2035,10 @@ def rollover_undo(token: str, db: Session = Depends(get_db)):
     换届后已有新写入（成绩/作业/档案）或学籍/学号行被后续编辑（G04 快照
     核验：改座号/追加学号/离班又恢复）的学生列入 conflicted 跳过撤销；
     token 单次消费：撤销后 status=confirmed_undo，重复撤销 409。
-    换届不动 LinkedStudent / link（按人，架构 §7）。"""
+    换届不动 LinkedStudent / link（按人，架构 §7）。
+    2026-10-18 修复：①新写入检测按域+目标学年+目标班收窄（问题13.2），
+    旧学年补录/另一工作台写入不再误阻；②确认时承接迁入的延续期写入随
+    班级行命运回迁（问题9）——班级删除即回迁来源班，班级保留则迁移保留。"""
     current_teacher_id(db)
     batch = db.query(ImportBatch).filter(ImportBatch.token == token).first()
     if batch is None:
@@ -1457,43 +2071,22 @@ def rollover_undo(token: str, db: Session = Depends(get_db)):
 
     conflicted: List[RolloverConflictedStudent] = []
     undone = 0
+    # 问题13.2：新写入检测按域+目标学年+目标班收窄（旧学年补录/他域写入
+    # 不再误阻）；目标班上的真实新写入仍阻断（保护语义不变）。
+    to_year = db.get(AcademicYear, to_year_id)
+    target_class_ids = [new_class_id] if new_class_id is not None else []
     for pid in member_ids:
         # 换届后新写入检查：以 confirm 时点为界，新 alias/新班上的合法后续
         # 数据绝不静默覆盖（契约 §2.2 undo）
-        reasons: List[str] = []
-        if confirmed_at is not None:
-            if (
-                db.query(ScoreFact)
-                .filter(
-                    ScoreFact.identity_id == pid,
-                    ScoreFact.academic_year_id == to_year_id,
-                    ScoreFact.created_at >= confirmed_at,
-                )
-                .first()
-                is not None
-            ):
-                reasons.append("成绩")
-            if (
-                db.query(HomeworkSubmission)
-                .filter(
-                    HomeworkSubmission.person_id == pid,
-                    HomeworkSubmission.created_at >= confirmed_at,
-                )
-                .first()
-                is not None
-            ):
-                reasons.append("作业")
-            if (
-                db.query(WsStudentNote)
-                .filter(
-                    WsStudentNote.person_id == pid,
-                    WsStudentNote.created_at >= confirmed_at,
-                    _human_notes_filter(),
-                )
-                .first()
-                is not None
-            ):
-                reasons.append("档案")
+        reasons: List[str] = _post_rollover_write_reasons(
+            db,
+            pid,
+            confirmed_at,
+            "homeroom",
+            to_year_id,
+            to_year.start_date if to_year is not None else None,
+            target_class_ids,
+        )
         # G04 快照核验：confirm 创建/收尾的每一行与当前行逐字段比对——
         # 改座号、追加学号、离班（含离班又恢复）等任一后续编辑都会让该生
         # 进入 conflicted，保留现状，绝不删除已被编辑过的行。
@@ -1541,17 +2134,29 @@ def rollover_undo(token: str, db: Session = Depends(get_db)):
                 row.valid_to = None
         undone += 1
 
-    # 本次新建的行政班：无任何其他数据（残留学籍/成绩/关联/作业）才删行
+    # 本次新建的行政班：无任何其他数据（残留学籍/成绩/关联/作业）才删行。
+    # 问题9：确认时承接迁入的延续期行不按残留计——班级删除时它们随快照
+    # 回迁来源班（回到换届前延续态，数据仍可读）；班级保留则迁移保留
+    # （挂在存活班级上，可见性不丢）。
+    moves: List[dict] = snapshot.get("carryover_moves") or []
     class_removed = False
+    carryover_restored = 0
     if snapshot.get("class_created") and new_class_id is not None:
+        moved_enrollment_ids = _moved_ids_for(moves, "enrollment", new_class_id)
+        moved_fact_ids = _moved_ids_for(moves, "score_fact", new_class_id)
+        moved_assignment_ids = _moved_ids_for(moves, "homework_assignment", new_class_id)
         leftover = (
             db.query(Enrollment.id)
-            .filter(Enrollment.admin_class_id == new_class_id)
+            .filter(
+                Enrollment.admin_class_id == new_class_id,
+                Enrollment.id.notin_(moved_enrollment_ids),
+            )
             .first()
             or db.query(ScoreFact.id)
             .filter(
                 ScoreFact.data_domain == "homeroom",
                 ScoreFact.class_ref_id == new_class_id,
+                ScoreFact.id.notin_(moved_fact_ids),
             )
             .first()
             or db.query(HomeroomTeachingLink.id)
@@ -1561,19 +2166,37 @@ def rollover_undo(token: str, db: Session = Depends(get_db)):
             .filter(
                 HomeworkAssignment.data_domain == "homeroom",
                 HomeworkAssignment.class_ref_id == new_class_id,
+                HomeworkAssignment.id.notin_(moved_assignment_ids),
             )
             .first()
         )
         if leftover is None:
             cls = db.get(AdministrativeClass, new_class_id)
             if cls is not None:
+                # 先回迁再删班：迁回的 Enrollment 指回来源班，删班行时
+                # 不会触发 admin_class_id 外键（UPDATE 先于 DELETE 落盘）
+                carryover_restored = _restore_carryover_moves(
+                    db, [m for m in moves if m.get("to_class_id") == new_class_id]
+                )
                 db.delete(cls)
                 class_removed = True
+    kept_reused_class_labels: List[str] = []
+    if not snapshot.get("class_created") and new_class_id is not None:
+        reused = db.get(AdministrativeClass, new_class_id)
+        if reused is not None:
+            kept_reused_class_labels = [reused.label or f"#{new_class_id}"]
+    carryover_kept = len(moves) - carryover_restored
 
     batch.status = "confirmed_undo"
     db.commit()
     return RolloverUndoResponse(
-        success=True, undone=undone, conflicted=conflicted, class_removed=class_removed
+        success=True,
+        undone=undone,
+        conflicted=conflicted,
+        class_removed=class_removed,
+        kept_reused_class_labels=kept_reused_class_labels,
+        carryover_restored=carryover_restored,
+        carryover_kept=carryover_kept,
     )
 
 
@@ -1671,11 +2294,14 @@ def teaching_rollover_preview(
     subject, from_classes = _teaching_source_classes(db, from_year)
     to_year = _next_year_of(db, from_year)
 
+    as_of = _roster_as_of_for(from_year)
     pairs: List[dict] = []
     students: List[RolloverPreviewStudent] = []
+    roster_ids: set = set()
     for tc in from_classes:
-        for item in q.teaching_roster(db, [tc.id], date.today(), from_year.id):
+        for item in q.teaching_roster(db, [tc.id], as_of, from_year.id):
             pairs.append({"class_id": tc.id, "person_id": item["person_id"]})
+            roster_ids.add(item["person_id"])
             students.append(
                 RolloverPreviewStudent(
                     person_id=item["person_id"],
@@ -1686,6 +2312,47 @@ def teaching_rollover_preview(
                     note=None if item["alias"] else "暂无学号，可在确认时补填",
                 )
             )
+    # 取样口径（13.4）：取样时点不在班的成员逐人列出离班信息。
+    latest_by_member: Dict[int, TeachingClassMember] = {}
+    for tc in from_classes:
+        for row in (
+            db.query(TeachingClassMember)
+            .filter(TeachingClassMember.teaching_class_id == tc.id)
+            .all()
+        ):
+            cur = latest_by_member.get(row.identity_id)
+            if cur is None or (row.valid_from or date.min) > (cur.valid_from or date.min):
+                latest_by_member[row.identity_id] = row
+    excluded_rows = [r for r in latest_by_member.values() if r.identity_id not in roster_ids]
+    excluded_names = (
+        q.names_for(db, [r.identity_id for r in excluded_rows]) if excluded_rows else {}
+    )
+    excluded_students: List[RolloverPreviewStudent] = []
+    for row in excluded_rows:
+        if row.valid_from is not None and row.valid_from > as_of:
+            note = f"计划 {row.valid_from.isoformat()} 入班，晚于取样时点，不随本届名册"
+        else:
+            left = row.valid_to.isoformat() if row.valid_to else "—"
+            note = f"已于 {left} 离班，不随本届换届"
+        excluded_students.append(
+            RolloverPreviewStudent(
+                person_id=row.identity_id,
+                name=excluded_names.get(row.identity_id),
+                current_alias=None,
+                next_alias=None,
+                note=note,
+            )
+        )
+    carryover_plan = _carryover_plan(
+        db, "teaching", [tc.id for tc in from_classes], to_year
+    )
+    if from_year.end_date is not None and date.today() > from_year.end_date:
+        basis = (
+            f"源学年已结束（{from_year.end_date.isoformat()}），"
+            f"名册按学年结束日 {as_of.isoformat()} 取样，含届末仍在班成员"
+        )
+    else:
+        basis = f"名册按今天（{as_of.isoformat()}）取样"
     snapshot = {
         "kind": "teaching_rollover_preview",
         "from_academic_year_id": from_year.id,
@@ -1697,6 +2364,7 @@ def teaching_rollover_preview(
         ],
         "pairs": pairs,
         "member_aliases": {str(s.person_id): s.current_alias for s in students},
+        "roster_as_of": as_of.isoformat(),
     }
     token = secrets.token_hex(16)
     expires_at = datetime.utcnow() + timedelta(minutes=q.PREVIEW_TTL_MINUTES)
@@ -1716,6 +2384,10 @@ def teaching_rollover_preview(
         from_year=RolloverYearInfo(id=from_year.id, name=from_year.name),
         to_year=RolloverYearInfo(id=to_year.id, name=to_year.name),
         students=students,
+        roster_as_of=as_of.isoformat(),
+        roster_basis=basis,
+        excluded_students=excluded_students,
+        carryover=carryover_plan,
     )
 
 
@@ -1751,9 +2423,11 @@ def teaching_rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends
         from_classes.append(tc)
 
     # 成员漂移校验（R4 校验 3）：逐班重算与快照 pairs 全等才放行
+    # （取样时点与 preview 同口径，13.4：min(今天, 源学年结束日)）
+    confirm_as_of = _roster_as_of_for(from_year)
     current_pairs: List[dict] = []
     for tc in from_classes:
-        for item in q.teaching_roster(db, [tc.id], date.today(), from_year.id):
+        for item in q.teaching_roster(db, [tc.id], confirm_as_of, from_year.id):
             current_pairs.append({"class_id": tc.id, "person_id": item["person_id"]})
     if current_pairs != (snapshot.get("pairs") or []):
         raise LinkVersionConflict("来源学年教学班成员已变化，请重新预览")
@@ -1804,6 +2478,8 @@ def teaching_rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends
     created_alias_snapshots: Dict[str, dict] = {}
     closed_alias_snapshots: Dict[str, dict] = {}
     class_results: List[TeachingRolloverClassResult] = []
+    # 问题9：延续期写入承接（成绩/作业批次 class_ref_id 随班归位）
+    carryover_moves: List[dict] = []
 
     for tc in from_classes:
         existing = (
@@ -1861,6 +2537,29 @@ def teaching_rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends
                     **_member_current(member),
                     "identity_id": pid,
                 }
+        # 问题9：延续期写入（academic_year_id=目标学年、class_ref_id=本来源
+        # 班）随班归位到新学年同标签班；academic_year_id 不动。undo 按快照
+        # 与班级命运回迁（见 teaching_rollover_undo）。
+        for fact in _carryover_score_facts(db, "teaching", tc.id, to_year.id):
+            fact.class_ref_id = new_tc.id
+            carryover_moves.append(
+                {
+                    "table": "score_fact",
+                    "id": fact.id,
+                    "from_class_id": tc.id,
+                    "to_class_id": new_tc.id,
+                }
+            )
+        for assignment in _carryover_assignments(db, "teaching", tc.id, to_year.id):
+            assignment.class_ref_id = new_tc.id
+            carryover_moves.append(
+                {
+                    "table": "homework_assignment",
+                    "id": assignment.id,
+                    "from_class_id": tc.id,
+                    "to_class_id": new_tc.id,
+                }
+            )
 
     # 学号：逐人先收尾旧教学段 alias，再插入新学年行（顺序防自收尾）
     for pid in member_person_ids:
@@ -1923,6 +2622,7 @@ def teaching_rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends
     snapshot["member_snapshots"] = member_snapshots
     snapshot["created_alias_snapshots"] = created_alias_snapshots
     snapshot["closed_alias_snapshots"] = closed_alias_snapshots
+    snapshot["carryover_moves"] = carryover_moves
     batch.scope_json = json.dumps(snapshot, ensure_ascii=False)
     batch.status = "confirmed"
     db.commit()
@@ -1930,6 +2630,7 @@ def teaching_rollover_confirm(req: RolloverConfirmRequest, db: Session = Depends
         rolled_over=len(member_person_ids),
         academic_year_id=to_year.id,
         classes=class_results,
+        carryover_moved=len(carryover_moves),
     )
 
 
@@ -1939,7 +2640,12 @@ def teaching_rollover_undo(token: str, db: Session = Depends(get_db)):
     """撤销本次教学班换届（按 confirm 快照回滚）：删本次新建成员/alias、
     恢复被收尾 alias 的 valid_to、本次新建且已无其他数据的教学班删行。
     换届后已有新写入（成绩/作业/档案）或成员/学号被后续编辑的学生列入
-    conflicted 跳过撤销；token 单次消费，重复撤销 409。"""
+    conflicted 跳过撤销；token 单次消费，重复撤销 409。
+    2026-10-18 修复：①只删本次换届真正创建的教学班（问题13.1）——confirm
+    复用的既有同标签班绝不删除，保留名单在 kept_reused_class_labels 如实
+    返回；②新写入检测按域+目标学年+目标班收窄（问题13.2），旧学年补录/
+    另一工作台写入不再误阻；③确认时承接迁入的延续期写入随班级行命运回迁
+    （问题9）——班级删除即回迁来源班，班级保留则迁移保留。"""
     current_teacher_id(db)
     batch = db.query(ImportBatch).filter(ImportBatch.token == token).first()
     if batch is None:
@@ -1971,43 +2677,20 @@ def teaching_rollover_undo(token: str, db: Session = Depends(get_db)):
 
     conflicted: List[RolloverConflictedStudent] = []
     undone = 0
+    # 问题13.2：新写入检测按域+目标学年+目标班收窄；目标班上的真实新写入
+    # 仍阻断（保护语义不变）。
+    to_year = db.get(AcademicYear, to_year_id)
+    target_class_ids: List[int] = list(snapshot.get("target_class_ids") or [])
     for pid in member_person_ids:
-        reasons: List[str] = []
-        if confirmed_at is not None:
-            if (
-                db.query(ScoreFact)
-                .filter(
-                    ScoreFact.data_domain == "teaching",
-                    ScoreFact.identity_id == pid,
-                    ScoreFact.academic_year_id == to_year_id,
-                    ScoreFact.created_at >= confirmed_at,
-                )
-                .first()
-                is not None
-            ):
-                reasons.append("成绩")
-            if (
-                db.query(HomeworkSubmission)
-                .filter(
-                    HomeworkSubmission.person_id == pid,
-                    HomeworkSubmission.created_at >= confirmed_at,
-                )
-                .first()
-                is not None
-            ):
-                reasons.append("作业")
-            if (
-                db.query(WsStudentNote)
-                .filter(
-                    WsStudentNote.data_domain == "teaching",
-                    WsStudentNote.person_id == pid,
-                    WsStudentNote.created_at >= confirmed_at,
-                    _human_notes_filter(),
-                )
-                .first()
-                is not None
-            ):
-                reasons.append("档案")
+        reasons: List[str] = _post_rollover_write_reasons(
+            db,
+            pid,
+            confirmed_at,
+            "teaching",
+            to_year_id,
+            to_year.start_date if to_year is not None else None,
+            target_class_ids,
+        )
         # G04 快照核验：confirm 创建/收尾的每一行与当前行逐字段比对
         for mid, snap in member_snaps.items():
             if snap.get("identity_id") != pid:
@@ -2052,16 +2735,16 @@ def teaching_rollover_undo(token: str, db: Session = Depends(get_db)):
                 row.valid_to = None
         undone += 1
 
-    # 本次 touching 的新学年教学班（新建或复用同标签班）：撤销后无任何
-    # 其他数据（残留成员/成绩/关联/作业）才删行——完整撤销后不留空壳班，
-    # 学年延续视图得以恢复；有残留（含他人成员）一律保留。
+    # 本次新建的新学年教学班：撤销后无任何其他数据（残留成员/成绩/关联/
+    # 作业）才删行。问题13.1：只遍历 created_class_ids——confirm 复用的
+    # 既有同标签班（换届前已存在）绝不删除，无论是否清空；问题9：确认时
+    # 承接迁入的延续期行不按残留计，班级删除即随快照回迁来源班。
+    moves: List[dict] = snapshot.get("carryover_moves") or []
     class_removed = False
-    touched_class_ids = list(
-        dict.fromkeys(
-            [*(snapshot.get("created_class_ids") or []), *(snapshot.get("target_class_ids") or [])]
-        )
-    )
-    for cid in touched_class_ids:
+    carryover_restored = 0
+    for cid in list(dict.fromkeys(snapshot.get("created_class_ids") or [])):
+        moved_fact_ids = _moved_ids_for(moves, "score_fact", cid)
+        moved_assignment_ids = _moved_ids_for(moves, "homework_assignment", cid)
         leftover = (
             db.query(TeachingClassMember.id)
             .filter(TeachingClassMember.teaching_class_id == cid)
@@ -2070,6 +2753,7 @@ def teaching_rollover_undo(token: str, db: Session = Depends(get_db)):
             .filter(
                 ScoreFact.data_domain == "teaching",
                 ScoreFact.class_ref_id == cid,
+                ScoreFact.id.notin_(moved_fact_ids),
             )
             .first()
             or db.query(HomeroomTeachingLink.id)
@@ -2079,19 +2763,39 @@ def teaching_rollover_undo(token: str, db: Session = Depends(get_db)):
             .filter(
                 HomeworkAssignment.data_domain == "teaching",
                 HomeworkAssignment.class_ref_id == cid,
+                HomeworkAssignment.id.notin_(moved_assignment_ids),
             )
             .first()
         )
         if leftover is None:
             cls = db.get(TeachingClass, cid)
             if cls is not None:
+                # 先回迁再删班（同班主任侧：迁回行不再指向本班，删班安全）
+                carryover_restored += _restore_carryover_moves(
+                    db, [m for m in moves if m.get("to_class_id") == cid]
+                )
                 db.delete(cls)
                 class_removed = True
+    # 复用班保留名单（13.1）：target 中非本次创建的班如实列出。
+    kept_reused_class_labels: List[str] = []
+    for cid in list(dict.fromkeys(target_class_ids)):
+        if cid in set(snapshot.get("created_class_ids") or []):
+            continue
+        cls = db.get(TeachingClass, cid)
+        if cls is not None:
+            kept_reused_class_labels.append(cls.label or f"#{cid}")
+    carryover_kept = len(moves) - carryover_restored
 
     batch.status = "confirmed_undo"
     db.commit()
     return RolloverUndoResponse(
-        success=True, undone=undone, conflicted=conflicted, class_removed=class_removed
+        success=True,
+        undone=undone,
+        conflicted=conflicted,
+        class_removed=class_removed,
+        kept_reused_class_labels=kept_reused_class_labels,
+        carryover_restored=carryover_restored,
+        carryover_kept=carryover_kept,
     )
 
 

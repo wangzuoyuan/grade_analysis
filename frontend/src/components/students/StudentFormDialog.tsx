@@ -33,12 +33,17 @@ const DRAFT_KEY = 'new-student'
 interface NewStudentDraft {
   name: string
   alias: string
+  effectiveOn: string
 }
 
 function isNewStudentDraft(v: unknown): v is NewStudentDraft {
   if (typeof v !== 'object' || v === null) return false
   const o = v as Record<string, unknown>
-  return typeof o.name === 'string' && typeof o.alias === 'string'
+  return (
+    typeof o.name === 'string' &&
+    typeof o.alias === 'string' &&
+    typeof o.effectiveOn === 'string'
+  )
 }
 
 export function StudentFormDialog({
@@ -52,6 +57,8 @@ export function StudentFormDialog({
 }) {
   const [name, setName] = useState('')
   const [alias, setAlias] = useState('')
+  // 问题8：入班生效日（默认今天；历史日期用于补录，须在所选学年范围内）
+  const [effectiveOn, setEffectiveOn] = useState(() => new Date().toISOString().slice(0, 10))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [conflicts, setConflicts] = useState<AliasConflictEntry[] | null>(null)
@@ -62,6 +69,7 @@ export function StudentFormDialog({
     const d = loadPageDraft<NewStudentDraft>(DRAFT_ROUTE, DRAFT_KEY, isNewStudentDraft)
     setName(d?.name ?? '')
     setAlias(d?.alias ?? '')
+    setEffectiveOn(d?.effectiveOn ?? new Date().toISOString().slice(0, 10))
     setError(null)
     setConflicts(null)
   }, [open])
@@ -70,12 +78,13 @@ export function StudentFormDialog({
   useEffect(() => {
     if (!open) return
     if (name === '' && alias === '') return
-    savePageDraft<NewStudentDraft>(DRAFT_ROUTE, DRAFT_KEY, { name, alias })
-  }, [open, name, alias])
+    savePageDraft<NewStudentDraft>(DRAFT_ROUTE, DRAFT_KEY, { name, alias, effectiveOn })
+  }, [open, name, alias, effectiveOn])
 
   function reset() {
     setName('')
     setAlias('')
+    setEffectiveOn(new Date().toISOString().slice(0, 10))
     setError(null)
     setConflicts(null)
     clearPageDraft(DRAFT_ROUTE, DRAFT_KEY)
@@ -93,6 +102,7 @@ export function StudentFormDialog({
       await createHomeroomStudent({
         name: name.trim(),
         ...(alias.trim() !== '' ? { alias: alias.trim() } : {}),
+        ...(effectiveOn.trim() !== '' ? { effective_on: effectiveOn.trim() } : {}),
       })
       reset()
       onCreated()
@@ -141,6 +151,18 @@ export function StudentFormDialog({
               value={alias}
               onChange={(e) => setAlias(e.target.value)}
               maxLength={40}
+              disabled={busy}
+            />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="new-student-effective-on" className="text-xs font-medium text-slate-500">
+              入班生效日（补录历史名册可选历史日期）
+            </label>
+            <Input
+              id="new-student-effective-on"
+              type="date"
+              value={effectiveOn}
+              onChange={(e) => setEffectiveOn(e.target.value)}
               disabled={busy}
             />
           </div>

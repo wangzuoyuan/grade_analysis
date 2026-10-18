@@ -17,7 +17,8 @@
   parsed_ok, message?, exam_name, exam_date, subject?, class_label?, row_count,
   known_students, new_students: [{name, alias}], identity_candidates?: [{alias, name, person_id,
   academic_year_id, academic_year_name, basis}], warnings: [str]}]}`
-- warnings 至少覆盖：同学号不同姓名（H 撞号防呆语义，确认时整文件拒绝）、同文件重复学号、
+- warnings 至少覆盖：同学号不同姓名（**本学年在册命中**的 H 撞号防呆语义，确认时整文件拒绝；
+  跨学年/未标学年历史同号异名出候选清单而非撞号警告）、同文件重复学号、
   缺考(score=NULL)计数、被过滤/忽略的列。
 - **v2.1（考试身份冲突，审核边界裁决）**：同批次多文件之间、或与库内已有事实，
   出现同 `exam_name` 不同 `exam_date` → preview 计入 warnings 且 **confirm 整批 409 拒绝**
@@ -28,7 +29,11 @@
     绝不自动接续——不能区分同名新生/学号回收/跨届重号；confirm 请求须对每个候选做出显式决定：
     `identity_confirmations: {alias_value: person_id}`（接续）或 `identity_new_aliases: [alias_value]`
     （按新学生建档）；存在历史命中但两者皆未覆盖 → **409 + 候选清单，零写入**；确认的 person 须确实
-    持有该 alias 的历史登记（伪造/错配 422）；同名不能消除歧义；同号不同名仍按撞号整文件拒绝。
+    持有该 alias 的历史登记（伪造/错配 422）；`identity_new_aliases` 中的 alias 必须出现在预览候选
+    清单里（伪造/未在预览出现 → 422 声明无效）；同名不能消除歧义。**撞号仅指本学年在册命中
+    （含 NULL 学年但有效期明确覆盖文件日期的命中）且姓名不同 → 整文件 409 拒绝**；跨学年/未标
+    学年的历史同号即便姓名不同也归候选（学号被新一届复用的正常形态），可经上述二选一显式消歧，
+    新建时历史学生记录不变、新身份独立建档。
     未标学年（academic_year_id 为 NULL）的 alias 登记**不得视为已证明的本学年身份（v2.2，G06）**：
     默认生成候选；仅当该 alias 行自身有效期（valid_from/valid_to）明确覆盖目标文件日期
     （可证实该号事发时仍在册）方可直接命中为 known。任何路径确认接续后均按 F07 补学籍，
@@ -54,13 +59,21 @@
     （补登本学年 alias + 目标班成员行，F07 有效期规则）；无匹配新建
     `WsStudentIdentity + WsStudentAlias(+本学年) + Enrollment/TeachingClassMember`
     （valid_from=max(学年 start_date, 文件日期)，source='import'）。
-    **同学号不同姓名 → 整文件 409 拒绝**（防两人成绩混档），不自动改名合并。
+    **同学号不同姓名（本学年在册命中）→ 整文件 409 拒绝**（防两人成绩混档），不自动改名合并；
+    跨学年历史同号异名走候选消歧（§1.1）。
+  - 批内去重按**解析后的 identity_id**（未建档新学号才按 alias）：同一学生同批以新旧两个
+    学号出现时同键同值合并为一行；数值不同 → 409 列出学号对与两值（revise 不能消解批内
+    自相矛盾），整批零写入。
   - homeroom 模式：ScoreFact 写全科 + 总分（total_type 行），`class_ref_id=行政班 id`，`source='import:<filename>'`。
   - teaching 模式：ScoreFact 仅任教学科（其他学科列丢弃并计入 warnings），`class_ref_id=教学班 id`；
     文件中学生补入 TeachingClassMember（成员同步）。
-  - `class_averages` 文件：写入独立的 `workspace_class_average` 官方年级班均事实，按
-    `(domain, academic_year_id, exam_name, grade, class_num)` 定位；保留班级类型、班主任、各科均分与
-    各总分口径。它与学生明细可以在同一次多文件 preview/confirm 中提交，并与整批共享原子性、日期一致性、
+  - `class_averages` 文件：写入独立的 `workspace_class_average` 官方年级班均事实，按与库唯一约束
+    `uq_workspace_class_average_natural_key` 一致的自然键 `(domain, academic_year_id, event_or_name,
+    grade, class_num)` 定位（事件归并后按 exam_event_id 集合内全部行；legacy 按 event IS NULL +
+    exam_name；**不用 exam_name/exam_date 过滤**——改名/改日期/归并集多行时旧口径会漏查或一对多）：
+    同值幂等 skip、异值 revise 统一更新集合内行或 409 可读冲突，绝不撞 IntegrityError/
+    MultipleResultsFound；保留班级类型、班主任、各科均分与各总分口径。它与学生明细可以在同一次
+    多文件 preview/confirm 中提交，并与整批共享原子性、日期一致性、
     幂等和 `revise` 修订规则；不得从当前行政班的 `ScoreFact` 样本反推或冒充全年级班均表。
   - 幂等/冲突（按自然键 `(domain, academic_year_id, exam_name, identity, subject_key, total_key)` 与库内比对）：
     同值 → skipped；无键 → 插入；**不同值 → revise=false 时整批 409 + `conflicts`

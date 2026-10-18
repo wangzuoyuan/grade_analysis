@@ -18,7 +18,10 @@
   （挂不上学年目录的作业学期进顶层 unmatched_semesters，绝不静默丢弃），
   配合系统提示第 6 条翻译规则让模型听懂「上学年/上学期/上上学年/这学期」。
   teaching 跨年由 _teaching_ctx_for_year 显式解析该学年同学科班集合，
-  绝不把本学年班 id 传给其他学年。
+  绝不把本学年班 id 传给其他学年。homeroom 跨年由 _homeroom_year_class
+  按教师绑定班号解析该学年行政班（换届后新学年是新行；解析链与
+  core.context 同一回退序：精确 → 换届回看唯一实例 → 未换届延续），
+  解析不出/歧义返回可读错误，绝不猜（fix11）。
 - 入参再校验：person_id/subject 等先过会话快照作用域，越界返回模型可读
   中文错误文本，绝不让异常栈穿透到模型。exam_name 由 _resolve_exam_name
   统一解析：精确命中直接用（候选清单列有同名，或 service 存在性门可答
@@ -408,8 +411,9 @@ def _exam_candidates(db, snapshot: dict, year_id: int) -> list:
             list_shared_exams,
             mode="homeroom",
             academic_year_id=year_id,
-            # 行政班跨年延续：恒钉快照行政班
-            class_id=snapshot["class_ids"][0],
+            # fix11：跨年先解析该学年行政班（换届后新学年是新行，快照班
+            # id 配其他学年必被核心解析拒绝）；同学年即快照班，行为不变
+            class_id=_homeroom_year_class(db, snapshot, year_id),
             teaching_class_id=None,
             subject=None,
             db=db,
@@ -815,6 +819,152 @@ def _teaching_ctx_for_year(db, snapshot: dict, year_id: int):
     return resolve_workspace_context(db, current_teacher_id(db), "teaching", params)
 
 
+# ────────────────── fix11：homeroom 跨年班级解析（服务端，绝不猜） ──────────────────
+# 换届后新学年的行政班是新行（AdministrativeClass 每年一行，id 不同），
+# 「本班」跨学年的稳定身份是教师绑定的班号（Teacher.target_class_high{1,2,3}
+# + homework_setting.active_grade）：换届沿班号在新学年建 grade+1 新行，
+# 旧学年行原地保留。跨年查历史学年绝不能把快照（新学年）班 id 配旧学年
+# 传给 resolve_workspace_context（100% ResourceOutOfScope，probe 11A）；
+# 必须先按绑定班号解析出该学年的行政班行，再带着 {学年, class_id} 走核心
+# 解析。解析链与 core.context._resolve_homeroom 的回退序逐字一致（① 当届
+# 年级+绑定班号精确 → ② 换届后回看：该学年班号命中任一绑定班号的唯一实例
+# → ③ 未换届延续 carryover），保证工具层选中的班与核心解析永不打架；
+# 解析不出/歧义 → 可读中文错误（歧义列候选班），绝不猜、绝不放宽范围。
+
+
+def _year_name(db, year_id: int) -> str:
+    """学年显示名（错误文案用；行不存在时回退 id 字符串）。"""
+    from app.db.workspace_models import AcademicYear
+
+    row = db.get(AcademicYear, year_id)
+    return (row.name if row is not None and row.name else str(year_id))
+
+
+def _homeroom_year_class(db, snapshot: dict, year_id: int) -> int:
+    """homeroom 会话按目标学年解析行政班 id（fix11 唯一实现）。
+
+    - 目标学年 == 快照学年 → 快照行政班（原行为零变化；快照本就由同一
+      解析链产生，且每轮工具调用前经 Q02 漂移重验）；
+    - 跨年 → 照 core.context._resolve_homeroom 的回退序解析该学年的
+      「本班」：① (学年, 当届年级, 绑定班号) 精确命中（UNIQUE 保证唯一）；
+      ② 换届后回看历史学年：该学年内班号命中教师任一绑定班号的唯一实例
+      （当年本班在低年级）；③ 未换届延续：目标学年还没建本班 → 最近一个
+      更早学年沿绑定对 (年级, 班号) 的班（q.carryover_homeroom_class，
+      零写入）。
+    - 错误分类与核心解析同款（绝不另造口径）：学年不存在 →
+      ResourceOutOfScope；解析不出/歧义 → WorkspaceNotConfigured，
+      detail 为可读中文（歧义列出候选班），绝不猜、绝不退化为全年级。
+    """
+    if year_id == snapshot.get("academic_year_id"):
+        return snapshot["class_ids"][0]
+    from app.api import current_teacher_id
+    from app.core.errors import ResourceOutOfScope, WorkspaceNotConfigured
+    from app.db.models import Teacher
+    from app.db.workspace_models import AcademicYear, AdministrativeClass
+    from app.rollover.service import get_active_grade
+
+    teacher = db.get(Teacher, current_teacher_id(db))
+    ay = db.get(AcademicYear, year_id)
+    if ay is None:
+        # 同 core._resolve_academic_year 的分类（ResourceOutOfScope），只是
+        # 提前到工具层，避免带着坏 id 深入 service
+        raise ResourceOutOfScope(
+            f"academic_year_id={year_id} 不存在", details={"academic_year_id": year_id}
+        )
+    if teacher is None:
+        raise WorkspaceNotConfigured("教师身份缺失，无法解析跨学年行政班")
+    grade = int(get_active_grade(db))
+    bound_pairs = [
+        (g, getattr(teacher, f"target_class_high{g}"))
+        for g in (1, 2, 3)
+        if getattr(teacher, f"target_class_high{g}") is not None
+    ]
+    bound_nums = {num for _g, num in bound_pairs}
+    rows = (
+        db.query(AdministrativeClass)
+        .filter(AdministrativeClass.academic_year_id == year_id)
+        .all()
+    )
+    # ① 精确：该学年 + 当届年级 + 绑定班号
+    active_num = dict(bound_pairs).get(grade)
+    if active_num is not None:
+        for row in rows:
+            if row.grade == grade and row.class_num == active_num:
+                return row.id
+    # ② 换届后回看：该学年内班号命中任一绑定班号的唯一实例
+    alt = [row for row in rows if row.class_num in bound_nums]
+    if len(alt) == 1 and alt[0].grade in (1, 2, 3):
+        return alt[0].id
+    # ③ 未换届延续：最近一个更早学年沿绑定对的班（同 context.py）
+    carried = q.carryover_homeroom_class(db, teacher, year_id)
+    if carried is not None:
+        return carried.id
+    # 解析不出/歧义 → 可读错误（错误类同核心解析，绝不猜）
+    year_label = f"「{_year_name(db, year_id)}」"
+    if not bound_nums:
+        raise WorkspaceNotConfigured(
+            f"教师尚未绑定任何年级的行政班班号，无法解析目标学年{year_label}的行政班；"
+            "请先在工作台完成班级绑定"
+        )
+    nums_label = "、".join(str(n) for n in sorted(bound_nums))
+    if len(alt) > 1:
+        candidates = "、".join(
+            row.label or f"{row.grade}年级{row.class_num}班" for row in alt
+        )
+        raise WorkspaceNotConfigured(
+            f"目标学年{year_label}按教师绑定班号（{nums_label}）匹配到 "
+            f"{len(alt)} 个行政班，无法唯一确定是哪一个：{candidates}；"
+            "请先在该学年明确本班（核对教师班级绑定或清理重复班）后重试"
+        )
+    raise WorkspaceNotConfigured(
+        f"目标学年{year_label}没有本人行政班（绑定班号 {nums_label} 在该学年"
+        "无班级行，也无更早学年的延续班），无法跨学年查询该学年数据"
+    )
+
+
+def _year_scope_snapshot(db, snapshot: dict, year_id: int) -> dict:
+    """跨年目标学年的同源作用域快照（fix11）：
+
+    - homeroom：_homeroom_year_class 解析该学年行政班后经
+      resolve_workspace_context 重建（成员/关联 = 该学年该班口径，
+      academic_year_id == year_id——diagnosis 侧 _check_year 的硬要求）；
+    - teaching：沿 _teaching_ctx_for_year 同口径（该学年任教学科班集合，
+      学科钉快照任教学科；无班 → 可读错误）。
+    仅跨年调用；快照学年由调用方直接用会话快照（行为不变）。
+    """
+    from app.api import current_teacher_id
+
+    if snapshot["mode"] == "homeroom":
+        ctx = resolve_workspace_context(
+            db,
+            current_teacher_id(db),
+            "homeroom",
+            {
+                "academic_year_id": year_id,
+                "class_id": _homeroom_year_class(db, snapshot, year_id),
+            },
+        )
+        return _snapshot_of(
+            db,
+            ctx,
+            mode="homeroom",
+            academic_year_id=year_id,
+            class_id=ctx.class_ids[0],
+            teaching_class_id=None,
+            subject=snapshot.get("subject"),
+        )
+    ctx = _teaching_ctx_for_year(db, snapshot, year_id)
+    return _snapshot_of(
+        db,
+        ctx,
+        mode="teaching",
+        academic_year_id=year_id,
+        class_id=None,
+        teaching_class_id=None,
+        subject=snapshot.get("subject"),
+    )
+
+
 def _optional_int(args: dict, name: str):
     """可选整数参数：缺省 None；类型非法 → 可读错误。"""
     value = args.get(name)
@@ -856,20 +1006,26 @@ def _teaching_subject_guard(snapshot: dict, subject: Optional[str]):
 def _tool_search_students(db, snapshot: dict, args: dict) -> dict:
     """学生搜索：students list service 同源名册（homeroom_roster /
     teaching_roster），再收敛到会话快照成员集合 + 姓名/学号子串匹配。
-    跨年：按解析出的学年查名册（学年只影响别名学年优先），成员收敛
-    仍用快照 member_person_ids（红线：入参再过会话快照作用域）。"""
+    跨年（fix11）：按解析出的学年查名册且【成员收敛改用目标学年名册】
+    ——homeroom 先解析该学年行政班（换届后新学年是新行）、teaching 沿
+    该学年任教学科班集合，成员集合 = 同一服务端解析器算出的
+    member_person_ids（本人班级/本人任教学科班在该学年的成员，范围限制
+    不放宽、绝不扩到全年级）；本学年查询行为不变（仍收敛快照成员）。"""
     year_id, err = _year_id_of(db, snapshot, args)
     if err:
         return err
     needle = (args.get("q") or "").strip()
+    same_year = year_id == snapshot["academic_year_id"]
     if snapshot["mode"] == "homeroom":
-        # homeroom：班恒钉快照行政班（行政班跨年延续=同一班行，查的是
-        # 教师本人班级历史）
         roster = q.homeroom_roster(
-            db, snapshot["class_ids"][0], _as_of(snapshot), year_id
+            db,
+            # fix11：跨年解析该学年行政班（同学年即快照班，行为不变）
+            _homeroom_year_class(db, snapshot, year_id),
+            _as_of(snapshot),
+            year_id,
         )
     else:
-        if year_id == snapshot["academic_year_id"]:
+        if same_year:
             scope_ids = list(snapshot["class_ids"])
         else:
             # 跨年教学：该学年同学科教学班集合，绝不复用本学年班 id
@@ -877,7 +1033,14 @@ def _tool_search_students(db, snapshot: dict, args: dict) -> dict:
                 db, year_id, snapshot.get("subject")
             )
         roster = q.teaching_roster(db, scope_ids, _as_of(snapshot), year_id)
-    members = set(snapshot.get("member_person_ids") or [])
+    if same_year:
+        members = set(snapshot.get("member_person_ids") or [])
+    else:
+        # 跨年成员收敛：目标学年名册同款服务端口径（不放宽范围限制）
+        members = set(
+            _year_scope_snapshot(db, snapshot, year_id).get("member_person_ids")
+            or []
+        )
     rows = [item for item in roster if item["person_id"] in members]
     if needle:
         rows = [
@@ -908,8 +1071,9 @@ def _tool_get_student_profile(db, snapshot: dict, args: dict) -> dict:
             homeroom_student_profile,
             person_id=args["person_id"],
             academic_year_id=year_id,
-            # 行政班跨年延续：恒钉快照行政班，查教师本人班级历史
-            class_id=snapshot["class_ids"][0],
+            # fix11：跨年解析该学年行政班（换届后新学年是新行；查教师
+            # 本人班级历史）；同学年即快照班，行为不变
+            class_id=_homeroom_year_class(db, snapshot, year_id),
             term_id=None,
             db=db,
         )
@@ -967,7 +1131,7 @@ def _tool_get_exam_stats(db, snapshot: dict, args: dict) -> dict:
             homeroom_exam_stats,
             exam_name=exam_name,
             academic_year_id=year_id,
-            class_id=snapshot["class_ids"][0],
+            class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
             term_id=None,
             db=db,
         )
@@ -1103,7 +1267,7 @@ def _tool_get_homework_summary(db, snapshot: dict, args: dict) -> dict:
         result = _call_service(
             homework_dashboard,
             mode="homeroom",
-            class_id=snapshot["class_ids"][0],
+            class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
             teaching_class_id=None,
             academic_year_id=year_id,
             subject=None,
@@ -1159,7 +1323,10 @@ def _tool_get_homework_student(db, snapshot: dict, args: dict) -> dict:
         person_id=args["person_id"],
         mode=snapshot["mode"],
         class_id=(
-            snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
+            # fix11：跨年解析该学年行政班（同学年即快照班，行为不变）
+            _homeroom_year_class(db, snapshot, year_id)
+            if snapshot["mode"] == "homeroom"
+            else None
         ),
         # Q01：teaching 单班会话钉住该班（并集会话缺省语义一致）；跨年时
         # 本学年班 id 绝不传给其他学年 → None（service 按该学年班集合解析）
@@ -1225,15 +1392,18 @@ def _tool_get_homework_correlation(db, snapshot: dict, args: dict) -> dict:
     from app.diagnosis.correlation import exam_homework_correlation
 
     # 与旧 service 取数同一作用域（同源 resolve_scope_snapshot 重建）：
-    # homeroom 恒钉快照行政班；teaching 同年钉单班（Q01 绝不扩大成并集）、
-    # 跨年改传 None 并钉住任教学科（service 按该学年同学科班集合解析）。
+    # homeroom 跨年先解析该学年行政班（fix11；同学年即快照班）；teaching
+    # 同年钉单班（Q01 绝不扩大成并集）、跨年改传 None 并钉住任教学科
+    # （service 按该学年同学科班集合解析）。
     scope = resolve_scope_snapshot(
         db,
         current_teacher_id(db),
         snapshot["mode"],
         academic_year_id=year_id,
         class_id=(
-            snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
+            _homeroom_year_class(db, snapshot, year_id)
+            if snapshot["mode"] == "homeroom"
+            else None
         ),
         teaching_class_id=(
             _single_class_id(snapshot)
@@ -1371,7 +1541,7 @@ def _tool_get_class_averages(db, snapshot: dict, args: dict) -> dict:
         homeroom_class_averages,
         exam_name=exam_name,
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],  # 行政班跨年延续：恒钉本人班
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11：跨年解析该学年本人班
         term_id=None,
         db=db,
     )
@@ -1409,7 +1579,7 @@ def _tool_get_exam_focus(db, snapshot: dict, args: dict) -> dict:
         homeroom_exam_focus,
         exam_name=exam_name,
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
         term_id=None,
         db=db,
     )
@@ -1497,7 +1667,7 @@ def _tool_get_rank_frequency(db, snapshot: dict, args: dict) -> dict:
         metric=metric,
         exam_names=",".join(resolved_items),
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
         term_id=None,
         db=db,
     )
@@ -1536,7 +1706,7 @@ def _tool_get_rank_range(db, snapshot: dict, args: dict) -> dict:
         rank_min=rank_min if rank_min is not None else 1,
         rank_max=rank_max if rank_max is not None else 100,
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
         term_id=None,
         db=db,
     )
@@ -1560,7 +1730,7 @@ def _tool_get_rank_distribution(db, snapshot: dict, args: dict) -> dict:
         homeroom_rank_distribution,
         exam_name=exam_name,
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
         term_id=None,
         db=db,
     )
@@ -1588,7 +1758,7 @@ def _tool_get_score_bands(db, snapshot: dict, args: dict) -> dict:
         subject=(args.get("subject") or "").strip() or None,
         metric=(args.get("metric") or "").strip() or "total",
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
         term_id=None,
         db=db,
     )
@@ -1628,7 +1798,10 @@ def _tool_get_homework_warnings(db, snapshot: dict, args: dict) -> dict:
         homework_warnings,
         mode=snapshot["mode"],
         class_id=(
-            snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
+            # fix11：跨年解析该学年行政班（同学年即快照班，行为不变）
+            _homeroom_year_class(db, snapshot, year_id)
+            if snapshot["mode"] == "homeroom"
+            else None
         ),
         # Q01：teaching 单班会话钉住该班；跨年时本学年班 id 绝不传给其他
         # 学年 → None，service 按钉住的 subject 解析该学年班集合
@@ -1749,10 +1922,12 @@ def _tool_get_student_notes(db, snapshot: dict, args: dict) -> dict:
         mode=snapshot["mode"],
         person_id=args["person_id"],
         academic_year_id=year_id,
-        # 与 Q01 钉班一致：homeroom 恒钉行政班；teaching 单班钉班、
-        # 跨年不传本学年班 id
+        # 与 Q01 钉班一致：homeroom 跨年解析该学年行政班（fix11，同学年即
+        # 快照班）；teaching 单班钉班、跨年不传本学年班 id
         class_id=(
-            snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
+            _homeroom_year_class(db, snapshot, year_id)
+            if snapshot["mode"] == "homeroom"
+            else None
         ),
         teaching_class_id=(
             _single_class_id(snapshot)
@@ -1887,7 +2062,7 @@ def _tool_get_exam_students(db, snapshot: dict, args: dict) -> dict:
         homeroom_exam_students,
         exam_name=exam_name,
         academic_year_id=year_id,
-        class_id=snapshot["class_ids"][0],
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11 跨年解析
         term_id=None,
         db=db,
     )
@@ -1918,16 +2093,16 @@ def _tool_get_diagnosis_summary(db, snapshot: dict, args: dict) -> dict:
       汇总）+ 每生 classify 结果（类型分布由此聚合）。
     - B1/B2 端点未部署（P1-B4 分支）→ 返回 not_available 可读引导（模型改用
       既有工具）；合并后 import 成立即自动接线，本 handler 无需再改。
+    - fix11 跨年：按目标学年重建同源快照（homeroom 解析该学年行政班 /
+      teaching 该学年任教学科班集合）再调 features——_check_year 要求
+      scope.academic_year_id == year；学生不在【该学年】名册 → 可读说明。
+      快照学年行为零变化。
     只读；scope 语义照契约 §0.2——快照即已解析作用域，homeroom 全科+总分、
     teaching 仅任教学科，绝不跨域取数；输出携带口径版本 calc_version=p1-v1。
     """
     person_id, err = _optional_int(args, "person_id")
     if err:
         return err
-    if person_id is not None:
-        guard = _member_guard(snapshot, person_id)
-        if guard:
-            return guard
     year_id, err = _year_id_of(db, snapshot, args)
     if err:
         return err
@@ -1947,8 +2122,27 @@ def _tool_get_diagnosis_summary(db, snapshot: dict, args: dict) -> dict:
                 "（只读，口径版本 p1-v1）。"
             ),
         }
+    # fix11 跨年：diagnosis 侧 _check_year 硬要求 scope.academic_year_id ==
+    # year，且成员口径必须是【该学年本班名册】——按目标学年重建同源快照
+    # （homeroom 解析该学年行政班；teaching 沿该学年任教学科班集合）。
+    # 快照学年沿用会话快照（原行为零变化）。
+    if year_id == snapshot["academic_year_id"]:
+        scope = snapshot
+        if person_id is not None:
+            guard = _member_guard(snapshot, person_id)
+            if guard:
+                return guard
+    else:
+        scope = _year_scope_snapshot(db, snapshot, year_id)
+        if person_id is not None and person_id not in set(
+            scope.get("member_person_ids") or []
+        ):
+            return _out_of_scope(
+                f"该学生不在目标学年「{_year_name(db, year_id)}」的班级名册"
+                "范围内，无法查询该学年诊断摘要"
+            )
     if person_id is not None:
-        features = student_features(db, snapshot, person_id, year_id)
+        features = student_features(db, scope, person_id, year_id)
         return {
             "summary_kind": "student",
             "academic_year_id": year_id,
@@ -1956,7 +2150,7 @@ def _tool_get_diagnosis_summary(db, snapshot: dict, args: dict) -> dict:
             "features": features,
             "types": classify_student(features),
         }
-    cls = class_features(db, snapshot, year_id)
+    cls = class_features(db, scope, year_id)
     # class_features 每生列表键名契约注释未冻结（§2 仅写「每生 features 的
     # 列表 + 班级级汇总」）：主读 students，兼容 features 键（接线时如实际
     # 键名不同，只改这一行）。

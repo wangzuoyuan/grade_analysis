@@ -73,7 +73,7 @@ export interface DiagnosisReportData {
     summary_source: string
     main_type: string | null
     secondary_tags: string[]
-    classification_status: 'classified' | 'insufficient_data'
+    classification_status: 'classified' | 'insufficient_data' | 'not_computable'
     evidence: Array<{ type: string; basis: string }>
     latest_exam_name: string | null
     latest_exam_as_of: string | null
@@ -361,6 +361,8 @@ export function DiagnosisReportView({
   const obs = report.teacher_observations
   const sug = report.suggestions
   const insufficient = ls.classification_status === 'insufficient_data'
+  // 教学域无总分口径：总分依赖的类型不可计算（作业风险型可单独成立）
+  const notComputable = ls.classification_status === 'not_computable'
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 bg-white p-6 text-slate-900 print:p-0">
@@ -408,6 +410,13 @@ export function DiagnosisReportView({
         <div className="mb-2 flex flex-wrap items-center gap-2">
           {insufficient ? (
             <Badge variant="secondary">数据不足，不强行归类</Badge>
+          ) : notComputable ? (
+            <>
+              <Badge variant="secondary">类型不可计算（教学域无总分口径）</Badge>
+              {ls.main_type ? (
+                <Badge variant={reportTypeTone(ls.main_type)}>{ls.main_type}</Badge>
+              ) : null}
+            </>
           ) : (
             <Badge variant={reportTypeTone(ls.main_type)}>{ls.main_type ?? DASH}</Badge>
           )}
@@ -625,8 +634,9 @@ export function DiagnosisReportView({
             variant="outline"
             size="sm"
             onClick={() => {
+              // 完成编辑仅退出编辑态：草稿保留继续展示（14.1），需要单条还原
+              // 用编辑态里的「恢复原文」，重新拉取报告时才会整体重置。
               setEditing((v) => !v)
-              if (editing) setDrafts({})
             }}
           >
             {editing ? (

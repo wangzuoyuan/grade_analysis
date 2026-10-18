@@ -594,6 +594,12 @@ export function HomeroomScores() {
   const subjectCols = useMemo(() => (stats?.subjects ?? []).map((s) => s.subject), [stats])
   const totalCols = useMemo(() => (stats?.totals ?? []).map((t) => t.total_type), [stats])
 
+  // 展示用考试名：selectedExam 持稳定 exam_key（event:N），界面不得显示内部编号
+  const selectedExamLabel = useMemo(
+    () => exams?.find((e) => (e.exam_key ?? e.exam_name) === selectedExam)?.exam_name ?? selectedExam,
+    [exams, selectedExam],
+  )
+
   // 段位指标选项：各总分口径（value 前缀 __total__ 区分，subject 参数承载 total_type）+ 各科；
   // 当前值失效时回退首个选项
   const metricOptions = useMemo(() => {
@@ -1049,7 +1055,7 @@ export function HomeroomScores() {
                 <CardHeader>
                   <CardTitle>学生成绩表</CardTitle>
                   <CardDescription>
-                    {stats ? `${selectedExam} · 范围 ${String(stats.cohort_size)} 人 · ` : ''}
+                    {stats ? `${selectedExamLabel} · 范围 ${String(stats.cohort_size)} 人 · ` : ''}
                     按总分降序仅为浏览排序，非正式名次；点击行可展开跨学年趋势。
                     {stats?.small_sample === true ? <Badge variant="warning" className="ml-2">样本&lt;5</Badge> : null}
                   </CardDescription>

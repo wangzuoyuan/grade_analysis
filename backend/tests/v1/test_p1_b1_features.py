@@ -332,7 +332,12 @@ def test_homeroom_features_full_shape(client, p1b1_seed):
 
     trend = body["indicators"]["trend"]
     assert trend["status"] == "ok"
-    assert trend["last_change"] == {"from": EXAM_FINAL, "to": EXAM_YIMO, "rank_change": -12}
+    # 2026-10-18 修复 3：from/to 一律人类可读考试名，另附稳定 exam_key
+    # （本样本为无事件 legacy 事实，exam_key==考试名）
+    assert trend["last_change"] == {
+        "from": EXAM_FINAL, "to": EXAM_YIMO, "rank_change": -12,
+        "from_exam_key": EXAM_FINAL, "to_exam_key": EXAM_YIMO,
+    }
     # 百分位方向语义：名次 120→96（变小）= 进步（方向正确性）
     assert trend["direction_recent"] == "进步"
     # 单步 |变化| 均 <20 → 无连击
@@ -432,8 +437,11 @@ def test_absent_exam_missing_reasons(client, p1b1_seed):
     assert imbalance["subjects"] == []
     assert imbalance["severe"] == []
 
-    assert body["data_quality"]["valid_exam_count"] == 2  # 两场都有行（含缺考行）
+    # 2026-10-18 修复 12.1：有效考试数只计有有效成绩证据的场次——期末
+    # 全部行 score=NULL（登记缺考）不算有效考试，绝不充当分类证据
+    assert body["data_quality"]["valid_exam_count"] == 1
     assert any("名次缺失" in note for note in body["data_quality"]["notes"])
+    assert any("只有缺考登记" in note for note in body["data_quality"]["notes"])
 
 
 # ────────────── 稀疏历史 + 偏科连续场数边界 ──────────────
@@ -504,22 +512,26 @@ def test_teaching_domain_scope_isolation(client, p1b1_seed):
 
     cl = body["indicators"]["current_level"]
     assert cl["status"] == "ok"
-    # 期末：H 域甲的物理行（92 分）经 link 投影进入（share_categories 默认含
-    # current_subject_score，且甲乙是已确认 linked 学生）——仍是仅物理口径
+    # 甲·T：subjects 仅物理（H 域同学科事实经 F09 反向投影进入，仅任教学科）；
+    # 无总分行 → 总体类指标 not_computable、绝不跨域借读总分；
+    # 作业/档案只读本域（班主任域数学语文缺交与谈话档案不出现）。
+    # 2026-10-18 修复 12.2：教学域无总分是口径不适用（teaching_no_total），
+    # 不再误报 no_main3_row（暗示数据没导）。
     assert cl["exam_name"] == EXAM_FINAL
+    assert cl["exam_key"] == EXAM_FINAL  # legacy 事实 exam_key==考试名（修复 3）
     assert cl["as_of"] == "2026-01-15"
     assert _by_subject(cl["subjects"]) == {
         "物理": {"subject": "物理", "percentile": 0.08, "grade_score": None}
     }
     assert cl["main3"] == {
-        "rank": None, "percentile": None, "basis": None, "missing_reason": "no_main3_row",
+        "rank": None, "percentile": None, "basis": None, "missing_reason": "teaching_no_total",
     }
     assert cl["bands"] == {"high_score": False, "critical": False, "weak": False}
 
     for name in ("trend", "stability", "imbalance"):
         indicator = body["indicators"][name]
         assert indicator["status"] == "not_computable"
-        assert indicator["missing_reason"] == "no_main3_row"
+        assert indicator["missing_reason"] == "teaching_no_total"
 
     hw = body["indicators"]["homework_behavior"]
     assert hw["missing_7d"] == 2

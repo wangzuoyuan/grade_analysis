@@ -129,7 +129,10 @@ def metric_points(
         value, missing = _metric_value_of(bucket, source, key)
         points.append(
             {
-                "exam_name": name,
+                # 展示用人类可读考试名；稳定定位键另附 exam_key（修复 3：
+                # ordered 的元素是分组 key（如 event:123），绝不可当名称外泄）。
+                "exam_name": bucket.get("exam_name", name),
+                "exam_key": name,
                 "exam_date": bucket["display_date"],
                 "value": value,
                 "unit": unit,

@@ -75,6 +75,10 @@ class StudentCreateRequest(BaseModel):
     name: str
     alias: Optional[str] = None
     seat_no: Optional[int] = None
+    # 问题8：入班/学籍生效日（ISO 日期字符串）。缺省=今天（教学域沿用
+    # 夹到学年内的时间轴）；显式传入时校验落在所选学年内，用于历史名册
+    # 补录与中途转入的区分。绝不默认回填学年首日。
+    effective_on: Optional[str] = None
 
 
 class StudentPatchRequest(BaseModel):
@@ -149,14 +153,39 @@ class TeachingMembersResponse(BaseModel):
 
 
 class TeachingMemberImportRequest(BaseModel):
-    """同一路由承载两阶段导入：第一段 text，第二段 token。"""
+    """同一路由承载两阶段导入：第一段 text，第二段 token。
+
+    effective_on（问题8）：成员生效日，两段必须一致（快照作用域比对），
+    越界/漂移返回可读 422/409。"""
 
     text: Optional[str] = None
     token: Optional[str] = None
+    effective_on: Optional[str] = None
+
+
+class TeachingSyncNewStudentDecision(BaseModel):
+    """问题7：关联班同步时对「未配对行政班学生」的逐人显式决定。
+
+    action 语义：
+    - new：新建教学域身份（同名；学号沿行政班学号在教学域独立登记）；
+    - pair：选用既有教学身份（teaching_person_id，须为 teaching 域且未在
+      本 link 配对他人）——候选清单仅提示，绝不自动认定；
+    - skip：本次不动（默认行为，教师逐人确认）。
+    effective_on 可逐人覆盖请求级日期（均在学年范围内校验）。
+    """
+
+    homeroom_person_id: int
+    action: str  # new | pair | skip
+    teaching_person_id: Optional[int] = None
+    effective_on: Optional[str] = None
 
 
 class TeachingSyncRequest(BaseModel):
     confirm: bool = False
+    # 问题8：同步写入成员行的生效日（缺省=今天，教学域沿用夹到学年内）。
+    effective_on: Optional[str] = None
+    # 问题7：未配对行政班学生的逐人决定；缺省=全部不动（仅同步已配对方）。
+    new_students: Optional[List[TeachingSyncNewStudentDecision]] = None
 
 
 # ────────────────────────────── §2.2 换届 ──────────────────────────────
@@ -179,12 +208,34 @@ class RolloverPreviewStudent(BaseModel):
     class_label: Optional[str] = None
 
 
+class RolloverCarryoverPlan(BaseModel):
+    """延续期写入承接计划（问题9）：academic_year_id=目标学年但 class_ref_id
+    仍指来源学年班级的成绩/作业批次，以及 valid_from 落在目标学年的学籍
+    （延续期 create_student 归位路径）。confirm 随换届迁入新学年对应班，
+    academic_year_id 不动、不碰来源学年正常数据；undo 时随班级行命运回迁。"""
+
+    score_facts: int = 0
+    homework_assignments: int = 0
+    stray_enrollments: int = 0
+    exam_names: List[str] = Field(default_factory=list)
+    homework_subjects: List[str] = Field(default_factory=list)
+    stray_student_names: List[str] = Field(default_factory=list)
+
+
 class RolloverPreviewResponse(BaseModel):
     token: str
     expires_at: str
     from_year: RolloverYearInfo
     to_year: RolloverYearInfo
     students: List[RolloverPreviewStudent] = Field(default_factory=list)
+    # 问题13.4：名册取样时点 = min(今天, 源学年结束日)——源学年已结束的
+    # 补做换届不再因 valid_to 截止而漏人；basis 为口径说明，
+    # excluded_students 列出取样时点不在班的成员及原因。
+    roster_as_of: Optional[str] = None
+    roster_basis: Optional[str] = None
+    excluded_students: List[RolloverPreviewStudent] = Field(default_factory=list)
+    # 问题9：延续期写入承接清单（只读影响预览；确认时在同一事务迁移）。
+    carryover: Optional[RolloverCarryoverPlan] = None
 
 
 class RolloverConfirmRequest(BaseModel):
@@ -200,6 +251,8 @@ class RolloverConfirmResponse(BaseModel):
     class_id: int
     academic_year_id: int
     class_created: bool
+    # 问题9：本次换届承接迁移的延续期写入行数（成绩/作业/学籍）。
+    carryover_moved: int = 0
 
 
 class RolloverConflictedStudent(BaseModel):
@@ -213,6 +266,14 @@ class RolloverUndoResponse(BaseModel):
     undone: int
     conflicted: List[RolloverConflictedStudent] = Field(default_factory=list)
     class_removed: bool
+    # 问题13.1：换届复用（confirm 前已存在）的班级绝不删除，标签在此如实
+    # 列出；本次新建的班级仍按既有安全条件决定去留。
+    kept_reused_class_labels: List[str] = Field(default_factory=list)
+    # 问题9：延续期迁移行的回迁口径——仅本次新建班级被删除时回迁到来源班
+    # （carryover_restored）；班级保留（复用班/有残留）则迁移保留
+    # （carryover_kept），数据始终挂在存活班级上。
+    carryover_restored: int = 0
+    carryover_kept: int = 0
 
 
 class TeachingRolloverClassResult(BaseModel):
@@ -227,6 +288,8 @@ class TeachingRolloverConfirmResponse(BaseModel):
     rolled_over: int
     academic_year_id: int
     classes: List[TeachingRolloverClassResult] = Field(default_factory=list)
+    # 问题9：本次换届承接迁移的延续期写入行数（成绩/作业批次）。
+    carryover_moved: int = 0
 
 
 # ────────────────────────────── §2.3 学生报告 ──────────────────────────────

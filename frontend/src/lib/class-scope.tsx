@@ -7,6 +7,7 @@ import { useWorkspace } from '@/lib/workspace'
 /** 一个教学班（老师配置的班：高一=行政班数字，高二/三可为走班名如「物A1」）。 */
 export interface TeachingClass {
   id: number
+  /** 年级 1/2/3；后端未给出（未知）时为 0 哨兵，展示层按普通「教学班」处理。 */
   grade: number
   label: string
   subject?: string | null
@@ -29,11 +30,6 @@ interface ClassScopeContextValue {
   currentClass: TeachingClass | null
   setCurrent: (v: ScopeValue) => void
   refresh: () => void
-  /** 生成请求参数：选定具体教学班、且（如给了 grade）年级匹配时返回 {teaching_class_id}，否则 {}。
-   *  分析页用 `const params = scopeParam(grade)` 拼到 fetch URL。 */
-  scopeParam: (grade?: number) => { teaching_class_id?: number }
-  /** 某年级下的可选班列表。 */
-  classesForGrade: (grade?: number) => TeachingClass[]
 }
 
 const ClassScopeContext = createContext<ClassScopeContextValue | null>(null)
@@ -60,7 +56,9 @@ export function ClassScopeProvider({ children }: { children: ReactNode }) {
         if (!cancelled) {
           setClasses(catalog.teaching.map((item, index) => ({
             id: item.class_id,
-            grade: 0,
+            // 透传后端真实年级（14.4）：未知年级保持 0 哨兵，展示层按普通
+            // 「教学班」分组渲染，不猜测年级
+            grade: item.grade ?? 0,
             label: item.label,
             subject: item.subject,
             kind: '教学',
@@ -89,25 +87,9 @@ export function ClassScopeProvider({ children }: { children: ReactNode }) {
 
   const currentClass = current === 'all' ? null : classes.find((c) => c.id === current) ?? null
 
-  const scopeParam = useCallback(
-    (grade?: number) => {
-      if (current === 'all') return {}
-      const tc = classes.find((c) => c.id === current)
-      if (!tc) return {}
-      if (grade != null && tc.grade !== grade) return {}
-      return { teaching_class_id: current }
-    },
-    [current, classes],
-  )
-
-  const classesForGrade = useCallback(
-    (grade?: number) => (grade == null ? classes : classes.filter((c) => c.grade === grade)),
-    [classes],
-  )
-
   const value = useMemo(() => (
-    { classes, loading, current, currentClass, setCurrent, refresh, scopeParam, classesForGrade }
-  ), [classes, loading, current, currentClass, setCurrent, refresh, scopeParam, classesForGrade])
+    { classes, loading, current, currentClass, setCurrent, refresh }
+  ), [classes, loading, current, currentClass, setCurrent, refresh])
 
   return (
     <ClassScopeContext.Provider

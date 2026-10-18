@@ -55,7 +55,7 @@ test('F04：侧栏/顶栏入口链接携带当前工作台（?ws=）', () => {
   assert.match(sidebar, /mode === 'homeroom' \? '\/homeroom\/students' : '\/teaching\/members'/, '侧栏管理入口须随工作台进入对应的成员页')
   assert.match(topbar, /workspaceHref\(c\.href, mode\)/, '顶栏面包屑可点击链接必须携带 ws')
   // 上传页提交 multipart 的 mode 取 Provider（= URL 事实源）
-  assert.match(uploadPage, /const \{ mode, filter, switching \} = useWorkspace\(\)/, '上传页 mode 必须取自 Provider')
+  assert.match(uploadPage, /const \{ mode, filter, switching, refreshScope \} = useWorkspace\(\)/, '上传页 mode 必须取自 Provider')
   assert.match(uploadPage, /form\.set\('mode', mode\)/, '提交表单必须显式携带该 mode')
 })
 

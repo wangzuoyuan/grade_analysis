@@ -123,14 +123,22 @@ def identities(db,s,students,confirmations=None,new_aliases=(),enforce=False):
     mapping,new,conflicts,candidates = _resolve_file_students(db,"teaching",s["academic_year_id"],
         list(students.values()),date.fromisoformat(s["exam_date"]))
     if conflicts:
+        # conflicts 只剩「本学年在册同号异名」；跨学年/未标学年的历史
+        # 同号异名走 candidates（学号被新一届复用的正常形态），由用户在
+        # 候选清单里显式选择接续或新建，不再整批 409 死锁。
         raise LinkVersionConflict("学号姓名冲突，整批拒绝",details={"conflicts":conflicts})
     confirmations=confirmations or {}
     by_alias={}
     for c in candidates:
         by_alias.setdefault(c["alias"],[]).append(c)
+    invalid=[a for a in new_aliases if a not in by_alias]
+    if invalid:
+        raise InvalidScopeParam("identity_new_aliases 含未出现在候选清单的学号，声明无效",
+            details={"invalid_aliases":sorted(invalid)})
     pending=[]
     for alias,choices in by_alias.items():
         if alias in new_aliases:
+            # 显式新建：补进新建档队列（不接续历史 identity，历史学生记录不动）
             new.append(students[alias])
         elif alias in confirmations:
             if confirmations[alias] not in {c["person_id"] for c in choices}:
@@ -495,11 +503,28 @@ def student_rows(db,exam,ctx,target=None):
         ids=[target]
     if not ids:
         return []
-    members=q.members_at(db,"teaching",ids,exam.exam_date)
     selector=f"event:{events.canonical_id(db, exam.exam_event_id)}" if exam.exam_event_id else exam.exam_name
-    entries=q.readable_facts(db,ctx,selector,member_ids=members,class_ids=ids,teaching_exam_id=exam.id)
-    entries=[e for e in entries if e.fact.exam_date==exam.exam_date and
-        (exam.exam_event_id is not None or e.fact.teaching_exam_id==exam.id or e.source_domain=="homeroom")]
+    # 归并考试可跨多日：事实各自保留自己的 exam_date，绝不能把整场考试
+    # 钉死在单一 exam_date 上（否则次日事实被日期过滤静默丢弃）。成员
+    # 口径逐日期解析——每条 fact 按它自己的考试日期做考试当日成员检查
+    # （铁律不放松：不在该日期名册/共享范围上的学生绝不出现）。
+    fact_dates={exam.exam_date}
+    if exam.exam_event_id is not None:
+        rows=(events.filter_exam(db.query(ScoreFact).filter(
+            ScoreFact.data_domain=="teaching",ScoreFact.academic_year_id==exam.academic_year_id,
+            ScoreFact.class_ref_id.in_(ids),ScoreFact.subject==exam.subject),db,ScoreFact,selector)
+            .with_entities(ScoreFact.exam_date).distinct().all())
+        fact_dates.update(d for (d,) in rows if d is not None)
+    members_by_date={d:set(q.members_at(db,"teaching",ids,d)) for d in fact_dates}
+    all_members=sorted(set().union(*members_by_date.values())) if members_by_date else []
+    entries=q.readable_facts(db,ctx,selector,member_ids=all_members,class_ids=ids,teaching_exam_id=exam.id)
+    if exam.exam_event_id is not None:
+        entries=[e for e in entries
+            if e.person_id in members_by_date.get(e.fact.exam_date or exam.exam_date,())]
+    else:
+        entries=[e for e in entries if e.fact.exam_date==exam.exam_date and
+            (e.fact.teaching_exam_id==exam.id or e.source_domain=="homeroom") and
+            e.person_id in members_by_date.get(exam.exam_date,())]
     ranks=_rank_map([(e.person_id,e.fact.score) for e in entries])
     names=q.names_for(db,[e.person_id for e in entries])
     labels={c.id:c.label for c in db.query(TeachingClass).filter(TeachingClass.id.in_(ids))}

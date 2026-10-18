@@ -130,13 +130,19 @@ def teaching_student_homework(
     window_days: int = 14,
     person_id: Optional[int] = None,
     end_exam_name: Optional[str] = None,
+    subject: Optional[str] = None,
     homework_type: Optional[str] = None,
     grade: Optional[int] = None,
     academic_year_id: Optional[int] = None,
     teaching_class_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ) -> dict:
+    """教学域个人作业成绩分析。
+
+    subject（2026-10-18 审查修复 12.3）：多学科教师切「全部所教班」时由
+    前端显式传入并透传 _teaching_ctx（与教学域 correlation 端点同款写法），
+    不再写死 None 导致多学科 422。"""
     from app.diagnosis.student_homework import student_homework_analysis
-    ctx = _teaching_ctx(db, academic_year_id, teaching_class_id, None, None)
+    ctx = _teaching_ctx(db, academic_year_id, teaching_class_id, None, subject)
     return student_homework_analysis(db, ctx, window_days=window_days,
         homework_type=homework_type, person_id=person_id, end_exam_name=end_exam_name, grade=grade)

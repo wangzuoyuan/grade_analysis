@@ -10,7 +10,13 @@ from app.api.homework import _person_events, _stats_excluded_ids, _visible_assig
 from app.core.errors import InvalidScopeParam
 from app.diagnosis import thresholds as th
 from app.diagnosis.changes import _ensure_exams_readable, _exam_date_of, student_change_decomposition
-from app.diagnosis.features import class_features, class_features_at_anchors, _group_exams, _homework_from
+from app.diagnosis.features import (
+    class_features,
+    class_features_at_anchors,
+    _group_exams,
+    _homework_from,
+    resolve_exam_key,
+)
 from app.diagnosis.research import (
     _check_year, _metric_options, _metric_change_of, _intervention_notes,
     LIMITATIONS_RETROSPECTIVE,
@@ -65,7 +71,10 @@ def focus_cohorts(db, ctx):
                 "person_ids": [r["person_id"] for r in members],
             })
     return {"calc_version": CALC_VERSION, "as_of": ctx.as_of.isoformat(), "academic_year_id": ctx.academic_year_id,
-            "exams": [{"exam_name": e["exam_name"], "exam_date": e["exam_date"],
+            # 展示用名称 + 稳定定位键（修复 3，键空间=B1 分组键：无事件事实
+            # exam_key==exam_name），前端切换/回看传 key 或唯一名均可
+            "exams": [{"exam_name": e["exam_name"], "exam_key": _summary_group_key(e),
+                       "exam_date": e["exam_date"],
                        "historical_available": bool((anchored[e["exam_name"]].get("anchor") or {}).get("date_resolved"))} for e in exams],
             "cohorts": cohorts, "metric_options": _metric_options(db, ctx),
             "display_thresholds": _display_thresholds(db), "limitations": [LIMITATIONS_RETROSPECTIVE]}
@@ -106,10 +115,13 @@ def _metric_sides(decomposition, meta, unit):
 
 def _imbalance(db, ctx, pid, decomposition, from_exam, to_exam, member):
     # B3 提供单科前后值，基准百分位按同场可读事实取值，不用名次估算。
+    # 修复 3：buckets 的键是分组 key（event:N / 无事件=考试名），入参传
+    # key 或唯一考试名都先 resolve_exam_key 归一，绝不拿名称直查 key 空间。
     buckets = _group_exams(q.readable_facts(db, ctx, member_ids=[pid]), db)
     base = {}
     for side, exam in (("from", from_exam), ("to", to_exam)):
-        fact = (buckets.get(exam) or {}).get("totals", {}).get("主三门")
+        key = resolve_exam_key(buckets, exam)
+        fact = (buckets.get(key) or {}).get("totals", {}).get("主三门") if key is not None else None
         base[side] = defs.normalized_percentile(fact.grade_percentile) if fact is not None and fact.score is not None else None
     severe = set(((member.get("features") or {}).get("indicators") or {}).get("imbalance", {}).get("severe", []))
     details = []
@@ -174,22 +186,52 @@ def _homework_compare(db, ctx, pid, from_day, to_day):
             "reason": "缺交次数受批次数和学科构成影响，先核对覆盖，再判断是否改善" if comparable else "无有效应交名单或窗口覆盖不足，不能把缺交次数下降认作改善"}
 
 
+def _resolve_summary(summaries, given):
+    """入参考试标识（exam_key 或唯一考试名）→ readable_exam_summaries 条目。
+
+    修复 3：同名多场时只有 exam_key 能唯一定位（名称匹配 >1 条 → None，
+    绝不静默取第一条）；summary 的 legacy 键（legacy:名称|日期）与 B1
+    分组键（名称）在此统一被 exam_key/exam_name 双收覆盖。"""
+    matches = [
+        e for e in summaries
+        if e.get("exam_key") == given or e["exam_name"] == given
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _summary_group_key(entry):
+    """summary 条目 → B1 _group_exams 键空间（事件=event:N；legacy=考试名）。"""
+    key = entry.get("exam_key") or entry["exam_name"]
+    return entry["exam_name"] if str(key).startswith("legacy:") else key
+
+
 def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
     _check_year(ctx, ctx.academic_year_id)
     if from_exam == to_exam:
         raise InvalidScopeParam("请选择不同的起点与终点考试")
     _ensure_exams_readable(db, ctx, [from_exam, to_exam])
-    # 校验考试顺序，包含日期不足时按既有有序考试清单核对，不能颠倒回看。
-    exams = q.readable_exam_summaries(db, ctx)
-    names = [e["exam_name"] for e in exams]
-    if names.index(from_exam) <= names.index(to_exam):
+    # 校验考试顺序与时间线过滤一律按稳定 key（修复 3）：入参传 key 或唯一
+    # 考试名均先解析到同一 summary 条目，输出展示用人类可读名称。
+    summaries = q.readable_exam_summaries(db, ctx)
+    from_entry, to_entry = _resolve_summary(summaries, from_exam), _resolve_summary(summaries, to_exam)
+    if from_entry is None or to_entry is None:
+        bad = from_exam if from_entry is None else to_exam
+        raise InvalidScopeParam(
+            "考试不在当前范围的回看清单中（同名多场请用 exam_key 定位）",
+            details={"exam_name": bad, "available_exams": [
+                f"{e['exam_name']} ({_summary_group_key(e)})" for e in summaries]},
+        )
+    from_label, to_label = from_entry["exam_name"], to_entry["exam_name"]
+    group_keys = [_summary_group_key(e) for e in summaries]  # summary 序=日期降序
+    from_key, to_key = _summary_group_key(from_entry), _summary_group_key(to_entry)
+    if group_keys.index(from_key) <= group_keys.index(to_key):
         raise InvalidScopeParam("终点考试必须晚于起点考试")
-    problem, members, basis = _selection(db, ctx, cohort, from_exam)
+    problem, members, basis = _selection(db, ctx, cohort, from_label)
     problem_metric = metric in ("problem:imbalance", "problem:homework")
     if metric == "problem:imbalance" and problem != "明显偏科型":
         raise InvalidScopeParam("偏科指标仅适用于偏科关注名单")
     if metric == "problem:homework" and problem != "作业风险型":
-        raise InvalidScopeParam("作业指标仅适用于作业风险关注名单")
+        raise InvalidScopeParam("作业指标仅适用于作业风险名单")
     meta = metric_meta_or_422(db, ctx, metric) if not problem_metric else None
     unit = unit_of_metric(meta) if meta else "percentile" if metric == "problem:imbalance" else "count"
     display_thresholds = _display_thresholds(db)
@@ -199,6 +241,9 @@ def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
         note_counts[note.person_id] = note_counts.get(note.person_id, 0) + 1
     students, excluded = [], []
     from_day, to_day = _exam_date_of(db, ctx, from_exam), _exam_date_of(db, ctx, to_exam)
+    ascending = list(reversed(group_keys))  # 升序时间线
+    lo, hi = ascending.index(from_key), ascending.index(to_key)
+    window_keys = set(ascending[lo:hi + 1])
     for member in members:
         pid = member["person_id"]
         decomposition = student_change_decomposition(db, ctx, pid, from_exam, to_exam)
@@ -222,10 +267,8 @@ def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
             row.update(change=change, from_value=sides["from"], to_value=sides["to"], comparable=change is not None,
                        missing_reason=reason, direction=_direction(change, unit, display_thresholds) if change is not None else "暂不可比")
             points = metric_points(db, ctx, pid, metric)
-            ordered = list(reversed(names))
-            lo, hi = ordered.index(from_exam), ordered.index(to_exam)
             row["timeline"] = [{**p, "value": round(p["value"] * 100, 2) if unit == "percentile" and p["value"] is not None else p["value"]}
-                               for p in points if p["exam_name"] in ordered[lo:hi + 1]]
+                               for p in points if p.get("exam_key") in window_keys]
         if row["comparable"]:
             students.append(row)
         else:
@@ -233,7 +276,8 @@ def focus_outcome(db, ctx, cohort, from_exam, to_exam, metric):
     # 先呈现需要核查的人；不把关注排序当风险概率。
     students.sort(key=lambda r: (0 if any(s in r["direction"] for s in ("退步", "扩大", "需核查")) else 1, r["person_id"]))
     return {"calc_version": CALC_VERSION, "as_of": ctx.as_of.isoformat(), "cohort": cohort, "problem": problem,
-            "membership_basis": basis, "from_exam": from_exam, "to_exam": to_exam,
+            "membership_basis": basis, "from_exam": from_label, "to_exam": to_label,
+            "from_exam_key": from_key, "to_exam_key": to_key,
             "from_exam_date": from_day.isoformat() if from_day else None, "to_exam_date": to_day.isoformat() if to_day else None,
             "metric": metric, "metric_unit": unit, "threshold": display_thresholds.get(unit),
             "threshold_provisional": unit in ("percentile", "grade_score"),

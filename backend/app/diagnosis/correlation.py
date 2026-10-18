@@ -169,21 +169,27 @@ def _round4(value: Optional[float]) -> Optional[float]:
 
 
 def _ensure_exam_readable(db: Session, ctx: WorkspaceContext, exam_name: str) -> None:
-    """考试必须在当前域可读（与既有 homework_correlation 端点同一规则，
-    错误语义保持）：homeroom 查本域；teaching 本域或经生效关联可读的
-    homeroom 域。完全不存在 → 404。"""
+    """考试必须在当前作用域可读（2026-10-18 审查修复 12.4，与 changes.py
+    ``_ensure_exams_readable`` 同一判定）：本域存在即可读；homeroom 经生效
+    关联（ctx.link_id）可读对侧 teaching 域投影考试——此前漏判该分支，
+    导致班主任对任课侧共享过来的考试调本接口必 404。教学域可读经关联
+    共享的 homeroom 域考试。此处只是**存在性门**：实际成绩/作业取数仍走
+    ``readable_facts`` 与 ``_visible_assignments`` 的统一权限门（五条件共享
+    门），绝不因存在性检查放行而跳过权限检查。完全不存在 → 404。"""
     from app.api.homework import _exam_exists_in_domain
 
-    if ctx.mode == "homeroom":
-        ok = _exam_exists_in_domain(db, "homeroom", ctx.academic_year_id, exam_name)
-    else:
-        ok = _exam_exists_in_domain(
-            db, "teaching", ctx.academic_year_id, exam_name
-        ) or _exam_exists_in_domain(db, "homeroom", ctx.academic_year_id, exam_name)
-    if not ok:
-        raise ResourceOutOfScope(
-            f"exam not found in {ctx.mode} domain", details={"exam_name": exam_name}
-        )
+    if _exam_exists_in_domain(db, ctx.data_domain, ctx.academic_year_id, exam_name):
+        return
+    if ctx.data_domain == "homeroom" and ctx.link_id is not None:
+        if _exam_exists_in_domain(db, "teaching", ctx.academic_year_id, exam_name):
+            return
+    if ctx.data_domain == "teaching" and _exam_exists_in_domain(
+        db, "homeroom", ctx.academic_year_id, exam_name
+    ):
+        return
+    raise ResourceOutOfScope(
+        f"exam not found in {ctx.mode} domain", details={"exam_name": exam_name}
+    )
 
 
 def _month_end(value: str) -> Optional[date]:

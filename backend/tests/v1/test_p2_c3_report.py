@@ -362,11 +362,13 @@ def test_teaching_domain_scope_isolation(client, p2c3_seed):
     sp = body["subject_performance"]
     assert [row["subject"] for row in sp["subjects"]] == ["物理"]
     assert sp["imbalance"]["status"] == "not_computable"
-    assert sp["imbalance"]["missing_reason"] == "no_main3_row"
+    # 2026-10-18 修复 12.2：教学域无总分是口径不适用（teaching_no_total）
+    assert sp["imbalance"]["missing_reason"] == "teaching_no_total"
 
     ls = body["learning_state"]
     assert ls["main_type"] == "作业风险型"  # 连缺 2 天达到作业风险阈值
-    assert ls["classification_status"] == "classified"
+    # 修复 12.2：总分依赖类型整体不可计算（作业风险仍如实判出）
+    assert ls["classification_status"] == "not_computable"
 
     obs = body["teacher_observations"]
     assert obs["visible_domain"] == "teaching"

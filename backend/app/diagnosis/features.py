@@ -31,7 +31,16 @@ resolve_scope_snapshot 同源机制）；``academic_year_id`` 必须与 scope �
 ``status``（"ok" | "not_computable"）与 ``missing_reason``（§0.2 的
 not_computable 机制的落地字段），missing_reason 取值：
   no_exam_data / no_main3_row / rank_missing / percentile_missing /
-  no_main3_percentile（服务层学年错配另有 422，不进 JSON）。
+  no_main3_percentile（服务层学年错配另有 422，不进 JSON）；
+  teaching_no_total（2026-10-18 修复 12.2：教学域只存任教学科、无总分
+  口径，总分依赖指标结构性不可算——与「数据没导」的 no_main3_row 区分，
+  B2 类型引擎据此把总分依赖的学生类型标 not_computable）。
+
+考试标识契约（2026-10-18 修复 3，docs/contracts/exam-events.md「读取」）：
+分组 key 即 exam_key（事件=event:<id>；无事件=考试名）；对外 exam_name
+字段一律人类可读名，另附 exam_key；入参（exam_name/anchor_exam 等）双收
+key 与唯一考试名（``resolve_exam_key`` 唯一归一），同名多场必须用 key；
+时间线截断先归一到 key 再比较，锚点本身保留。
 """
 
 from collections import defaultdict
@@ -157,19 +166,37 @@ def class_features_at_anchors(
         summaries = q.readable_exam_summaries(db, scope)  # 一次解析全部锚点日期
         by_name = {e.get("exam_key", e["exam_name"]): e["exam_date"] for e in summaries}
         labels = {e.get("exam_key", e["exam_name"]): e["exam_name"] for e in summaries}
+        keys = {
+            e.get("exam_key", e["exam_name"]): output_exam_key(
+                e.get("exam_key", e["exam_name"]), e["exam_name"]
+            )
+            for e in summaries
+        }
         for e in summaries:
             if sum(other["exam_name"] == e["exam_name"] for other in summaries) == 1:
                 by_name[e["exam_name"]] = e["exam_date"]
                 labels[e["exam_name"]] = e["exam_name"]
+                keys[e["exam_name"]] = output_exam_key(
+                    e.get("exam_key", e["exam_name"]), e["exam_name"]
+                )
         for name in anchors:
             if name not in by_name:
                 raise ResourceOutOfScope(
                     "anchor exam not found in current scope",
-                    details={"exam_name": name, "data_domain": scope.data_domain},
+                    details={
+                        "exam_name": name,
+                        "data_domain": scope.data_domain,
+                        # 双标清单（修复 3）：同名多场时只有 exam_key 能唯一定位
+                        "available_exams": [
+                            f"{e['exam_name']} ({output_exam_key(e.get('exam_key', e['exam_name']), e['exam_name'])})"
+                            for e in summaries
+                        ],
+                    },
                 )
             date_str = by_name[name]  # None=无日期；"YYYY-MM"=月精度
             anchor_dates[name] = {
                 "exam_name": labels.get(name, name),
+                "exam_key": keys.get(name, name),
                 "date_str": date_str,
                 "date": _parse_anchor_date(date_str),
             }
@@ -234,6 +261,7 @@ def class_features_at_anchors(
         anchor_payload = (
             {
                 "exam_name": anchor_dates[anchor].get("exam_name", anchor),
+                "exam_key": anchor_dates[anchor].get("exam_key", anchor),
                 "exam_date": anchor_dates[anchor]["date_str"],
                 "date_resolved": anchor_dates[anchor]["date"] is not None,
                 "timepoint_basis": (
@@ -279,17 +307,53 @@ def _exam_sort_key(exams: Dict[str, dict], name: str):
     return (display is not None, display or "", name)
 
 
+def resolve_exam_key(exams: Dict[str, dict], given: Optional[str]) -> Optional[str]:
+    """入参考试标识（exam_key 或考试名）→ ``_group_exams`` 分组 key。
+
+    契约（docs/contracts/exam-events.md「读取」）：选择器优先传稳定
+    exam_key，界面显示名称和日期；旧名称调用保留兼容，同名多场必须用
+    key 定位。分组 key 空间：事件事实 ``event:<root_id>``；无事件事实的
+    key 就是考试名本身（兼容 ``legacy:名称|日期`` 形式，取名称段）。
+    考试名仅在该生可读考试中唯一时可用于定位；无法唯一定位 → None。"""
+    if not given:
+        return None
+    if given in exams:
+        return given
+    label = given
+    if given.startswith("legacy:"):
+        # readable_exam_summaries 的 legacy 键与 B1 分组键（名称）不同源，取名称段归一
+        label = given[len("legacy:"):].rsplit("|", 1)[0]
+    matches = [key for key, bucket in exams.items() if bucket.get("exam_name") == label]
+    return matches[0] if len(matches) == 1 else None
+
+
+def output_exam_key(summary_key: str, exam_name: str) -> str:
+    """对外输出的 exam_key 统一到 B1 分组键空间：``readable_exam_summaries``
+    的 legacy 键（``legacy:名称|日期``）归一为考试名（契约：无事件事实
+    exam_key==exam_name），事件键 ``event:<id>`` 原样保留。"""
+    if str(summary_key).startswith("legacy:"):
+        return exam_name
+    return summary_key
+
+
 def _truncate_at_anchor(
     exams: Dict[str, dict], ordered: List[str], anchor_exam: str, anchor_key
 ) -> List[str]:
-    """时间线截断至锚点考试（含该场）：该生有锚点行 → 按位置截断（最稳）；
-    没有锚点行（缺考/未导入）→ 按锚点排序键比较截断（只保留不晚于锚点的
-    场次；月精度/无日期无法证明先后 → 保守保留，basis 由调用方标注）。"""
-    if anchor_exam in exams:
-        return ordered[: ordered.index(anchor_exam) + 1]
+    """时间线截断至锚点考试（含该场）：该生有锚点行 → 按位置截断（最稳，
+    锚点先用 resolve_exam_key 归一到分组 key，名称/key 入参同一 bucket）；
+    没有锚点行（缺考/未导入）→ 按锚点排序键比较截断，只保留不晚于锚点的
+    场次。比较只用 (有日期, 日期) 前两元——第三元在 key 与考试名混用时会
+    退化成无效字典序（'1'<'e' 曾把锚点考试本身误截断，2026-10-18 审查
+    修复 3），同日期无法证明更晚时保守保留。"""
+    resolved = resolve_exam_key(exams, anchor_exam)
+    if resolved is not None:
+        return ordered[: ordered.index(resolved) + 1]
     if anchor_key is None:
         return ordered
-    return [name for name in ordered if _exam_sort_key(exams, name) <= anchor_key]
+    anchor_prefix = (bool(anchor_key[0]), anchor_key[1] or "")
+    return [
+        name for name in ordered if _exam_sort_key(exams, name)[:2] <= anchor_prefix
+    ]
 
 
 def _fetch_student_base(db: Session, scope: WorkspaceContext, person_id: int):
@@ -346,6 +410,26 @@ def _fetch_class_bases(db: Session, scope: WorkspaceContext, members: List[int])
     return bases
 
 
+def _is_teaching_scope(scope) -> bool:
+    """教学域判定（WorkspaceContext 与 chat 快照 dict 双载体兼容）。"""
+    domain = getattr(scope, "data_domain", None) or getattr(scope, "mode", None)
+    return domain == "teaching"
+
+
+def _exam_has_valid_score(bucket: dict) -> bool:
+    """该场是否提供任何有效成绩证据（score 非 NULL 的学科行或总分行）。
+
+    2026-10-18 审查修复 12.1：区分「有考试记录」与「有有效成绩」——全缺考
+    （行在但 score=NULL）不算有效考试，缺考不转 0 也不充当分类证据。"""
+    for fact in bucket["subjects"].values():
+        if fact is not None and fact.score is not None:
+            return True
+    for fact in bucket["totals"].values():
+        if fact is not None and fact.score is not None:
+            return True
+    return False
+
+
 def _compute_student(
     db: Session,
     scope: WorkspaceContext,
@@ -365,15 +449,23 @@ def _compute_student(
     if anchor_exam is not None:
         ordered = _truncate_at_anchor(exams, full_ordered, anchor_exam, anchor_key)
 
-    current_level, notes = _current_level_indicator(exams, ordered, band_config)
-    trend = _trend_indicator(exams, ordered, trend_thresholds)
-    stability = _stability_indicator(exams, ordered)
-    imbalance = _imbalance_indicator(exams, ordered)
+    teaching = _is_teaching_scope(scope)
+    current_level, notes = _current_level_indicator(exams, ordered, band_config, teaching)
+    trend = _trend_indicator(exams, ordered, trend_thresholds, teaching)
+    stability = _stability_indicator(exams, ordered, teaching)
+    imbalance = _imbalance_indicator(exams, ordered, teaching)
     homework = _homework_from(scope.mode, events, line_axis_map, as_of)
     attention = _attention_from(note_rows, as_of)
-    notes.extend(_data_quality_notes(exams, ordered))
+    notes.extend(_data_quality_notes(exams, ordered, teaching))
 
-    valid_exam_count = len(ordered)
+    # 12.1：只计有有效成绩证据的考试（全缺考/仅登记行不算，绝不充当
+    # 「有效考试 ≥2 场」的分类证据）。
+    valid_exam_count = sum(1 for name in ordered if _exam_has_valid_score(exams[name]))
+    if valid_exam_count < len(ordered):
+        notes.append(
+            f"{len(ordered) - valid_exam_count} 场考试只有缺考登记（score 为空），"
+            "未计入有效考试数（缺考不转 0）"
+        )
     return {
         "person_id": person_id,
         "academic_year_id": scope.academic_year_id,
@@ -391,7 +483,11 @@ def _compute_student(
 
 
 def _group_exams(entries, db=None) -> Dict[str, dict]:
-    """可读事实行 → {exam_name: {"display_date", "subjects", "totals"}}。
+    """可读事实行 → {exam_key: {"exam_name", "display_date", "subjects", "totals"}}。
+
+    分组 key 即对外 exam_key（修复 3 的键空间）：事件事实 ``event:<root_id>``；
+    无事件事实 key=考试名本身。``exam_name`` 恒为人类可读考试名
+    （``exam_label``），展示一律用它、定位/比较一律用 key。
     每生每场每口径至多一行（readable_facts 已按本域优先消解冲突）。"""
     exams: Dict[str, dict] = {}
     for entry in entries:
@@ -432,7 +528,9 @@ def _not_computable(reason: str) -> Tuple[str, str]:
 # ── 指标 1：当前水平 ──
 
 
-def _current_level_indicator(exams: Dict[str, dict], ordered: List[str], band_config: dict):
+def _current_level_indicator(
+    exams: Dict[str, dict], ordered: List[str], band_config: dict, teaching: bool = False
+):
     notes: List[str] = []
     if not ordered:
         return (
@@ -440,6 +538,7 @@ def _current_level_indicator(exams: Dict[str, dict], ordered: List[str], band_co
                 "status": "not_computable",
                 "missing_reason": NO_EXAM_DATA,
                 "exam_name": None,
+                "exam_key": None,
                 "as_of": None,
                 "main3": {
                     "rank": None,
@@ -468,7 +567,9 @@ def _current_level_indicator(exams: Dict[str, dict], ordered: List[str], band_co
         else None
     )
     if main3_row is None:
-        missing_reason = NO_MAIN3_ROW
+        # 教学域（12.2）：无总分不是「数据没导」而是口径不适用——用专属
+        # missing_reason 区分，绝不暗示老师去补总分（教学域只存任教学科）。
+        missing_reason = th.TEACHING_NO_TOTAL if teaching else NO_MAIN3_ROW
     elif absent:
         missing_reason = MAIN3_ABSENT
         notes.append("最近一场主三门缺考（score 为空），名次/百分位不取残留值")
@@ -502,6 +603,7 @@ def _current_level_indicator(exams: Dict[str, dict], ordered: List[str], band_co
             "status": "ok",
             "missing_reason": None,
             "exam_name": bucket.get("exam_name", latest),
+            "exam_key": latest,
             "as_of": bucket["display_date"],
             "main3": {
                 "rank": rank,
@@ -533,7 +635,12 @@ def _main3_rank_points(exams: Dict[str, dict], ordered: List[str]) -> List[Tuple
     return points
 
 
-def _trend_indicator(exams: Dict[str, dict], ordered: List[str], thresholds: Optional[dict] = None) -> dict:
+def _trend_indicator(
+    exams: Dict[str, dict],
+    ordered: List[str],
+    thresholds: Optional[dict] = None,
+    teaching: bool = False,
+) -> dict:
     thresholds = thresholds or {
         "direction_rank_change": th.TREND_DIRECTION_MIN_CHANGE,
         "streak_rank_change": th.TREND_STREAK_MIN_CHANGE,
@@ -546,7 +653,8 @@ def _trend_indicator(exams: Dict[str, dict], ordered: List[str], thresholds: Opt
     if not has_main3_rows:
         return {
             "status": "not_computable",
-            "missing_reason": NO_MAIN3_ROW,
+            # 教学域（12.2）：无总分行是口径不适用，不是数据缺失
+            "missing_reason": th.TEACHING_NO_TOTAL if teaching else NO_MAIN3_ROW,
             "last_change": None,
             "direction_recent": "数据不足",
             "streak": {"kind": None, "count": 0},
@@ -562,15 +670,18 @@ def _trend_indicator(exams: Dict[str, dict], ordered: List[str], thresholds: Opt
     changes = [
         points[i - 1][1] - points[i][1] for i in range(1, len(points))
     ]
-    last_change = (
-        {
-            "from": points[-2][0],
-            "to": points[-1][0],
+    last_change = None
+    if len(points) >= 2:
+        # 展示字段一律人类可读考试名（2026-10-18 审查修复 3：ordered 的
+        # 元素是分组 key（如 event:123），绝不外泄）；稳定 key 另附字段。
+        from_key, to_key = points[-2][0], points[-1][0]
+        last_change = {
+            "from": exams[from_key].get("exam_name", from_key),
+            "to": exams[to_key].get("exam_name", to_key),
+            "from_exam_key": from_key,
+            "to_exam_key": to_key,
             "rank_change": -changes[-1] if changes else None,
         }
-        if len(points) >= 2
-        else None
-    )
     if changes:
         window = changes[-th.TREND_DIRECTION_RECENT_N :]
         net = sum(window)
@@ -647,12 +758,16 @@ def _main3_percentile_points(exams: Dict[str, dict], ordered: List[str]) -> List
     return points
 
 
-def _stability_indicator(exams: Dict[str, dict], ordered: List[str]) -> dict:
+def _stability_indicator(
+    exams: Dict[str, dict], ordered: List[str], teaching: bool = False
+) -> dict:
     has_main3_rows = any(
         exams[name]["totals"].get(DEFAULT_TOTAL_TYPE) is not None for name in ordered
     )
     if not has_main3_rows:
-        status, reason = _not_computable(NO_MAIN3_ROW)
+        status, reason = _not_computable(
+            th.TEACHING_NO_TOTAL if teaching else NO_MAIN3_ROW
+        )
         return _stability_payload(status, reason, None, "数据不足")
     points = _main3_percentile_points(exams, ordered)
     if not points:
@@ -681,14 +796,21 @@ def _stability_payload(status: str, reason: Optional[str], value: Optional[float
 # ── 指标 4：偏科（同场可比，复用 subject_weakness_subjects 口径） ──
 
 
-def _imbalance_indicator(exams: Dict[str, dict], ordered: List[str]) -> dict:
+def _imbalance_indicator(
+    exams: Dict[str, dict], ordered: List[str], teaching: bool = False
+) -> dict:
     if not ordered:
-        return _imbalance_payload("not_computable", NO_MAIN3_ROW, [], [])
+        return _imbalance_payload(
+            "not_computable", th.TEACHING_NO_TOTAL if teaching else NO_MAIN3_ROW, [], []
+        )
     latest = ordered[-1]
     bucket = exams[latest]
     main3_row = bucket["totals"].get(DEFAULT_TOTAL_TYPE)
     if main3_row is None:
-        return _imbalance_payload("not_computable", NO_MAIN3_ROW, [], [])
+        # 教学域（12.2）：偏科基准依赖主三门百分位，口径不适用
+        return _imbalance_payload(
+            "not_computable", th.TEACHING_NO_TOTAL if teaching else NO_MAIN3_ROW, [], []
+        )
     if main3_row.score is None:
         return _imbalance_payload("not_computable", MAIN3_ABSENT, [], [])
     base = defs.normalized_percentile(main3_row.grade_percentile)
@@ -891,7 +1013,9 @@ def _attention_from(note_rows, as_of: date) -> dict:
 # ── data_quality 备注 ──
 
 
-def _data_quality_notes(exams: Dict[str, dict], ordered: List[str]) -> List[str]:
+def _data_quality_notes(
+    exams: Dict[str, dict], ordered: List[str], teaching: bool = False
+) -> List[str]:
     notes: List[str] = []
     if ordered and exams[ordered[-1]]["display_date"] is None:
         notes.append("最近一场有数据考试缺少确切日期，时间线按考试名兜底排序")
@@ -901,7 +1025,11 @@ def _data_quality_notes(exams: Dict[str, dict], ordered: List[str]) -> List[str]
     rank_points = _main3_rank_points(exams, ordered)
     if main3_row_exams > len(rank_points):
         notes.append("部分考试主三门名次缺失（缺考或未导入），未计入趋势名次序列")
-    if main3_row_exams == 0:
+    if teaching:
+        # 12.2：教学域只存任教学科，无总分口径——总体类指标结构性不可算，
+        # 明确标注而非笼统的「无总分行」（绝不跨域借读总分）。
+        notes.append("教学域只存任教学科，无总分口径，段位/趋势/稳定性/偏科类指标不可计算（不跨域取数）")
+    elif main3_row_exams == 0:
         notes.append("范围内无主三门总分行，总体类指标按缺失输出（不跨域取数）")
     return notes
 

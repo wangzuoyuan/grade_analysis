@@ -58,9 +58,18 @@ import { CardFoldToggle, useCardFold } from '@/components/dashboard/card-fold'
 import { Skeleton } from '@/components/ui/skeleton'
 
 interface TrendDatum {
+  /** 展示用考试名（tooltip/单点文案）。 */
   exam: string
+  /** 定位键（exam_key ?? exam_name）：点击趋势点跳成绩页用它，同名不同场可区分。 */
+  examKey: string
   date: string
   value: number | null
+}
+
+/** 考试定位键：exam_key（"event:N" 稳定编号）优先，legacy 数据回退 exam_name；
+ * 后端 filter_exam 两种口径都认。 */
+function examKeyOf(exam: ExamSummary): string {
+  return exam.exam_key ?? exam.exam_name
 }
 
 function ClickableTrendDot({
@@ -86,7 +95,7 @@ function ClickableTrendDot({
       className="cursor-pointer"
       role="button"
       aria-label={`查看${payload.exam}`}
-      onClick={() => onOpen(payload.exam)}
+      onClick={() => onOpen(payload.examKey)}
     />
   )
 }
@@ -318,18 +327,18 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
       const recent = exams.slice(0, 7).reverse()
       const [latestStats, latestFocus, compare, ...historyStats] = await Promise.all([
         mode === 'homeroom'
-          ? fetchHomeroomStats(latest.exam_name, analysisQ)
-          : fetchTeachingStats(latest.exam_name, analysisQ),
+          ? fetchHomeroomStats(examKeyOf(latest), analysisQ)
+          : fetchTeachingStats(examKeyOf(latest), analysisQ),
         mode === 'homeroom'
-          ? fetchHomeroomFocus(latest.exam_name, analysisQ).catch(() => null)
+          ? fetchHomeroomFocus(examKeyOf(latest), analysisQ).catch(() => null)
           : Promise.resolve(null),
         mode === 'teaching'
-          ? fetchTeachingClassCompare(latest.exam_name, analysisQ).catch(() => ({ classes: [] }))
+          ? fetchTeachingClassCompare(examKeyOf(latest), analysisQ).catch(() => ({ classes: [] }))
           : Promise.resolve({ classes: [] }),
         ...recent.map((exam) =>
           mode === 'homeroom'
-            ? fetchHomeroomStats(exam.exam_name, analysisQ).catch(() => null)
-            : fetchTeachingStats(exam.exam_name, analysisQ).catch(() => null),
+            ? fetchHomeroomStats(examKeyOf(exam), analysisQ).catch(() => null)
+            : fetchTeachingStats(examKeyOf(exam), analysisQ).catch(() => null),
         ),
       ])
       if (request !== requestRef.current) return
@@ -350,7 +359,7 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
         let value: number | null = null
         if (stats && 'totals' in stats) value = stats.totals[0]?.avg ?? average(stats.subjects.map((s) => s.avg))
         if (stats && 'subject' in stats) value = stats.avg
-        return { exam: exam.exam_name, date: shortDate(exam.exam_date), value }
+        return { exam: exam.exam_name, examKey: examKeyOf(exam), date: shortDate(exam.exam_date), value }
       })
 
       setData({
@@ -510,7 +519,7 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
               <CardHeader className="flex-row items-start justify-between space-y-0"><div><CardTitle>成绩趋势</CardTitle><CardDescription>{mode === 'homeroom' ? '各次考试综合均分' : `各次${teachingStats?.subject ?? '任教学科'}平均分`}，点击数据点查看该次考试</CardDescription></div><CardFoldToggle folded={trendFold.folded} onToggle={trendFold.toggle} /></CardHeader>
               {trendFold.folded ? null : (
               <CardContent className="h-64">
-                {comparableTrend.length >= 2 ? <ResponsiveContainer width="100%" height="100%"><LineChart data={data.trend} margin={{ left: -12, right: 12, top: 8, bottom: 4 }} onClick={(state) => { const exam = state?.activePayload?.[0]?.payload?.exam; if (exam) openExam(String(exam)) }}><CartesianGrid strokeDasharray="3 3" stroke="#e8f1f8" /><XAxis dataKey="date" tick={{ fontSize: 11, fill: '#7890a8' }} /><YAxis tick={{ fontSize: 11, fill: '#7890a8' }} domain={['auto', 'auto']} /><Tooltip formatter={(value) => [`${String(value)} 分`, '均分']} labelFormatter={(_, payload) => payload?.[0]?.payload?.exam ?? ''} /><Line type="monotone" dataKey="value" stroke="#1f7fd6" strokeWidth={3} dot={(props) => <ClickableTrendDot {...props} onOpen={openExam} />} activeDot={{ r: 7, cursor: 'pointer' }} connectNulls={false} /></LineChart></ResponsiveContainer> : <div className="flex h-full flex-col items-center justify-center text-center"><TrendingUp className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-medium text-slate-600">{comparableTrend.length === 1 ? '仅 1 场考试有可比均分' : '暂无可比均分'}</p><p className="mt-1 text-xs text-slate-400">{comparableTrend.length === 1 ? `${comparableTrend[0].exam}：${formatScore(comparableTrend[0].value)} 分，尚不足以形成趋势` : '缺失值保持为空，不按 0 分绘制'}</p></div>}
+                {comparableTrend.length >= 2 ? <ResponsiveContainer width="100%" height="100%"><LineChart data={data.trend} margin={{ left: -12, right: 12, top: 8, bottom: 4 }} onClick={(state) => { const exam = state?.activePayload?.[0]?.payload?.examKey; if (exam) openExam(String(exam)) }}><CartesianGrid strokeDasharray="3 3" stroke="#e8f1f8" /><XAxis dataKey="date" tick={{ fontSize: 11, fill: '#7890a8' }} /><YAxis tick={{ fontSize: 11, fill: '#7890a8' }} domain={['auto', 'auto']} /><Tooltip formatter={(value) => [`${String(value)} 分`, '均分']} labelFormatter={(_, payload) => payload?.[0]?.payload?.exam ?? ''} /><Line type="monotone" dataKey="value" stroke="#1f7fd6" strokeWidth={3} dot={(props) => <ClickableTrendDot {...props} onOpen={openExam} />} activeDot={{ r: 7, cursor: 'pointer' }} connectNulls={false} /></LineChart></ResponsiveContainer> : <div className="flex h-full flex-col items-center justify-center text-center"><TrendingUp className="h-8 w-8 text-slate-300" /><p className="mt-3 text-sm font-medium text-slate-600">{comparableTrend.length === 1 ? '仅 1 场考试有可比均分' : '暂无可比均分'}</p><p className="mt-1 text-xs text-slate-400">{comparableTrend.length === 1 ? `${comparableTrend[0].exam}：${formatScore(comparableTrend[0].value)} 分，尚不足以形成趋势` : '缺失值保持为空，不按 0 分绘制'}</p></div>}
               </CardContent>
               )}
             </Card>

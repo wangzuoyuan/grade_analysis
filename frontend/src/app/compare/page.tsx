@@ -145,7 +145,7 @@ function LegacyComparePage() {
         if (req !== examsReqRef.current) return
         const sorted = sortExamsDesc(r.exams ?? [])
         setExams(sorted)
-        if (sorted.length > 0) setSelectedExam(sorted[0].exam_name)
+        if (sorted.length > 0) setSelectedExam(sorted[0].exam_key ?? sorted[0].exam_name)
       })
       .catch((err: unknown) => {
         if (req !== examsReqRef.current) return

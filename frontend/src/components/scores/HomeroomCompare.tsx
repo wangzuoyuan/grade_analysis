@@ -168,7 +168,9 @@ export function HomeroomCompare() {
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
 
   // 考试清单：跟随工作台筛选/世代变化整体重置；选中记忆沿用成绩分析页
-  // （?exam= 指定优先，否则取最新一场）
+  // （?exam= 指定优先，否则取最新一场）。定位统一用 exam_key（"event:N" 稳定
+  // 编号，同名不同场可区分；legacy 数据回退 exam_name），后端 filter_exam
+  // 两种口径都认。
   useEffect(() => {
     const req = ++examsReqRef.current
     setExams(null)
@@ -181,9 +183,8 @@ export function HomeroomCompare() {
         setExams(sorted)
         if (sorted.length > 0) {
           setSelectedExam(
-            sorted.some((exam) => exam.exam_name === requestedExam)
-              ? requestedExam
-              : sorted[0].exam_name,
+            (sorted.find((exam) => (exam.exam_key ?? exam.exam_name) === requestedExam || exam.exam_name === requestedExam)
+              ?.exam_key ?? sorted[0].exam_key ?? sorted[0].exam_name),
           )
         }
       })
@@ -193,6 +194,11 @@ export function HomeroomCompare() {
         setExamsError(apiErrorMessage(err))
       })
   }, [scopeQ, generation, examNonce, requestedExam])
+
+  // 展示用考试名：selectedExam 是定位键（可能是 "event:N"），人类可读名称从
+  // 清单反查，绝不把内部编号直接显示给教师。
+  const selectedExamLabel =
+    exams?.find((exam) => (exam.exam_key ?? exam.exam_name) === selectedExam)?.exam_name ?? selectedExam
 
   // 官方班级均分表（迟到回包按 dataReqRef 丢弃）
   useEffect(() => {
@@ -465,7 +471,7 @@ export function HomeroomCompare() {
                   各班{activeMetricLabel}
                 </CardTitle>
                 <CardDescription>
-                  {selectedExam} · 来自官方班级均分表；主题色为本班，灰色为其他班。
+                  {selectedExamLabel} · 来自官方班级均分表；主题色为本班，灰色为其他班。
                 </CardDescription>
               </div>
               <Badge variant="secondary" className="shrink-0 text-[10px]">

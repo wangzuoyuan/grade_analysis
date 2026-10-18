@@ -142,7 +142,8 @@ test('名册页：新建/行内编辑/离班/追加学号齐全，且无删除�
 })
 
 test('名册页：等待工作台范围成功，并按所选学年解析行政班后请求学生（历史学年不串班）', () => {
-  assert.match(rosterTable, /const \{ filter, scope, scopeError, generation, switching \} = useWorkspace\(\)/, '名册请求须读取已解析的工作台范围')
+  // 问题8：名册页在原有解构上追加 refreshScope（新建学生后刷新全局范围），断言随之放宽
+  assert.match(rosterTable, /const \{ filter, scope, scopeError, generation, switching(, refreshScope)? \} = useWorkspace\(\)/, '名册请求须读取已解析的工作台范围')
   assert.match(rosterTable, /if \(scopeError != null\)/, '工作台范围失败时须停止名册请求并显示错误')
   assert.match(rosterTable, /if \(scope == null\) return/, 'scope 尚未解析完成时不得提前请求学生')
   assert.match(rosterTable, /scopeQ\.academic_year_id/, '须优先使用用户所选学年')

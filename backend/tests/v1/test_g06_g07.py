@@ -407,8 +407,10 @@ def test_g06_unmarked_alias_expired_or_undated_goes_candidate(
 def test_g06_unmarked_alias_cross_cohort_same_number_different_name_rejected(
     client, v1_seed, tmp_path
 ):
-    """未标学年命中 + 文件姓名不同（跨届回收号）→ 撞号防呆：preview 计
-    warning，confirm 整文件 409 拒绝（优先于候选确认），不自动改名合并。"""
+    """未标学年命中 + 文件姓名不同（跨届回收号）→ 同样归候选清单
+    （审查问题 2 修复：未标学年登记不是本学年在册证据，同号异名是学号
+    复用的正常形态，可经 identity_new_aliases 显式消歧）；不声明仍 409
+    候选引导零写入，绝不自动改名合并。本学年同号异名才整文件撞号拒绝。"""
     db = _db()
     try:
         owner_pid = _make_unmarked_person(db, "秦老号", "2024H6-66")
@@ -427,7 +429,8 @@ def test_g06_unmarked_alias_cross_cohort_same_number_different_name_rejected(
         )
         assert prev.status_code == 200
         item = prev.json()["items"][0]
-        assert any("同学号不同姓名" in w for w in item["warnings"])
+        assert item["identity_candidates"]  # 候选清单，而非撞号警告
+        assert not any("同学号不同姓名" in w for w in item["warnings"])
 
         r = client.post(
             f"{API}/imports/confirm", json={"token": prev.json()["token"]}
@@ -435,8 +438,8 @@ def test_g06_unmarked_alias_cross_cohort_same_number_different_name_rejected(
         assert r.status_code == 409
         body = r.json()
         assert body["error"] == "link_version_conflict"
-        assert body["conflicts"]  # 撞号冲突，而非候选清单
-        assert "identity_candidates" not in body
+        assert body["identity_candidates"]  # 候选清单引导（显式确认或新建）
+        assert "conflicts" not in body
     finally:
         db = _db()
         try:

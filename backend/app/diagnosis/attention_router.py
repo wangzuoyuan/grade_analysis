@@ -15,13 +15,15 @@ router = APIRouter(prefix="/teaching/diagnosis/attention", tags=["teaching-atten
 
 
 def context(academic_year_id: Optional[int] = None, teaching_class_id: Optional[int] = None,
-            ):
+            subject: Optional[str] = None):
     # Resolve inside domain_endpoint, so out-of-scope resources return the normal 404 body.
-    return academic_year_id, teaching_class_id
+    # subject（2026-10-18 审查修复 12.3）：多学科教师切「全部所教班」时由前端
+    # 显式传入，与其它教学诊断端点同款透传，不再写死 None 触发 422。
+    return academic_year_id, teaching_class_id, subject
 
 
 def _resolve(db, args):
-    return _teaching_ctx(db, args[0], args[1], None, None)
+    return _teaching_ctx(db, args[0], args[1], None, args[2])
 
 
 @router.get("")

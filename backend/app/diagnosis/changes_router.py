@@ -99,13 +99,18 @@ def teaching_student_change_decomposition(
     to_exam: str,
     teaching_class_id: Optional[int] = None,
     academic_year_id: Optional[int] = None,
+    subject: Optional[str] = None,
     term_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    """教学域单生变化分解：仅任教学科（范围隔离），无总分/名次特征。"""
+    """教学域单生变化分解：仅任教学科（范围隔离），无总分/名次特征。
+
+    subject（2026-10-18 审查修复 12.3）：多学科教师切「全部所教班」时由
+    前端显式传入，透传 build_teaching_params（与 features/report 等教学端点
+    同款写法；不传保持缺省学科解析）。"""
     teacher_id = current_teacher_id(db)
     params, _subject, _class_ids = build_teaching_params(
-        db, academic_year_id, teaching_class_id, None, term_id
+        db, academic_year_id, teaching_class_id, subject, term_id
     )
     ctx = resolve_workspace_context(db, teacher_id, "teaching", params)
     return student_change_decomposition(db, ctx, person_id, from_exam, to_exam)
@@ -118,13 +123,16 @@ def teaching_class_change_decomposition(
     to_exam: str,
     teaching_class_id: Optional[int] = None,
     academic_year_id: Optional[int] = None,
+    subject: Optional[str] = None,
     term_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    """教学域班级变化分解：任教学科口径；段位分组不可用并如实注明。"""
+    """教学域班级变化分解：任教学科口径；段位分组不可用并如实注明。
+
+    subject：同 teaching_student_change_decomposition（12.3 修复）。"""
     teacher_id = current_teacher_id(db)
     params, _subject, _class_ids = build_teaching_params(
-        db, academic_year_id, teaching_class_id, None, term_id
+        db, academic_year_id, teaching_class_id, subject, term_id
     )
     ctx = resolve_workspace_context(db, teacher_id, "teaching", params)
     return class_change_decomposition(db, ctx, from_exam, to_exam)

@@ -11,6 +11,10 @@ imbalance/trend 的语义由 B1 特征层与 ``app.analysis.definitions`` 保证
 
 - 有效考试数 ``valid_exam_count < 2`` → ``insufficient_data``：主类型
   null、不强行归类（契约 §3「数据不足不强行归类」）。
+- 教学域口径门（2026-10-18 审查修复 12.2）：features 标
+  ``teaching_no_total``（教学独立来源只存任教学科、绝无总分行）→
+  ``classification_status = "not_computable"``，总分依赖的 10 类不判；
+  作业风险仍按作业数据如实判定（可为主类型）。班主任域不经过该门。
 - 作业风险型（规则 10）语义为「描述已观察到的作业异常，不预测成绩」：
   数据不足被门挡住时仍允许以次标签如实呈现（契约规则 10 括注「仅次标签
   或数据充分可主」）；数据充分且无其他类型命中时升为主类型。
@@ -31,6 +35,7 @@ try:  # 契约 §4：阈值唯一来源是 app/diagnosis/thresholds.py（B1 建�
         STABILITY_MIN_POINTS,
         STABILITY_RANGE_LABELS,
         STABILITY_WINDOW_N,
+        TEACHING_NO_TOTAL,
         TREND_DIRECTION_MIN_CHANGE,
     )
 except ModuleNotFoundError:  # B1 未合并的分支：占位值与契约 §4 默认值一致
@@ -41,6 +46,7 @@ except ModuleNotFoundError:  # B1 未合并的分支：占位值与契约 §4 �
     HOMEWORK_RISK_30D = 3             # 30 天缺交次数阈值
     HOMEWORK_RISK_STREAK_DAYS = 2     # 当前连缺天数阈值
     IMBALANCE_MIN_CONSECUTIVE = 2     # 偏科连续场数
+    TEACHING_NO_TOTAL = "teaching_no_total"  # 教学域总分口径缺失（B1 词表）
 
 CALC_VERSION = "p1-v1"
 
@@ -93,6 +99,15 @@ def _valid_exam_count(features: dict) -> Optional[int]:
     trend = _indicators(features).get("trend") or {}
     data_quality = (features or {}).get("data_quality") or {}
     return _count_of(data_quality.get("valid_exam_count"), trend.get("valid_exam_count"))
+
+
+def _total_caliber_unapplicable(indicators: dict) -> bool:
+    """教学域总分口径缺失（2026-10-18 审查修复 12.2）：B1 特征层把教学域
+    总分依赖指标标 ``teaching_no_total``（教学独立来源只存任教学科，绝无
+    总分行）→ 10/11 种类型结构性不可判。此处只识别 B1 词表标记，绝不自行
+    猜测域口径；班主任域 features 不会带该词（行为不变）。"""
+    trend = indicators.get("trend") or {}
+    return trend.get("missing_reason") == TEACHING_NO_TOTAL
 
 
 def _severe_with_consecutive(imbalance: dict) -> List[str]:
@@ -346,6 +361,29 @@ def classify_student(features: dict) -> dict:
             "secondary_tags": [TYPE_HOMEWORK_RISK] if homework_item is not None else [],
             "evidence": evidence,
             "classification_status": "insufficient_data",
+        }
+
+    # 教学域口径门（12.2）：总分依赖的类型判定整体不可计算——作业风险
+    # （规则 10，只依赖作业数据）仍如实判定；结构与措辞沿用数据不足分支。
+    if _total_caliber_unapplicable(indicators):
+        homework_item = rule_homework_risk()
+        caliber_evidence: List[dict] = []
+        if homework_item is not None:
+            caliber_evidence.append(homework_item)
+        caliber_evidence.append(
+            evidence_of(
+                "类型不可计算",
+                "教学域只存任教学科，无总分口径，段位/趋势/稳定性/偏科类"
+                "学生类型不可计算（不跨域取数）；作业风险仍按作业数据判定",
+            )
+        )
+        return {
+            "person_id": person_id,
+            "calc_version": CALC_VERSION,
+            "main_type": homework_item["type"] if homework_item is not None else None,
+            "secondary_tags": [],
+            "evidence": caliber_evidence,
+            "classification_status": "not_computable",
         }
 
     hits: List[dict] = []

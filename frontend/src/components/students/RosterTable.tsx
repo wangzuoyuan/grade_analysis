@@ -83,7 +83,7 @@ function isActive(s: string | null): boolean {
 }
 
 export function RosterTable() {
-  const { filter, scope, scopeError, generation, switching } = useWorkspace()
+  const { filter, scope, scopeError, generation, switching, refreshScope } = useWorkspace()
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
 
   const [students, setStudents] = useState<WorkspaceStudent[] | null>(null)
@@ -484,7 +484,15 @@ export function RosterTable() {
         </Card>
       )}
 
-      <StudentFormDialog open={createOpen} onOpenChange={setCreateOpen} onCreated={load} />
+      <StudentFormDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={() => {
+          load()
+          // 新增学生改变名册/成员范围 → 同步刷新全局工作台范围（问题8）
+          refreshScope()
+        }}
+      />
 
       {/* 离班弹窗：写 status + valid_to，档案保留 */}
       <Dialog

@@ -1457,6 +1457,26 @@ function AssignmentDetailView({
                 )
                 const dirty =
                   currentStatus !== s.status || currentEvaluation !== evaluationDraftText(s.evaluation, s.attendance, item.homework_type) || currentAttendance !== (s.attendance ?? '')
+                // 出勤异常/备注输入（考勤批次与常规批次共用同一组受控输入）
+                const attendanceInput = (
+                  <Input
+                    className="h-8 w-28 text-sm"
+                    value={currentAttendance}
+                    placeholder="如：迟到、没来"
+                    onChange={(e) => setEdit(s.person_id, { attendance: e.target.value }, s.status as HomeworkStatus)}
+                    aria-label={`${String(s.name ?? s.person_id)} 出勤异常`}
+                  />
+                )
+                const evaluationInput = (
+                  <Input
+                    className="h-8 w-36 text-sm"
+                    value={currentEvaluation}
+                    placeholder={item.subject === '考勤' ? '备注（可选）' : '评价（可选，如 不认真）'}
+                    onChange={(e) => setEdit(s.person_id, { evaluation: e.target.value }, s.status as HomeworkStatus)}
+                    aria-label={`${String(s.name ?? s.person_id)} ${item.subject === '考勤' ? '备注' : '评价'}`}
+                  />
+                )
+                const negativeBadge = s.quality_negative ? <Badge variant="destructive">负面</Badge> : null
                 return (
                   <TableRow key={String(s.person_id)} className={dirty ? 'bg-brand-50/50' : undefined}>
                     <TableCell className="whitespace-nowrap text-sm">
@@ -1485,14 +1505,21 @@ function AssignmentDetailView({
                         ) : null}
                       </div>
                     </TableCell>
+                    {item.subject === '考勤' ? (
+                      /* 考勤批次表头为「学生/出勤状态/说明 · 备注」3 列（14.2）：
+                         出勤异常与备注并排放入同一单元格，行内编辑保持可用；
+                         作业内容列不渲染，与表头列数严格一致。 */
+                      <TableCell>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {attendanceInput}
+                          {evaluationInput}
+                          {negativeBadge}
+                        </div>
+                      </TableCell>
+                    ) : (
+                      <>
                     <TableCell>
-                      <Input
-                        className="h-8 w-28 text-sm"
-                        value={currentAttendance}
-                        placeholder="如：迟到、没来"
-                        onChange={(e) => setEdit(s.person_id, { attendance: e.target.value }, s.status as HomeworkStatus)}
-                        aria-label={`${String(s.name ?? s.person_id)} 出勤异常`}
-                      />
+                      {attendanceInput}
                     </TableCell>
                     <TableCell>
                       <span className="text-sm text-slate-600" title="作业内容来自批次信息，可用「✏️ 编辑批次」修改">
@@ -1501,16 +1528,12 @@ function AssignmentDetailView({
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <Input
-                          className="h-8 w-36 text-sm"
-                          value={currentEvaluation}
-                          placeholder={item.subject === '考勤' ? '备注（可选）' : '评价（可选，如 不认真）'}
-                          onChange={(e) => setEdit(s.person_id, { evaluation: e.target.value }, s.status as HomeworkStatus)}
-                          aria-label={`${String(s.name ?? s.person_id)} ${item.subject === '考勤' ? '备注' : '评价'}`}
-                        />
-                        {s.quality_negative ? <Badge variant="destructive">负面</Badge> : null}
+                        {evaluationInput}
+                        {negativeBadge}
                       </div>
                     </TableCell>
+                      </>
+                    )}
                   </TableRow>
                 )
               })}

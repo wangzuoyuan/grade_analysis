@@ -35,17 +35,34 @@ P7 前不删；合并版行为一律落 /api/v1。
   预览：`{from_year, to_year, students: [{person_id, name, current_alias, next_alias?, note}]}`。
   next_alias 建议 = 去掉学年段前缀重编（仅建议，确认时逐人可改）；无新学年 → 409 workspace_not_configured
   （提示先建学年）。
+  **v3（2026-10-18 修复 13.4/9）**：名册取样时点 = `min(今天, 源学年结束日)`——源学年 valid_to 已在学年末
+  截止的补做换届不再漏人；响应新增 `roster_as_of`/`roster_basis`（取样口径说明）与 `excluded_students`
+  （取样时点不在班的成员逐人注明原因：已离班不随届 / 延续期新建学籍由承接迁入）。同时新增
+  `carryover`（延续期写入承接清单：`score_facts`/`homework_assignments`/`stray_enrollments` 计数 +
+  考试名/学科/学生名清单）——未换届延续期写入的 `academic_year_id=目标学年、class_ref_id=来源班` 的
+  成绩/作业批次，以及延续期 create_student 误入来源班的学籍（valid_from 落在目标学年）。教学班换届
+  preview（`GET /api/v1/teaching/rollover/preview`）同口径。
 - `POST /api/v1/homeroom/rollover` `{token, aliases: {person_id: alias}}`：token 来自 preview（import_batch
-  台账，R4 同语义：pending/未过期/成员无漂移）。单事务：新学年 AdministrativeClass（绑定年级+1 的班号沿用
+  台账，R4 同语义：pending/未过期/成员无漂移，漂移取样时点同 preview）。单事务：新学年 AdministrativeClass（绑定年级+1 的班号沿用
   绑定）+ 每生 Enrollment + 新学段 alias（旧 alias 收尾 valid_to=新学年 start_date 前一日）。新学年已存在
   同班 → 422。**重复确认同 token 409；再走需新 preview。**
+  **v3（问题9）**：confirm 在同一事务内把延续期写入迁入新学年对应班（`class_ref_id`/`admin_class_id` 归位，
+  `academic_year_id` 不动；来源学年正常数据绝不迁移），逐行记入 undo 快照 `carryover_moves`；响应新增
+  `carryover_moved`。教学班换届 confirm 逐班同样承接（来源班 → 同标签新班）。
 - `POST /api/v1/homeroom/rollover/{token}/undo`：撤销本次换届（快照回滚：删新建 Enrollment/alias/班级行，
   恢复旧 alias valid_to）；**换届后已有新写入**（新 alias 上出现成绩/档案/作业行）的学生逐人列为
   `conflicted`（跳过撤销、保留现状），不静默覆盖后续合法数据。
   **v2（G04）**：撤销前必须对 confirm 创建/收尾的每一行做**快照一致性核验**——新建 Enrollment 的
   座号/状态/有效期、新建/收尾 alias 行、以及 LinkedStudent 等关联依赖，与 confirm 快照逐项比对；
   任一字段被后续操作改动（如改座号、改号、离班又恢复）→ 该生列入 conflicted 保留现状，
-  绝不删除已被后续编辑过的行。仅凭 created_at 检测新写入不足以证明全部后续编辑安全。
+  绝不删除已被编辑过的行。仅凭 created_at 检测新写入不足以证明全部后续编辑安全。
+  **v3（2026-10-18 修复 13.1/13.2/9）**：①新写入检测按**域+目标学年+目标班**收窄——旧学年补录
+  （成绩/作业/档案日期在旧学年）与另一工作台写入不再误阻撤销；目标班上的真实新写入（成绩/挂在目标班
+  批次上的提交/本域日期在目标学年的档案）仍阻断。②教学班撤销只删 `created_class_ids`——confirm
+  复用的既有同标签班**绝不删除**（旧契约会把换届前已存在的班物理删除），保留名单在响应
+  `kept_reused_class_labels` 如实返回；两域响应新增 `carryover_restored`/`carryover_kept`：延续期迁移行
+  仅在对应新班被本次撤销删除时回迁来源班（回到换届前延续态、数据仍可读）；班级保留（复用班/有残留）
+  则迁移保留，数据始终挂在存活班级上。
 - 换届不改变 LinkedStudent（按人而非按班号；新学年共享需新 link 或延长有效期——架构 §7）。
 
 ### 2.3 打印
@@ -60,12 +77,19 @@ P7 前不删；合并版行为一律落 /api/v1。
 - `POST /api/v1/teaching/classes/{teaching_class_id}/members` `{name, alias?}`：建 teaching 域 identity +
   member(source='manual')；**关联班（active link 覆盖该班）不在此建 identity**——H 名册为权威来源，
   应答 409 + 提示到班主任侧添加或先建配对（架构 §7 名册行）。
-- `DELETE /api/v1/teaching/classes/{teaching_class_id}/members/{person_id}`：写 valid_to（不物理删）。
+- `DELETE /api/v1/teaching/classes/{teaching_class_id}/members/{person_id}`：写 valid_to=生效日前一天
+  （2026-10-18 修复：同日入班再移除得到空区间，当天即不在班；更早入班者语义不变）。
 - `POST /api/v1/teaching/classes/{teaching_class_id}/members/import` `{text}`：文本批量（每行"学号 姓名"或
   "姓名"），预览/确认两段（import_batch token，R4 语义）；关联班同样拒绝直导（409 引导 H 侧或配对）。
+  确认段与单人添加均可带可选 `effective_on`（默认今天；须在学年内，越界 422 附合法范围）；
+  已结束的成员行原地重开（响应含 `restored_count`），不新建重复行。
 - `POST /api/v1/teaching/classes/{teaching_class_id}/sync-from-homeroom`：仅 active link 存在时可用——
   按 LinkedStudent 交集把 H 名册成员同步进教学班（source='link_projection'）；差异预览先行
-  （preview 参数 confirm）。非关联班 409。
+  （preview 参数 confirm）。非关联班 409。2026-10-18 起支持可选 `effective_on` 与
+  未配对生处理（打破"入班需先配对/配对需先入班"死锁）：预览新增 `unpaired` 清单（H 在册、
+  未配对且不在教学班名册的学生，每人附教学域**候选**身份——仅提示，绝不自动认定）；确认段
+  `new_students` 逐生携带 `new`（新建教学身份）/`pair`+`teaching_person_id`（显式选定）/缺省跳过，
+  服务端先全量校验后单事务写入（成员行 + LinkedStudent 配对同生，失败零残留）。
 
 ## 4. 档案（notes，N01 隔离红线）
 

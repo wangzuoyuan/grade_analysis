@@ -30,6 +30,7 @@ import {
 } from '@/lib/api-v1'
 import { apiErrorMessage, isApiErrorCode } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
+import { useClassScope } from '@/lib/class-scope'
 import { clearPageDraft, loadPageDraft, savePageDraft } from '@/lib/page-draft'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -79,7 +80,9 @@ function isTokenDraft(v: unknown): v is string {
 }
 
 export function RolloverWizard({ domain = 'homeroom' }: { domain?: RolloverDomain } = {}) {
-  const { filter, generation, switching } = useWorkspace()
+  const { filter, generation, switching, refreshScope } = useWorkspace()
+  // 换届确认/撤销都会增删班级行，班级目录（范围栏/侧栏）同步刷新（14.3）
+  const { refresh: refreshClassScope } = useClassScope()
   const draftRoute = domain === 'teaching' ? '/teaching/rollover' : '/homeroom/rollover'
   const previewFn = domain === 'teaching' ? teachingRolloverPreview : rolloverPreview
   const confirmFn = domain === 'teaching' ? teachingRolloverConfirm : rolloverConfirm
@@ -196,6 +199,9 @@ export function RolloverWizard({ domain = 'homeroom' }: { domain?: RolloverDomai
         confirmedCount: Object.keys(aliases).length,
       }
       setSuccess(outcome)
+      // 换届建了新学年班级：刷新全局范围与班级目录（14.3），无需手动刷新浏览器
+      refreshScope()
+      refreshClassScope()
       setPreview(null)
       setAliasDrafts({})
       setUndoToken(outcome.token)
@@ -225,6 +231,9 @@ export function RolloverWizard({ domain = 'homeroom' }: { domain?: RolloverDomai
     try {
       const r = await undoFn(token)
       setUndoOutcome({ conflicted: readConflicted(r) })
+      // 撤销删掉了本次新建的班级行：全局范围与班级目录同步刷新（14.3）
+      refreshScope()
+      refreshClassScope()
       clearPageDraft(draftRoute, DRAFT_KEY)
       setSuccess(null)
     } catch (err) {
