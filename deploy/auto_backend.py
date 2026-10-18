@@ -197,9 +197,16 @@ def trusted_run(item, repo, branch, sha):
 def gateway_config(current, sha, maintenance=False):
     result = copy.deepcopy(current)
     servers = result['apps']['http']['servers']
-    if len(servers) != 1:
-        raise ValueError('Expected one explicitly configured Caddy server')
-    server = next(iter(servers.values()))
+    # 发布门/维护门只挂在公网入口（:8080）上；除它之外至多允许一个
+    # 既定形态的内网免登入口（:8090，见 deploy/Caddyfile），原样保留。
+    public = [s for s in servers.values() if ':8080' in (s.get('listen') or [])]
+    extras = [s for s in servers.values() if ':8080' not in (s.get('listen') or [])]
+    if len(public) != 1 or len(extras) > 1:
+        raise ValueError('Expected the :8080 public server plus at most one extra server')
+    for lan in extras:
+        if lan.get('listen') != [':8090']:
+            raise ValueError('Only the :8090 LAN entry server may exist alongside :8080')
+    server = public[0]
     routes = [r for r in server.get('routes', []) if r.get('@id') != GATE_ID]
     status = {'sha': sha, 'ready': not maintenance}
     handlers = [{'match': [{'path': ['/api/deployment']}], 'handle': [{'handler': 'static_response',

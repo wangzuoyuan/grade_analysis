@@ -177,6 +177,47 @@ def test_untrusted_direct_client_cannot_forge_xff(monkeypatch):
     assert r.status_code == 401
 
 
+LAN_TOKEN = "l" * 64  # 合成内网免登密钥
+
+
+def test_lan_bypass_token_header_bypasses(monkeypatch):
+    """内网入口注入的正确密钥头 → 免登录（caddy :8090 场景）。
+
+    TestClient 默认对端不可解析为 IP（fail closed 路径），密钥头独立生效。"""
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    monkeypatch.setenv("AUTH_LAN_BYPASS_TOKEN", LAN_TOKEN)
+    monkeypatch.delenv("AUTH_BYPASS_NETWORKS", raising=False)
+    monkeypatch.delenv("AUTH_TRUSTED_PROXY_NETWORKS", raising=False)
+    r = TestClient(app).get(PROTECTED, headers={"x-lan-bypass-token": LAN_TOKEN})
+    assert r.status_code != 401
+    status = TestClient(app).get("/api/auth/status", headers={"x-lan-bypass-token": LAN_TOKEN})
+    assert status.json()["required"] is False
+
+
+def test_lan_bypass_token_wrong_or_absent_still_401(monkeypatch):
+    """密钥不对/没带/未配置密钥 → 一律要求登录；公网伪造头拿不到值即无法命中。"""
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    monkeypatch.setenv("AUTH_LAN_BYPASS_TOKEN", LAN_TOKEN)
+    monkeypatch.delenv("AUTH_BYPASS_NETWORKS", raising=False)
+    monkeypatch.delenv("AUTH_TRUSTED_PROXY_NETWORKS", raising=False)
+    c = TestClient(app)
+    assert c.get(PROTECTED, headers={"x-lan-bypass-token": "x" * 64}).status_code == 401
+    assert c.get(PROTECTED, headers={"x-lan-bypass-token": LAN_TOKEN[:63]}).status_code == 401
+    assert c.get(PROTECTED).status_code == 401
+    # 空白头（如 caddy 未配 env 时注入空值）绝不能命中
+    assert c.get(PROTECTED, headers={"x-lan-bypass-token": ""}).status_code == 401
+
+
+def test_lan_bypass_token_ignored_when_unset(monkeypatch):
+    """未配置 AUTH_LAN_BYPASS_TOKEN：同名头（任意值）不产生任何豁免。"""
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    monkeypatch.delenv("AUTH_LAN_BYPASS_TOKEN", raising=False)
+    monkeypatch.delenv("AUTH_BYPASS_NETWORKS", raising=False)
+    monkeypatch.delenv("AUTH_TRUSTED_PROXY_NETWORKS", raising=False)
+    r = TestClient(app).get(PROTECTED, headers={"x-lan-bypass-token": LAN_TOKEN})
+    assert r.status_code == 401
+
+
 # ---------- 单元级：auth_required_for 全语义矩阵 ----------
 
 

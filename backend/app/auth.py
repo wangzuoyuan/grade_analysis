@@ -109,14 +109,31 @@ def _effective_client_ip(request, trusted):
     return None  # 整条链都是可信代理：客户端信息已丢失
 
 
+def _lan_bypass_token() -> str:
+    """内网免登密钥（AUTH_LAN_BYPASS_TOKEN，仅部署环境配置）。
+
+    由 caddy 的 :8090 内网入口在反代 /api 时注入 `X-Lan-Bypass-Token`
+    请求头（deploy/Caddyfile）；公网入口 :8080 会显式删除客户端伪造的
+    同名头。密钥经 constant-time 比较，等价于"内网入口持有的共享口令"，
+    与按位置（Host/IP）判断的旧方案不同，公网伪造者拿不到值即无法命中。
+    """
+    return os.environ.get("AUTH_LAN_BYPASS_TOKEN", "").strip()
+
+
 def auth_required_for(request) -> bool:
     """该请求是否需要登录会话。
 
     设了 `APP_PASSWORD` 后默认全部要求登录；仅当有效客户端 IP 显式命中
-    `AUTH_BYPASS_NETWORKS` 才免登录。绝不看 Host 头。
+    `AUTH_BYPASS_NETWORKS`，或请求携带正确的内网免登密钥头，才免登录。
+    绝不看 Host 头。
     """
     if not auth_enabled():
         return False
+    token = _lan_bypass_token()
+    if token:
+        supplied = (request.headers.get("x-lan-bypass-token") or "").strip()
+        if supplied and hmac.compare_digest(supplied, token):
+            return False
     ip = _effective_client_ip(request, _networks("AUTH_TRUSTED_PROXY_NETWORKS"))
     if ip is None:
         return True  # 拿不到可判定地址：fail closed

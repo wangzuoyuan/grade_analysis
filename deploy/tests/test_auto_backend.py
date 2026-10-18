@@ -139,6 +139,36 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(len(ready['apps']['http']['servers']['srv0']['routes'][0]['handle'][0]['routes']), 1)
         self.assertEqual(len(current['apps']['http']['servers']['srv0']['routes']), 1)
 
+    def test_gateway_tolerates_lan_entry_server_and_gates_public_only(self):
+        lan_routes = [{'handle': [{'handler': 'reverse_proxy'}]}]
+        current = {'apps': {'http': {'servers': {
+            'srv0': {'listen': [':8080'], 'routes': []},
+            'srv1': {'listen': [':8090'], 'routes': lan_routes},
+        }}}}
+        gated = deploy.gateway_config(current, self.sha)
+        servers = gated['apps']['http']['servers']
+        self.assertEqual(servers['srv1']['routes'], lan_routes)  # 内网入口原样保留
+        self.assertEqual(servers['srv0']['routes'][0]['@id'], deploy.GATE_ID)  # 发布门只挂公网入口
+        # 无内网入口的旧形态继续可用
+        legacy = {'apps': {'http': {'servers': {'srv0': {'listen': [':8080'], 'routes': []}}}}}
+        self.assertIn(deploy.GATE_ID,
+                      [r.get('@id') for r in deploy.gateway_config(legacy, self.sha)['apps']['http']['servers']['srv0']['routes']])
+
+    def test_gateway_rejects_unexpected_extra_servers(self):
+        for listen in ([':9090'], [':8080', ':8090']):
+            current = {'apps': {'http': {'servers': {
+                'srv0': {'listen': [':8080'], 'routes': []},
+                'srv1': {'listen': listen, 'routes': []},
+            }}}}
+            with self.assertRaises(ValueError):
+                deploy.gateway_config(current, self.sha)
+        two_public = {'apps': {'http': {'servers': {
+            'srv0': {'listen': [':8080'], 'routes': []},
+            'srv1': {'listen': [':8080'], 'routes': []},
+        }}}}
+        with self.assertRaises(ValueError):
+            deploy.gateway_config(two_public, self.sha)
+
     def target(self):
         data = self.database(self.root / 'data')
         target = deploy.Target('synthetic', {'data_dir': str(data), 'compose_file': str(self.root / 'compose.yml')}, self.root / 'runtime')
