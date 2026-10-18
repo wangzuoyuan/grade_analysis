@@ -47,6 +47,16 @@ test('合并列仅在多班范围出现；全零尾段折叠；缺考红线文�
   assert.match(page, /不提供年级\/官方列/, '必须注明本班口径、不做年级列')
 })
 
+test('堆叠条段悬浮显示段名/人数/占比（Radix Tooltip，非原生 title）', () => {
+  assert.match(page, /<TooltipProvider delayDuration=\{150\}>/, '堆叠条区必须包裹 TooltipProvider（150ms 即时悬浮）')
+  assert.match(page, /<TooltipTrigger asChild>\s*<div\s+className="h-full cursor-default/, '每段须以 div 触发悬浮')
+  assert.match(page, /\{String\(b\.count\)\} 人 ·\{' '\}/, '悬浮内容必须显示人数')
+  assert.match(page, /\(\(b\.count \/ c\.valid_count\) \* 100\)\.toFixed\(1\)\}%/, '悬浮内容必须显示占班内比例')
+  // 段元素不得再依赖原生 title（延迟约 1 秒、易被当成没显示）
+  const segBlock = page.slice(page.indexOf('overflow-hidden rounded-full bg-slate-100'), page.indexOf('</TooltipProvider>'))
+  assert.doesNotMatch(segBlock, /title=\{`\$\{bandLabel/, '段悬浮不得再走原生 title')
+})
+
 test('跨栈：后端 score-bands 口径（左闭右开/累计自高向下/总体σ/段宽白名单/本班范围）', () => {
   assert.match(backend, /teaching\/analysis\/exams\/\{exam_name\}\/score-bands/, '端点路由必须在场')
   assert.match(backend, /SCORE_BAND_WIDTHS = \(5, 10, 20\)/, '段宽白名单')

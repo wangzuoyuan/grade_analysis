@@ -47,6 +47,12 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { CorrelationCard } from '@/components/homework/CorrelationCard'
 import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ExamSelect } from './ExamSelect'
@@ -155,37 +161,48 @@ function ScoreBandsPanel({
 
   return (
     <div className="space-y-4">
-      {/* 段位分布堆叠条：宽度=本段占有效人数比例 */}
-      <div className="space-y-2">
-        {cols.map((c) => (
-          <div key={colKey(c)} className="flex items-center gap-3">
-            <span
-              className="w-32 shrink-0 truncate text-xs text-slate-500"
-              title={`${colLabel(c)}（${String(c.valid_count)} 人）`}
-            >
-              {colLabel(c)} <span className="text-slate-400">{String(c.valid_count)} 人</span>
-            </span>
-            <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100">
-              {c.bands.map((b, i) =>
-                b.count > 0 && c.valid_count > 0 ? (
-                  <div
-                    key={i}
-                    className="h-full"
-                    title={`${bandLabel(b.low, b.high)}：${String(b.count)} 人`}
-                    style={{
-                      width: `${String((b.count / c.valid_count) * 100)}%`,
-                      background: bandBarColor(i, c.bands.length),
-                    }}
-                  />
-                ) : null,
-              )}
+      {/* 段位分布堆叠条：宽度=本段占有效人数比例；悬浮显示段名/人数/占比 */}
+      <TooltipProvider delayDuration={150}>
+        <div className="space-y-2">
+          {cols.map((c) => (
+            <div key={colKey(c)} className="flex items-center gap-3">
+              <span
+                className="w-32 shrink-0 truncate text-xs text-slate-500"
+                title={`${colLabel(c)}（${String(c.valid_count)} 人）`}
+              >
+                {colLabel(c)} <span className="text-slate-400">{String(c.valid_count)} 人</span>
+              </span>
+              <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100">
+                {c.bands.map((b, i) =>
+                  b.count > 0 && c.valid_count > 0 ? (
+                    <Tooltip key={i}>
+                      <TooltipTrigger asChild>
+                        <div
+                          className="h-full cursor-default transition-opacity hover:opacity-75"
+                          style={{
+                            width: `${String((b.count / c.valid_count) * 100)}%`,
+                            background: bandBarColor(i, c.bands.length),
+                          }}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent sideOffset={6}>
+                        <span className="font-medium">{bandLabel(b.low, b.high)}</span>
+                        <span className="ml-2 text-slate-500">
+                          {String(b.count)} 人 ·{' '}
+                          {((b.count / c.valid_count) * 100).toFixed(1)}%
+                        </span>
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : null,
+                )}
+              </div>
+              <span className="w-16 shrink-0 text-right text-xs tabular-nums text-slate-500">
+                均 {formatScore(c.avg)}
+              </span>
             </div>
-            <span className="w-16 shrink-0 text-right text-xs tabular-nums text-slate-500">
-              均 {formatScore(c.avg)}
-            </span>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </TooltipProvider>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
         {visibleIdx.map((i) => {
           const b = bands.merged.bands[i]
