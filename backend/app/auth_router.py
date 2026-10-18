@@ -34,7 +34,7 @@ def _is_secure(request: Request) -> bool:
 def auth_status(request: Request):
     """按当前请求入口返回是否需要登录、以及是否已登录。
 
-    未设密码或命中免登录网络边界（AUTH_BYPASS_NETWORKS）时 `required: false`，
+    未设密码或内网入口凭据匹配时 `required: false`，
     前端据此直接放行、毫无感知。判定与 main.py 的鉴权中间件同源
     （auth_required_for），不看 Host 头。
     """

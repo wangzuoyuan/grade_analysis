@@ -29,6 +29,14 @@
 
 ## 2. 部署与入口切换
 
+- [ ] 【现场】内网免登录仅使用独立入口：在 `compose.env` 明确设置
+      `LAN_BIND_IP` 为宿主固定私有 IPv4、`LAN_PORT` 为内网端口（默认8090）。
+      缺少绑定地址时 Compose 拒绝启动；开发可填127.0.0.1。禁止公网映射该端口，
+      并核对宿主/路由器防火墙只允许局域网来源。公网反代继续指向 `CADDY_PORT`。
+- [ ] 【现场】在私有 `backend.env` 设置 `APP_PASSWORD` 和
+      `AUTH_LAN_BYPASS_TOKEN`（`openssl rand -hex 32`生成，caddy与后端共用）。
+      公网入口删除免登录头，内网入口覆盖注入。旧 `AUTH_BYPASS_NETWORKS` /
+      `AUTH_TRUSTED_PROXY_NETWORKS` 已停用，不要再配置网段豁免。
 - [ ] 【现场】`bash deploy/check-ports.sh <端口...>` 实测 NAS 端口占用
       （候选 8081，旧站 8080 不动），确定最终 `CADDY_PORT`。
 - [ ] 【现场】准备独立目录：合并版 data 目录、备份目录，**不复用旧 data 卷**；
@@ -129,8 +137,8 @@ Vercel Preview 分支。主线前端部署不代表 NAS 后端自动发布；合
 `deploy/package_backend.py` 与部署器需一同安装；宿主配置在私有目录，包含明确的
 compose路径、项目名、backend容器、数据目录及Caddy容器，不入Git。
 
-每次更新先在独立一致性副本上运行迁移、鉴权和配置读取。通过后Caddy返回API维护503，
-确认停写门生效后停止旧backend，再备份SQLite和相关文件。新backend启动及验证成功，
+每次更新先在独立一致性副本上运行迁移、鉴权和配置读取。通过后Caddy两个入口均返回API维护503，
+逐入口确认停写门生效后停止旧backend，再备份SQLite和相关文件。新backend启动及验证成功，
 先持久化提交点再开放入口；失败则在入口开放前恢复原镜像和备份。`journal.json`
 支持进程中断后的恢复；提交点之后不能再自动还原数据库，避免覆盖用户新写入。
 恢复失败时保留维护入口，按journal与备份人工处理，不能绕过门直接恢复写入。

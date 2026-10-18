@@ -338,9 +338,10 @@ def test_q07_compose_config_valid_with_build_and_python_healthcheck():
         shutil.copy2(_DEPLOY / "docker-compose.yml", tmp / "docker-compose.yml")
         shutil.copy2(_DEPLOY / "Caddyfile", tmp / "Caddyfile")
         (tmp / "backend.env").write_text("", encoding="utf-8")
+        (tmp / "compose.env").write_text("LAN_BIND_IP=127.0.0.1\n", encoding="utf-8")
         (tmp / "backend").mkdir()  # build 上下文占位（config 要求路径存在）
         proc = subprocess.run(
-            ["docker", "compose", "config", "--quiet"],
+            ["docker", "compose", "--env-file", "compose.env", "config", "--quiet"],
             cwd=str(tmp), capture_output=True, text=True, timeout=120,
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr

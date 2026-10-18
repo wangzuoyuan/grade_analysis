@@ -22,6 +22,7 @@ from urllib.parse import quote
 SHA = re.compile(r'^[0-9a-f]{40}$')
 FINGERPRINT = re.compile(r'^[0-9a-f]{64}$')
 GATE_ID = 'grade_analysis_release_gate'
+LAN_GATE_ID = GATE_ID + '_lan'
 
 
 def atomic_json(path, value):
@@ -197,17 +198,11 @@ def trusted_run(item, repo, branch, sha):
 def gateway_config(current, sha, maintenance=False):
     result = copy.deepcopy(current)
     servers = result['apps']['http']['servers']
-    # 发布门/维护门只挂在公网入口（:8080）上；除它之外至多允许一个
-    # 既定形态的内网免登入口（:8090，见 deploy/Caddyfile），原样保留。
-    public = [s for s in servers.values() if ':8080' in (s.get('listen') or [])]
-    extras = [s for s in servers.values() if ':8080' not in (s.get('listen') or [])]
-    if len(public) != 1 or len(extras) > 1:
-        raise ValueError('Expected the :8080 public server plus at most one extra server')
-    for lan in extras:
-        if lan.get('listen') != [':8090']:
-            raise ValueError('Only the :8090 LAN entry server may exist alongside :8080')
-    server = public[0]
-    routes = [r for r in server.get('routes', []) if r.get('@id') != GATE_ID]
+    # 只接受一个公网入口及可选的内网入口；维护门覆盖所有业务入口。
+    listeners = [server.get('listen') for server in servers.values()]
+    if listeners.count([':8080']) != 1 or listeners.count([':8090']) > 1 or any(
+            listener not in ([':8080'], [':8090']) for listener in listeners):
+        raise ValueError('Expected :8080 and optionally :8090 as separate Caddy servers')
     status = {'sha': sha, 'ready': not maintenance}
     handlers = [{'match': [{'path': ['/api/deployment']}], 'handle': [{'handler': 'static_response',
                  'body': json.dumps(status), 'headers': {'Content-Type': ['application/json'], 'Cache-Control': ['no-store']}}]}]
@@ -215,7 +210,10 @@ def gateway_config(current, sha, maintenance=False):
         handlers.append({'match': [{'path': ['/api/*']}], 'handle': [{'handler': 'static_response',
                         'status_code': 503, 'body': 'Backend update in progress',
                         'headers': {'Retry-After': ['30'], 'Cache-Control': ['no-store']}}]})
-    server['routes'] = [{'@id': GATE_ID, 'handle': [{'handler': 'subroute', 'routes': handlers}]}] + routes
+    for server in servers.values():
+        gate_id = GATE_ID if server['listen'] == [':8080'] else LAN_GATE_ID
+        routes = [r for r in server.get('routes', []) if r.get('@id') not in (GATE_ID, LAN_GATE_ID)]
+        server['routes'] = [{'@id': gate_id, 'handle': [{'handler': 'subroute', 'routes': copy.deepcopy(handlers)}]}] + routes
     return result
 
 
@@ -283,8 +281,14 @@ class Target:
         run(['docker', 'cp', path, proxy + ':/tmp/grade-analysis-release.json'])
         run(['docker', 'exec', proxy, 'caddy', 'reload', '--config', '/tmp/grade-analysis-release.json'])
         if maintenance:
-            # Verify the block before stopping the writer or taking a recovery snapshot.
-            code = "import urllib.request as u,urllib.error as e\ntry:u.urlopen('http://" + self.cfg['proxy_service'] + ":8080/api/v1/shared/config',timeout=5);raise RuntimeError('Gate missing')\nexcept e.HTTPError as x:assert x.code==503"
+            # 每个入口均确认 503 后，才允许停后端及取得恢复快照。
+            ports = [int(server['listen'][0][1:])
+                     for server in updated['apps']['http']['servers'].values()]
+            base = 'http://' + self.cfg['proxy_service'] + ':'
+            code = ("import urllib.request as u,urllib.error as e\n"
+                    f"for port in {ports!r}:\n"
+                    f" try:u.urlopen({base!r}+str(port)+'/api/v1/shared/config',timeout=5);raise RuntimeError('Gate missing')\n"
+                    " except e.HTTPError as x:assert x.code==503")
             run(['docker', 'exec', self.cfg['container'], 'python', '-c', code])
 
     def start(self, image):

@@ -139,7 +139,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(len(ready['apps']['http']['servers']['srv0']['routes'][0]['handle'][0]['routes']), 1)
         self.assertEqual(len(current['apps']['http']['servers']['srv0']['routes']), 1)
 
-    def test_gateway_tolerates_lan_entry_server_and_gates_public_only(self):
+    def test_gateway_tolerates_lan_entry_server_and_reports_both_entries(self):
         lan_routes = [{'handle': [{'handler': 'reverse_proxy'}]}]
         current = {'apps': {'http': {'servers': {
             'srv0': {'listen': [':8080'], 'routes': []},
@@ -147,8 +147,9 @@ class ReleaseTests(unittest.TestCase):
         }}}}
         gated = deploy.gateway_config(current, self.sha)
         servers = gated['apps']['http']['servers']
-        self.assertEqual(servers['srv1']['routes'], lan_routes)  # 内网入口原样保留
-        self.assertEqual(servers['srv0']['routes'][0]['@id'], deploy.GATE_ID)  # 发布门只挂公网入口
+        self.assertEqual(servers['srv1']['routes'][1:], lan_routes)
+        self.assertEqual(servers['srv1']['routes'][0]['@id'], deploy.LAN_GATE_ID)
+        self.assertEqual(servers['srv0']['routes'][0]['@id'], deploy.GATE_ID)  # 公网入口也报告发布状态
         # 无内网入口的旧形态继续可用
         legacy = {'apps': {'http': {'servers': {'srv0': {'listen': [':8080'], 'routes': []}}}}}
         self.assertIn(deploy.GATE_ID,
@@ -169,11 +170,69 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             deploy.gateway_config(two_public, self.sha)
 
+    def test_maintenance_blocks_both_entries_and_reopens_without_duplicate_gates(self):
+        original_routes = [{'handle': [{'handler': 'reverse_proxy'}]}]
+        current = {'apps': {'http': {'servers': {
+            'public': {'listen': [':8080'], 'routes': original_routes},
+            'lan': {'listen': [':8090'], 'routes': original_routes},
+        }}}}
+        maintenance = deploy.gateway_config(current, self.sha, True)
+        ids = []
+        for server in maintenance['apps']['http']['servers'].values():
+            routes = server['routes']
+            self.assertEqual(routes[1:], original_routes)
+            self.assertIn(routes[0]['@id'], (deploy.GATE_ID, deploy.LAN_GATE_ID))
+            ids.append(routes[0]['@id'])
+            self.assertEqual(routes[0]['handle'][0]['routes'][1]['handle'][0]['status_code'], 503)
+        self.assertEqual(len(ids), len(set(ids)))  # Caddy 要求整份配置的 ID 全局唯一。
+        ready = deploy.gateway_config(maintenance, self.sha)
+        repeated = deploy.gateway_config(ready, self.sha)
+        self.assertEqual(ready, repeated)
+        for server in ready['apps']['http']['servers'].values():
+            self.assertEqual(sum(r.get('@id') in (deploy.GATE_ID, deploy.LAN_GATE_ID)
+                                 for r in server['routes']), 1)
+            self.assertEqual(len(server['routes'][0]['handle'][0]['routes']), 1)
+        self.assertEqual(current['apps']['http']['servers']['lan']['routes'], original_routes)
+
     def target(self):
         data = self.database(self.root / 'data')
         target = deploy.Target('synthetic', {'data_dir': str(data), 'compose_file': str(self.root / 'compose.yml')}, self.root / 'runtime')
         target.state = {'sha': 'b' * 40}
         return target
+
+    def test_gate_verifies_503_on_both_entry_ports(self):
+        import urllib.error
+        target = self.target()
+        target.cfg.update(proxy_container='synthetic-caddy', proxy_service='synthetic-caddy',
+                          container='synthetic-backend')
+        current = {'apps': {'http': {'servers': {
+            'public': {'listen': [':8080'], 'routes': []},
+            'lan': {'listen': [':8090'], 'routes': []},
+        }}}}
+        verification = []
+
+        def command(argv, **kwargs):
+            if 'wget' in argv:
+                return json.dumps(current)
+            if '-c' in argv:
+                verification.append(argv[-1])
+            return ''
+
+        with patch.object(deploy, 'run', side_effect=command):
+            target.gate(self.sha, maintenance=True)
+        self.assertEqual(len(verification), 1)
+        visited = []
+
+        def blocked(url, **kwargs):
+            visited.append(url)
+            raise urllib.error.HTTPError(url, 503, 'maintenance', {}, None)
+
+        with patch('urllib.request.urlopen', side_effect=blocked):
+            exec(verification[0], {})
+        self.assertEqual(set(visited), {
+            'http://synthetic-caddy:8080/api/v1/shared/config',
+            'http://synthetic-caddy:8090/api/v1/shared/config',
+        })
 
     def test_uncommitted_recovery_restores_before_reopening_traffic(self):
         target = self.target()

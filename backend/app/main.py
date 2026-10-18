@@ -59,9 +59,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 登录鉴权：设了 APP_PASSWORD 后默认所有 /api 要求登录（下列白名单除外）；
-# 可选内网免登录只经 AUTH_BYPASS_NETWORKS / AUTH_TRUSTED_PROXY_NETWORKS
-# 显式网络边界生效，绝不信任 Host 头（语义详见 app/auth.py）。
+# 登录鉴权：内网入口凭据匹配时免登录；其余 API 校验登录会话。
+# Host、IP 和转发头不参与判定，两个入口共用 auth_required_for。
 from app.auth import COOKIE_NAME, auth_required_for, verify_token  # noqa: E402
 
 _AUTH_ALLOWLIST = {"/api/login", "/api/logout", "/api/auth/status", "/api/health"}

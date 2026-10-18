@@ -2,7 +2,7 @@
 
 面向高中教师个人使用的学情管理与分析应用。一个登录入口内提供 **班主任、教学两个工作台**，管理成绩、作业、学生名册、成长记录和 AI 辅助分析。应用可以在本机或 Docker 主机运行，也支持 Vercel 前端连接持久化后端。
 
-项目已投入日常使用。本文介绍 GitHub `main` 已包含的功能和配置；历史规划文档中的阶段状态、旧测试数量不代表当前版本。首版面向教师本人，不提供学校多用户账号与角色管理。
+项目已投入日常使用。当前发行版本为 **v1.0.1**。本文介绍 GitHub `main` 已包含的功能和配置；历史规划文档中的阶段状态、旧测试数量不代表当前版本。首版面向教师本人，不提供学校多用户账号与角色管理。
 
 ## 功能一览
 
@@ -92,11 +92,12 @@ cp backend.env.example backend.env
 ```dotenv
 IMAGE_TAG=latest
 CADDY_PORT=8081
+LAN_BIND_IP=192.168.1.100
 LAN_PORT=8090
 DATA_DIR=/absolute/path/to/independent-data
 ```
 
-将 `DATA_DIR` 改为宿主机上的独立绝对路径；不要指向旧应用的数据目录。源码构建可保留默认镜像名；有预构建镜像时，按模板填写 `BACKEND_IMAGE`、`FRONTEND_IMAGE` 和对应 `IMAGE_TAG`。
+将 `LAN_BIND_IP` 改为宿主机实际的私有 IPv4 地址（仅本机开发可用 `127.0.0.1`），将 `DATA_DIR` 改为宿主机上的独立绝对路径；不要指向旧应用的数据目录。源码构建可保留默认镜像名；有预构建镜像时，按模板填写 `BACKEND_IMAGE`、`FRONTEND_IMAGE` 和对应 `IMAGE_TAG`。
 
 `backend.env` 注入后端及 Caddy 的运行环境，至少填写：
 
@@ -116,9 +117,9 @@ AUTH_LAN_BYPASS_TOKEN=replace-with-generated-random-token
 
 内网入口由 Caddy 注入内部免登凭据；公网入口清除客户端提交的同名头。修改域名或伪造 Host 不会获得免登录。两个入口共用同一后端和数据。
 
-当前 Compose 将 `LAN_PORT` 发布到宿主机所有地址，**端口名本身不提供内外网隔离**：需通过宿主防火墙、路由器和反向代理确保该端口仅可信内网可达。宿主有公网地址或存在隧道时同样要限制来源。`LAN_BIND_IP` 尚不属于当前主线配置，不能仅设置该变量就认为已限制监听地址。
+Compose 要求显式设置 `LAN_BIND_IP`，仅在该地址发布免登录端口，不再默认监听所有地址。绑定私有地址仍需配合宿主防火墙、路由器和反向代理，确保该端口仅可信内网可达；不得通过端口映射或隧道将其暴露到公网。未设置绑定地址时 Compose 拒绝启动，示例配置默认回环地址。
 
-Docker Desktop 的端口转发可能把不同客户端改写为相同网桥地址。本部署使用两个入口及内部凭据区分访问，`AUTH_BYPASS_NETWORKS`、`AUTH_TRUSTED_PROXY_NETWORKS` 保持未设置。`PUBLIC_HOST` 是兼容旧配置的变量，已不参与鉴权。
+Docker Desktop 的端口转发可能把不同客户端改写为相同网桥地址。本部署使用两个入口及内部凭据区分访问；已移除网段免登录路径，旧变量 `AUTH_BYPASS_NETWORKS`、`AUTH_TRUSTED_PROXY_NETWORKS` 不再产生豁免。`PUBLIC_HOST` 是兼容旧配置的变量，已不参与鉴权。
 
 只需要所有入口都登录时，保留 `APP_PASSWORD`、不设置 `AUTH_LAN_BYPASS_TOKEN`。会话签名密钥 `SESSION_SECRET` 可留空，由程序在数据目录生成并持久化；如自行设置，应使用固定强随机值。HTTPS 反代应正确传递 `X-Forwarded-Proto`，以便应用设置安全 Cookie。
 
@@ -175,6 +176,8 @@ handle @mcp {
 ```
 
 如需两个入口都提供 MCP，分别在两个站点块中添加；只需要公网 MCP 时仅添加到 `:8080` 站点块。
+
+发布维护时，内外两个 API 入口都进入维护状态，验证完成后再恢复访问。
 
 每次工具调用需明确 `mode`（`homeroom` 或 `teaching`）及相应范围，服务端重新校验。非浏览器客户端不带 Origin 时不受 Origin 列表限制，仍须通过 Token 和 Host 校验。`MCP_LEGACY_TOOLS` 默认关闭，旧客户端确需兼容时才临时启用。详见 [AI / MCP 契约](docs/contracts/p6-ai-mcp.md) 与 [服务端实现说明](backend/app/mcp_server.py)。
 

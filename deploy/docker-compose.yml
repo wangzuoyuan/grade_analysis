@@ -63,7 +63,7 @@ services:
       - backend
       - frontend
     env_file:
-      # 只为取 LAN_BYPASS_TOKEN（Caddyfile :8090 内网入口注入的免登密钥，
+      # 只为取 AUTH_LAN_BYPASS_TOKEN（Caddyfile :8090 内网入口注入的免登密钥，
       # 与后端 AUTH_LAN_BYPASS_TOKEN 同源）；未复制 backend.env 时可选。
       - path: ./backend.env
         required: false
@@ -71,9 +71,9 @@ services:
       # 端口占位（候选值 8081，避开旧站 8080）：上线当天先跑
       # deploy/check-ports.sh 实测 NAS 占用后再定，绝不与旧站冲突。
       - "${CADDY_PORT:-8081}:8080"
-      # 内网免登入口（公网入口走上面的 CADDY_PORT）：只应局域网可达，
-      # 勿在路由器上映射该端口；密钥注入见 Caddyfile :8090 注释。
-      - "${LAN_PORT:-8090}:8090"
+      # 必须显式绑定宿主地址（compose.env）；不默认发布到所有 IPv4/IPv6。
+      # 现场填私有 IPv4，并限制外围来源、禁止公网映射。开发可用 127.0.0.1。
+      - "${LAN_BIND_IP:?Set LAN_BIND_IP in compose.env}:${LAN_PORT:-8090}:8090"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
