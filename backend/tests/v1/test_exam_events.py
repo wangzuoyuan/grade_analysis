@@ -23,13 +23,22 @@ def events_world(world):
     db.add(link); db.flush()
     db.add(wm.LinkedStudent(link_id=link.id, homeroom_identity_id=world.people['ha'],
         teaching_identity_id=world.people['ta'], confirm_basis='synthetic'))
+    # 2026-10 两域成绩不互通：班主任域事件不再投影进教学目录，跨域 merge 预览会被
+    # 目录可见性门拦下（404），merge 用例改用同域「第二场教学事件」作为源事件，
+    # 模拟同一场考试分两次上传（旧模板 + 教学平台）后按 id 关联的真实场景。
+    second = wm.WorkspaceExamEvent(academic_year_id=world.ay, grade=2, exam_name='合成管理考乙')
+    db.add(second); db.flush()
+    world.teaching_event2 = second.id
+    db.add(wm.ScoreFact(data_domain='teaching', academic_year_id=world.ay, class_ref_id=world.ta,
+        identity_id=world.people['ta'], exam_name='合成管理考乙', exam_date=date(2025,11,21),
+        subject='物理', score=88, teaching_exam_id=None, exam_event_id=second.id))
     db.commit()
     return world
 
 
 def merge(client, w):
     p = client.post('/api/v1/teaching/exams/merge-preview', json=dict(academic_year_id=w.ay,
-        source_event_id=w.homeroom_event, target_event_id=w.teaching_event))
+        source_event_id=w.teaching_event2, target_event_id=w.teaching_event))
     assert p.status_code == 200, p.text
     return p.json()
 
@@ -38,7 +47,8 @@ def test_history_merge_is_explicit_and_does_not_overwrite_scores(client, events_
     w = events_world
     before = [(f.id, f.score, f.grade_score) for f in w.db.query(wm.ScoreFact).order_by(wm.ScoreFact.id)]
     rows = [e for e in catalog(client, w) if e['event_id'] in (w.homeroom_event, w.teaching_event)]
-    assert len(rows) == 2
+    # 2026-10 两域成绩不互通：教学目录只列本域事件，班主任域的同名事件不再可见（原为两行）。
+    assert len(rows) == 1 and rows[0]['event_id'] == w.teaching_event
     p = merge(client, w)
     assert p['differences'] and 'score' in p['differences'][0]['fields']
     body = dict(token=p['token'], confirm_name=p['target']['exam_name'])
@@ -49,7 +59,9 @@ def test_history_merge_is_explicit_and_does_not_overwrite_scores(client, events_
     w.db.expire_all()
     assert [(f.id, f.score, f.grade_score) for f in w.db.query(wm.ScoreFact).order_by(wm.ScoreFact.id)] == before
     rows = [e for e in catalog(client, w) if e['event_id'] == w.teaching_event]
-    assert len(rows) == 1 and rows[0]['sources'] == ['homeroom', 'teaching'] and rows[0]['conflicts']
+    # 2026-10 两域成绩不互通：合并后 sources 只剩本域；conflicts 只剩同域重复来源注记
+    #（跨域 teaching_score/homeroom_score 冲突标记不再产生）。
+    assert len(rows) == 1 and rows[0]['sources'] == ['teaching'] and rows[0]['conflicts']
     for mode, key in [('teaching', 'teaching_class_id'), ('homeroom', 'class_id')]:
         response = client.get(f'/api/v1/{mode}/diagnosis/homework-students', params={
             'academic_year_id': w.ay, key: w.ta if mode == 'teaching' else w.h, 'subject':'物理'})
@@ -66,31 +78,36 @@ def test_merge_rechecks_fingerprint_and_scope(client, events_world):
         confirm_name=p['target']['exam_name'], accept_conflicts=True))
     assert r.status_code == 409
     w.db.expire_all()
-    assert w.db.get(wm.WorkspaceExamEvent, w.homeroom_event).merged_into_id is None
+    # 2026-10 两域成绩不互通：merge 源事件改为同域第二场教学事件，指纹失配时同样不得标记已关联。
+    assert w.db.get(wm.WorkspaceExamEvent, w.teaching_event2).merged_into_id is None
     assert client.post('/api/v1/teaching/exams/merge-preview', json=dict(academic_year_id=w.ay,
-        source_event_id=w.homeroom_event, target_event_id=99999999)).status_code == 404
+        source_event_id=w.teaching_event2, target_event_id=99999999)).status_code == 404
+    # 2026-10 两域成绩不互通：班主任域事件已不在教学目录可见范围，作为 merge 源同样 404。
+    assert client.post('/api/v1/teaching/exams/merge-preview', json=dict(academic_year_id=w.ay,
+        source_event_id=w.homeroom_event, target_event_id=w.teaching_event)).status_code == 404
 
 
 def test_confirmed_fill_requires_equal_present_raw_score_and_retains_provenance(client, events_world):
     w = events_world
-    h = w.db.query(wm.ScoreFact).filter_by(academic_year_id=w.ay, data_domain='homeroom',
-        identity_id=w.people['ha'], subject='物理').one()
-    t = w.db.get(wm.ScoreFact, w.facts[0])
-    h.score=t.score; h.grade_score=72; t.grade_score=None
+    # 2026-10 两域成绩不互通：补齐来源不再可能是对侧域事实（跨域冲突注记已随投影移除），
+    # 改为同域重复导入的第二条教学事实（较大 id 的一条承载冲突注记、即被补齐行 own）。
+    own = w.db.query(wm.ScoreFact).filter_by(academic_year_id=w.ay, exam_name='合成管理考乙').one()
+    other = w.db.get(wm.ScoreFact, w.facts[0])
+    own.score = other.score; own.grade_score = None; other.grade_score = 72
     w.db.commit()
     p=merge(client,w)
     assert client.post('/api/v1/teaching/exams/merge-confirm', json=dict(token=p['token'],
         confirm_name=p['target']['exam_name'],accept_conflicts=True)).status_code==200
-    request=dict(academic_year_id=w.ay, fact_id=t.id)
+    request=dict(academic_year_id=w.ay, fact_id=own.id)
     p=client.post('/api/v1/teaching/exams/metric-fill-preview',json=request)
     assert p.status_code==200,p.text
     assert p.json()['changes']=={'grade_score':72}
-    w.db.expire_all(); assert w.db.get(wm.ScoreFact,t.id).grade_score is None
+    w.db.expire_all(); assert w.db.get(wm.ScoreFact,own.id).grade_score is None
     r=client.post('/api/v1/teaching/exams/metric-fill-confirm',json=dict(token=p.json()['token'],confirm_name=p.json()['exam_name']))
     assert r.status_code==200,r.text
-    w.db.expire_all(); t=w.db.get(wm.ScoreFact,t.id)
-    assert t.grade_score==72 and t.field_sources['grade_score']['source_fact_id']==h.id
-    t.grade_score=None; t.score=None; w.db.commit()
+    w.db.expire_all(); own=w.db.get(wm.ScoreFact,own.id)
+    assert own.grade_score==72 and own.field_sources['grade_score']['source_fact_id']==other.id
+    own.grade_score=None; own.score=None; w.db.commit()
     assert client.post('/api/v1/teaching/exams/metric-fill-preview',json=request).status_code==422
 
 
@@ -105,8 +122,9 @@ def test_delete_merged_event_only_deletes_owned_domain(client, events_world):
     assert r.status_code==200,r.text
     w.db.expire_all()
     assert w.db.query(wm.ScoreFact).filter_by(exam_event_id=w.homeroom_event,data_domain='homeroom').count()==4
-    linked=next(e for e in catalog(client,w) if e['event_id']==w.teaching_event)
-    assert not linked['can_delete'] and linked['projected_students']==1
+    # 2026-10 两域成绩不互通：教学侧内容删空后，合并事件不再因对侧域投影滞留教学目录
+    #（原为 can_delete=False、projected_students=1 的只读行），班主任域事实仍只在本域可见。
+    assert all(e['event_id']!=w.teaching_event for e in catalog(client,w))
 
 
 def test_event_metadata_can_match_without_enabling_score_sharing(client, events_world):

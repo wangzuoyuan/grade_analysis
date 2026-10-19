@@ -161,6 +161,8 @@ def detect_total_type(text: str) -> str:
         return "九门"
     if "五门" in text:
         return "五门"
+    if "六门" in text or "3+3" in text or "3＋3" in text:
+        return "3+3"
     if "三门" in text or "主三" in text:
         return "主三门"
     return "主三门"

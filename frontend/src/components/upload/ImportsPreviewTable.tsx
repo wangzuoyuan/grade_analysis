@@ -25,6 +25,7 @@ import {
 const KIND_LABEL: Record<string, string> = {
   student_scores: '学生分数表',
   class_averages: '班级均分表',
+  rank_bands: '名次段表',
   unknown: '未识别',
 }
 
@@ -43,8 +44,7 @@ export function ImportsPreviewTable({ items, examChoices = {}, onExamChoice }: {
             <TableHead className="whitespace-nowrap text-xs">类型</TableHead>
             <TableHead className="whitespace-nowrap text-xs">考试</TableHead>
             <TableHead className="whitespace-nowrap text-xs">学科 / 班级</TableHead>
-            <TableHead className="whitespace-nowrap text-right text-xs">成绩条目 / 班级行</TableHead>
-            <TableHead className="whitespace-nowrap text-right text-xs">已知 / 新学生</TableHead>
+            <TableHead className="whitespace-nowrap text-right text-xs">成绩条目 / 班级行</TableHead>            <TableHead className="whitespace-nowrap text-right text-xs">已知 / 新学生</TableHead>
             <TableHead className="text-xs">解析与警告</TableHead>
           </TableRow>
         </TableHeader>

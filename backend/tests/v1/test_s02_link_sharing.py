@@ -1,15 +1,14 @@
-"""S02 关联班受控共享：H 名册见任教学科投影，T 名册见 H 姓名投影。
+"""S02 关联班受控共享（2026-10 口径变更：两域成绩不互通）：H 名册仅保留
+关联标记与名册投影（linked_teaching_class_id），不再携带任教学科分数
+共享字段；T 名册见 H 姓名投影（名册共享不受成绩隔离影响）。
 
 样本（见 tests/v1/conftest.py）：
 - H6 成员甲乙丙；T6 成员甲乙丁；甲乙经 active link 关联。
-- 甲：H 物理 90 / T 物理 91；乙：H 物理 84 / T 物理 85 —— 两域同场值
-  冲突，v2 契约 §1.4.1 下不静默取 teaching 值：shared_subject_score
-  不出现，改报 shared_conflict={"teaching_score": ...}。甲教学域名
-  「秦甲·T」，H 名册名「秦甲」——teaching/students 中甲乙必须显示
-  H 名册名。
+- 甲：H 物理 90 / T 物理 91；乙：H 物理 84 / T 物理 85 —— 两域各自
+  上传、互不投影，名册 shared_subject_score/shared_conflict 恒为空。
+  甲教学域名「秦甲·T」，H 名册名「秦甲」——teaching/students 中甲乙
+  必须显示 H 名册名。
 """
-
-import pytest
 
 API = "/api/v1"
 EXAM_E1 = "2025期中"
@@ -42,7 +41,7 @@ def _scores(client, mode, seed):
     return r.json()
 
 
-def test_homeroom_students_project_shared_physics(client, v1_seed):
+def test_homeroom_students_keep_link_marker_without_score_projection(client, v1_seed):
     body = _homeroom_students(client, v1_seed)
     meta = body["metadata"]
     assert meta["mode"] == "homeroom"
@@ -60,15 +59,15 @@ def test_homeroom_students_project_shared_physics(client, v1_seed):
     assert jia["name"] == "秦甲"
     assert jia.get("alias") == "2025H6-01"
     assert jia.get("linked_teaching_class_id") == v1_seed.t6_id
-    # v2 契约 §1.4.1：甲 H 物理 90 / T 物理 91 同场冲突——绝不静默取
-    # teaching 值，shared_subject_score 不出现，改报冲突提示字段
+    # 2026-10 两域成绩不互通：甲 H 物理 90 / T 物理 91 各自可见于本域，
+    # 名册不再取教学域值——shared_subject_score 与 shared_conflict 恒空
     assert jia.get("shared_subject_score") is None
-    assert jia.get("shared_conflict") == {"teaching_score": pytest.approx(91.0)}
+    assert jia.get("shared_conflict") is None
 
     yi = by_pid[v1_seed.yi_h_id]
     assert yi.get("linked_teaching_class_id") == v1_seed.t6_id
     assert yi.get("shared_subject_score") is None
-    assert yi.get("shared_conflict") == {"teaching_score": pytest.approx(85.0)}
+    assert yi.get("shared_conflict") is None
 
     # 丙未关联：不得出现共享投影/冲突字段有值
     bing = by_pid[v1_seed.bing_h_id]

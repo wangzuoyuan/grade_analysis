@@ -233,22 +233,25 @@ print(json.dumps(out, ensure_ascii=False))
 def test_q04_quarantined_invisible_to_official_api(pipeline):
     """Q04 API 反例：迁移目标直接启动正式应用后，考试学生/成绩接口不返回
     隔离行（_anon:秦壬、TMP 秦子、撞号秦坤、T 域 _anon:夏）；已映射正常行
-    与冲突注记不受影响。审核反例：旧实现这些行曾以 cohort_size=7 出现。"""
+    不受影响。审核反例：旧实现这些行曾以 cohort_size=7 出现。"""
     out = _api_probe()
     # 名册：占位/临时学号学生绝不在正式名册
     assert out["roster"]["status"] == 200
     assert out["roster"]["names"] == ["秦甲", "秦乙", "秦丙", "秦丁", "秦乾"]
     assert not ({"秦壬", "秦子"} & set(out["roster"]["names"]))
     # H 成绩：隔离 3 行（壬 55 / 子 NULL / 坤 62）不可见；乾 60（同学号
-    # 正常行）可见；甲物理 90 与 T 域 91 冲突注记保留
+    # 正常行）可见
     h = out["scores_h"]
     assert h["status"] == 200
     leaked = [x for x in h["rows"] if x["name"] in ("秦壬", "秦子", "秦坤")]
     assert leaked == []
     got = {(x["name"], x["subject"], x["score"]) for x in h["rows"]}
     assert ("秦乾", "物理", 60.0) in got
+    # 2026-10 两域成绩不互通：甲物理 90 与 T 域 91 的同场分值差不再产生
+    # 跨域冲突注记——全班成绩行 shared_conflict 恒为 null
     conflicts = [(x["name"], x["subject"], x["conflict"]) for x in h["rows"]]
-    assert ("秦甲", "物理", {"teaching_score": 91.0}) in conflicts
+    assert ("秦甲", "物理", None) in conflicts
+    assert all(x["conflict"] is None for x in h["rows"])
     # T 成绩：占位成员夏不可见；春/庚等已映射成员正常可见；仅任教学科
     t = out["scores_t"]
     assert t["status"] == 200

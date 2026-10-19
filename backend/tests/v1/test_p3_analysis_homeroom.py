@@ -204,16 +204,17 @@ def test_e02_zero_counts_null_separated(client, p3_seed, v1_seed):
 
 
 def test_homeroom_students_conflict_flagged(client, p3_seed, v1_seed):
-    """E1 样本：甲乙物理两域值不同（90/91、84/85）→ shared_conflicts
-    提示待人工核对；丙非 linked 学生无提示。"""
+    """2026-10 两域成绩不互通：甲乙物理两域值不同（90/91、84/85）不再
+    产生 shared_conflicts 跨域冲突提示——学生表只读本域事实。"""
     s = v1_seed
     h = _students(client, EXAM_BASE, academic_year_id=s.ay_id, class_id=s.h6_id)
     by_id = {row["person_id"]: row for row in h["students"]}
     # H 域本域值保留
     assert by_id[s.jia_h_id]["scores"]["物理"] == 90.0
-    assert by_id[s.jia_h_id]["shared_conflicts"] == {"teaching_score": 91.0}
+    # 2026-10 两域成绩不互通：全班（linked 与否）一律无跨域冲突标记
+    assert by_id[s.jia_h_id]["shared_conflicts"] is None
     assert by_id[s.yi_h_id]["scores"]["物理"] == 84.0
-    assert by_id[s.yi_h_id]["shared_conflicts"] == {"teaching_score": 85.0}
+    assert by_id[s.yi_h_id]["shared_conflicts"] is None
     assert by_id[s.bing_h_id]["shared_conflicts"] is None
     # 全科 + 总分齐全（E1 样本四科 + 主三门）
     assert by_id[s.jia_h_id]["totals"]["主三门"] == 275.0

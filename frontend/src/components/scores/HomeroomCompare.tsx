@@ -94,7 +94,8 @@ function metricKey(value: string): string {
 
 function metricValueOf(row: HomeroomClassAverageRow, value: string): number | null {
   const key = metricKey(value)
-  return isTotalMetric(value) ? (row.totals[key] ?? null) : (row.subjects[key] ?? null)
+  // 2026-10-19 均分表 totals 升级为指标包：对比页取「均分」键（旧数据由后端归一化）
+  return isTotalMetric(value) ? (row.totals[key]?.均分 ?? null) : (row.subjects[key] ?? null)
 }
 
 interface CompareRow {

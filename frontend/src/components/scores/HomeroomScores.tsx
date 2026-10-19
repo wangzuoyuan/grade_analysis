@@ -31,8 +31,8 @@ import {
   ApiV1Error,
   confirmCanonicalScores,
   fetchHomeroomClassAverages,
-  fetchHomeroomBands,
   fetchHomeroomFocus,
+  fetchHomeroomRankBands,
   fetchHomeroomRankDistribution,
   fetchHomeroomRankFrequency,
   fetchHomeroomRankMetrics,
@@ -47,10 +47,10 @@ import {
   type CanonicalResolution,
   type CanonicalSide,
   type ExamSummary,
-  type HomeroomBandsResponse,
   type HomeroomClassAverageRow,
   type HomeroomClassAveragesResponse,
   type HomeroomFocusResponse,
+  type HomeroomRankBandsResponse,
   type HomeroomRankDistributionResponse,
   type HomeroomRankFrequencyResponse,
   type HomeroomRankMetric,
@@ -102,9 +102,16 @@ import {
 import { cn } from '@/lib/utils'
 import { CorrelationCard } from '@/components/homework/CorrelationCard'
 import { homeworkScopeQuery } from '@/components/homework/shared'
+import {
+  Tooltip as UITooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, sortExamsDesc } from './shared'
+import { bandBarColor } from './band-colors'
 
 const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e05a68', '#64748b', '#0d9488', '#c2410c']
 
@@ -310,7 +317,21 @@ function TrendPanel({
   )
 }
 
-function summaryValue(
+/** 均分表学科列分组：语数英单列；六选科各挂 原始分/等级分 两个子列
+ *  （键为 物理_原始 / 物理_等级，后端 preferred 顺序：语数英 + 选科×2）。 */
+function subjectColumnGroups(subjects: string[]): Array<{ subject: string; paired: boolean }> {
+  const groups: Array<{ subject: string; paired: boolean }> = []
+  const seen = new Set<string>()
+  for (const key of subjects) {
+    const subject = key.replace(/_(原始|等级)$/, '')
+    if (seen.has(subject)) continue
+    seen.add(subject)
+    groups.push({ subject, paired: key.includes('_') })
+  }
+  return groups
+}
+
+function summaryNumber(
   rows: HomeroomClassAverageRow[],
   values: (row: HomeroomClassAverageRow) => number | null | undefined,
   kind: '平均' | '最高' | '最低',
@@ -321,6 +342,12 @@ function summaryValue(
   if (kind === '最高') return Math.max(...nums)
   if (kind === '最低') return Math.min(...nums)
   return Math.round((nums.reduce((sum, value) => sum + value, 0) / nums.length) * 100) / 100
+}
+
+/** 率值显示：及格率/高分率/低分率以百分数展示（一位小数）。 */
+function formatRate(value: number | null | undefined): string {
+  if (value == null) return '—'
+  return `${String(Math.round(value * 10) / 10)}%`
 }
 
 function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | null }) {
@@ -339,27 +366,49 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
     )
   }
   const resolved = data
+  const subjectGroups = subjectColumnGroups(resolved.subjects)
+  const totalSubKeys = ['均分', '及格率', '高分率', '低分率', '标准差'] as const
 
-  const groups = Array.from(
-    resolved.rows.reduce((map, row) => {
-      const key = row.class_type?.trim() || '未分类班级'
-      const items = map.get(key) ?? []
-      items.push(row)
-      map.set(key, items)
-      return map
-    }, new Map<string, HomeroomClassAverageRow[]>()),
-  )
+  // 班级类型列：同类型连续行合并单元格（后端已按 班型序+班号 排序）
+  const rows = resolved.rows
+  const typeSpans: number[] = []
+  for (let i = 0; i < rows.length; i += 1) {
+    if (i > 0 && (rows[i - 1].class_type ?? '未分类') === (rows[i].class_type ?? '未分类')) {
+      typeSpans.push(0)
+    } else {
+      let span = 1
+      while (
+        i + span < rows.length &&
+        (rows[i + span].class_type ?? '未分类') === (rows[i].class_type ?? '未分类')
+      ) {
+        span += 1
+      }
+      typeSpans[i] = span
+    }
+  }
 
   function exportCsv() {
     const header = ['班级类型', '班级', '班主任', ...resolved.subjects]
-    for (const totalType of resolved.total_types) header.push(`${totalType}分数`, `${totalType}排名`)
-    const rows = resolved.rows.map((row) => {
+    for (const totalType of resolved.total_types) {
+      header.push(`${totalType}均分`, `${totalType}及格率`, `${totalType}高分率`, `${totalType}低分率`, `${totalType}标准差`, `${totalType}班型排名`)
+    }
+    const csvRows = rows.map((row) => {
       const values: Array<string | number> = [row.class_type ?? '', row.class_num, row.teacher_name ?? '']
       for (const subject of resolved.subjects) values.push(row.subjects[subject] ?? '')
-      for (const totalType of resolved.total_types) values.push(row.totals[totalType] ?? '', row.total_ranks[totalType] ?? '')
+      for (const totalType of resolved.total_types) {
+        const entry = row.totals[totalType]
+        values.push(
+          entry?.均分 ?? '',
+          entry?.及格率 ?? '',
+          entry?.高分率 ?? '',
+          entry?.低分率 ?? '',
+          entry?.标准差 ?? '',
+          row.total_ranks[totalType] ?? '',
+        )
+      }
       return values
     })
-    const csv = [header, ...rows]
+    const csv = [header, ...csvRows]
       .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(','))
       .join('\n')
     const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
@@ -376,7 +425,9 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
       <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
         <div>
           <CardTitle>全年级班级均分表</CardTitle>
-          <CardDescription>{data.exam_name} · 来自已导入的班级均分表；总分排名按全部班级计算。</CardDescription>
+          <CardDescription>
+            {data.exam_name} · 来自已导入的班级均分表；排名按平行班、实验班分别计算，同类型班级内同分同名次。
+          </CardDescription>
         </div>
         <Button variant="outline" size="sm" onClick={exportCsv} className="shrink-0 print:hidden">
           <Download className="h-4 w-4" />导出数据
@@ -390,48 +441,249 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                 <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级类型</TableHead>
                 <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
                 <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班主任</TableHead>
-                {data.subjects.map((subject) => <TableHead key={subject} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">{subject.replace('_', '')}</TableHead>)}
-                {data.total_types.map((totalType) => <TableHead key={totalType} colSpan={2} className="whitespace-nowrap border-r text-center text-xs font-semibold">{totalType}总分</TableHead>)}
+                {subjectGroups.map((g) => g.paired ? (
+                  <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
+                ) : (
+                  <TableHead key={g.subject} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
+                ))}
+                {resolved.total_types.map((totalType) => (
+                  <TableHead key={totalType} colSpan={6} className="whitespace-nowrap border-r text-center text-xs font-semibold">{totalType}总分</TableHead>
+                ))}
               </TableRow>
               <TableRow className="bg-slate-50">
-                {data.total_types.flatMap((totalType) => [
-                  <TableHead key={`${totalType}-score`} className="whitespace-nowrap text-center text-xs">分数</TableHead>,
-                  <TableHead key={`${totalType}-rank`} className="whitespace-nowrap border-r text-center text-xs">排名</TableHead>,
+                {subjectGroups.flatMap((g) => g.paired ? [
+                  <TableHead key={`${g.subject}-raw`} className="whitespace-nowrap text-center text-xs">原始分</TableHead>,
+                  <TableHead key={`${g.subject}-graded`} className="whitespace-nowrap border-r text-center text-xs">等级分</TableHead>,
+                ] : [])}
+                {resolved.total_types.flatMap((totalType) => [
+                  <TableHead key={`${totalType}-avg`} className="whitespace-nowrap text-center text-xs">均分</TableHead>,
+                  <TableHead key={`${totalType}-pass`} className="whitespace-nowrap text-center text-xs">及格率</TableHead>,
+                  <TableHead key={`${totalType}-high`} className="whitespace-nowrap text-center text-xs">高分率</TableHead>,
+                  <TableHead key={`${totalType}-low`} className="whitespace-nowrap text-center text-xs">低分率</TableHead>,
+                  <TableHead key={`${totalType}-sd`} className="whitespace-nowrap text-center text-xs">标准差</TableHead>,
+                  <TableHead key={`${totalType}-rank`} className="whitespace-nowrap border-r text-center text-xs">班型排名</TableHead>,
                 ])}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {groups.flatMap(([groupName, rows]) => [
-                ...rows.map((row) => (
-                  <TableRow key={`${groupName}-${String(row.class_num)}`}>
-                    <TableCell className="whitespace-nowrap border-r text-xs text-slate-500">{groupName}</TableCell>
+              {rows.map((row, idx) => {
+                const isCurrent = row.class_num === resolved.current_class_num
+                return (
+                  <TableRow key={String(row.class_num)} className={cn(isCurrent && 'bg-brand-50/60')}>
+                    {typeSpans[idx] > 0 ? (
+                      <TableCell rowSpan={typeSpans[idx]} className="whitespace-nowrap border-r align-middle text-center text-xs text-slate-500">{row.class_type ?? '未分类'}</TableCell>
+                    ) : null}
                     <TableCell className="border-r text-center text-sm font-medium text-brand-700">{String(row.class_num).padStart(2, '0')}</TableCell>
                     <TableCell className="whitespace-nowrap border-r text-sm">{row.teacher_name ?? '—'}</TableCell>
-                    {data.subjects.map((subject) => <TableCell key={subject} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[subject])}</TableCell>)}
-                    {data.total_types.flatMap((totalType) => [
-                      <TableCell key={`${totalType}-score`} className="text-right tabular-nums text-sm">{formatScore(row.totals[totalType])}</TableCell>,
-                      <TableCell key={`${totalType}-rank`} className="border-r text-center tabular-nums text-sm font-medium">{row.total_ranks[totalType] ?? '—'}</TableCell>,
-                    ])}
+                    {subjectGroups.map((g) => {
+                      if (!g.paired) {
+                        return <TableCell key={g.subject} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[g.subject])}</TableCell>
+                      }
+                      return [
+                        <TableCell key={`${g.subject}-raw`} className="text-right tabular-nums text-sm">{formatScore(row.subjects[`${g.subject}_原始`])}</TableCell>,
+                        <TableCell key={`${g.subject}-graded`} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[`${g.subject}_等级`])}</TableCell>,
+                      ]
+                    })}
+                    {resolved.total_types.flatMap((totalType) => {
+                      const entry = row.totals[totalType]
+                      return [
+                        <TableCell key={`${totalType}-avg`} className="text-right tabular-nums text-sm font-medium">{formatScore(entry?.均分)}</TableCell>,
+                        <TableCell key={`${totalType}-pass`} className="text-right tabular-nums text-sm">{formatRate(entry?.及格率)}</TableCell>,
+                        <TableCell key={`${totalType}-high`} className="text-right tabular-nums text-sm">{formatRate(entry?.高分率)}</TableCell>,
+                        <TableCell key={`${totalType}-low`} className="text-right tabular-nums text-sm">{formatRate(entry?.低分率)}</TableCell>,
+                        <TableCell key={`${totalType}-sd`} className="text-right tabular-nums text-sm">{entry?.标准差 == null ? '—' : String(entry.标准差)}</TableCell>,
+                        <TableCell key={`${totalType}-rank`} className="border-r text-center tabular-nums text-sm font-medium">{row.total_ranks[totalType] ?? '—'}</TableCell>,
+                      ]
+                    })}
                   </TableRow>
-                )),
-                ...summaryKinds.map((kind) => (
-                  <TableRow key={`${groupName}-${kind}`} className={kind === '最高' ? 'bg-orange-50' : kind === '最低' ? 'bg-slate-100' : 'bg-slate-50/70'}>
-                    <TableCell className="whitespace-nowrap border-r text-xs font-semibold text-slate-600">{groupName}汇总</TableCell>
-                    <TableCell className="border-r text-center text-xs font-semibold">{kind}</TableCell>
-                    <TableCell className="border-r" />
-                    {data.subjects.map((subject) => <TableCell key={subject} className={cn('border-r text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryValue(rows, (row) => row.subjects[subject], kind))}</TableCell>)}
-                    {data.total_types.flatMap((totalType) => [
-                      <TableCell key={`${totalType}-score`} className={cn('text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryValue(rows, (row) => row.totals[totalType], kind))}</TableCell>,
-                      <TableCell key={`${totalType}-rank`} className="border-r" />,
-                    ])}
-                  </TableRow>
-                )),
-              ])}
+                )
+              })}
+              {/* 班型分组汇总：平均/最高/最低（对均分与率、标准差列均有意义；排名列留空） */}
+              {(() => {
+                const groupRanges: Array<[number, number]> = []
+                rows.forEach((_, idx) => {
+                  if (typeSpans[idx] > 0) groupRanges.push([idx, typeSpans[idx]])
+                })
+                return groupRanges.flatMap(([start, span]) => {
+                  const groupRows = rows.slice(start, start + span)
+                  return summaryKinds.map((kind) => (
+                    <TableRow key={`${start}-${kind}`} className={kind === '最高' ? 'bg-orange-50' : kind === '最低' ? 'bg-slate-100' : 'bg-slate-50/70'}>
+                      <TableCell className="whitespace-nowrap border-r text-xs font-semibold text-slate-600">{groupRows[0].class_type ?? '未分类'}汇总</TableCell>
+                      <TableCell className="border-r text-center text-xs font-semibold">{kind}</TableCell>
+                      <TableCell className="border-r" />
+                      {subjectGroups.map((g) => {
+                        if (!g.paired) {
+                          return <TableCell key={g.subject} className={cn('border-r text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.subjects[g.subject], kind))}</TableCell>
+                        }
+                        return [
+                          <TableCell key={`${g.subject}-raw`} className={cn('text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.subjects[`${g.subject}_原始`], kind))}</TableCell>,
+                          <TableCell key={`${g.subject}-graded`} className={cn('border-r text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.subjects[`${g.subject}_等级`], kind))}</TableCell>,
+                        ]
+                      })}
+                      {resolved.total_types.flatMap((totalType) => [
+                        <TableCell key={`${totalType}-avg`} className={cn('text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.均分, kind))}</TableCell>,
+                        <TableCell key={`${totalType}-pass`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.及格率, kind))}</TableCell>,
+                        <TableCell key={`${totalType}-high`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.高分率, kind))}</TableCell>,
+                        <TableCell key={`${totalType}-low`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.低分率, kind))}</TableCell>,
+                        <TableCell key={`${totalType}-sd`}>{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.标准差, kind))}</TableCell>,
+                        <TableCell key={`${totalType}-rank`} className="border-r" />,
+                      ])}
+                    </TableRow>
+                  ))
+                })
+              })()}
             </TableBody>
           </Table>
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+/** 名次段分布面板（2026-10-19）：堆叠条（每班一行，Viridis 段色按段绝对
+ *  位置、高名次亮端）+ 学校名次段表原样表格（行=班级，列=段，本班行高亮，
+ *  末行全年级合计）。分段与人数全部来自导入的名次段表，不从学生名次现算。 */
+function RankBandsPanel({ data }: { data: HomeroomRankBandsResponse }) {
+  const bandCount = Math.max(data.grade_bands.length, ...data.classes.map((c) => c.bands.length), 0)
+  // 全零尾段折叠：与教学分数段卡同款（图例与表格都截到最后一个非零段）
+  let lastNonZero = -1
+  for (const c of [...data.classes, { bands: data.grade_bands } as { bands: typeof data.grade_bands }]) {
+    c.bands.forEach((b, i) => {
+      if (b.count > 0 && i > lastNonZero) lastNonZero = i
+    })
+  }
+  const visibleCount = lastNonZero >= 0 ? lastNonZero + 1 : bandCount
+  const collapsedFrom = visibleCount < bandCount ? data.grade_bands[visibleCount]?.lo ?? null : null
+  const gradeTotal = data.grade_bands.reduce((sum, b) => sum + b.count, 0)
+
+  const bandCellTone = (count: number, total: number): string => {
+    if (count <= 0 || total <= 0) return ''
+    const ratio = count / total
+    if (ratio >= 0.2) return 'bg-sky-100/70'
+    if (ratio >= 0.1) return 'bg-sky-50'
+    return 'bg-sky-50/50'
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* 堆叠条：宽度=本段占本班人数比例；悬浮显示段名/人数/占比 */}
+      <TooltipProvider delayDuration={150}>
+        <div className="space-y-1.5">
+          {data.classes.map((c) => {
+            const isCurrent = c.class_num === data.current_class_num
+            return (
+              <div key={c.class_num} className="flex items-center gap-3">
+                <span
+                  className={cn('w-32 shrink-0 truncate text-xs', isCurrent ? 'font-semibold text-brand-700' : 'text-slate-500')}
+                  title={`${String(c.class_num).padStart(2, '0')} ${c.teacher_name ?? ''}（${String(c.total)} 人）`}
+                >
+                  {String(c.class_num).padStart(2, '0')}
+                  {c.teacher_name ? ` ${c.teacher_name}` : ''}
+                  <span className="ml-1 text-slate-400">{String(c.total)} 人</span>
+                </span>
+                <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100">
+                  {c.bands.map((b, i) =>
+                    b.count > 0 && c.total > 0 ? (
+                      <UITooltip key={i}>
+                        <TooltipTrigger asChild>
+                          <div
+                            className="h-full cursor-default transition-opacity hover:opacity-75"
+                            style={{
+                              width: `${String((b.count / c.total) * 100)}%`,
+                              background: bandBarColor(i, c.bands.length),
+                            }}
+                          />
+                        </TooltipTrigger>
+                        <TooltipContent sideOffset={6}>
+                          <span className="font-medium">{b.label} 名</span>
+                          <span className="ml-2 text-slate-500">
+                            {String(b.count)} 人 · {((b.count / c.total) * 100).toFixed(1)}%
+                          </span>
+                        </TooltipContent>
+                      </UITooltip>
+                    ) : null,
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </TooltipProvider>
+
+      {/* 图例：全零尾段折叠为一项「(*, 下界)」 */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {data.grade_bands.slice(0, visibleCount).map((b, i) => (
+          <span key={b.label} className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-sm"
+              style={{ background: bandBarColor(i, bandCount) }}
+            />
+            {b.label}
+          </span>
+        ))}
+        {collapsedFrom != null ? (
+          <span className="text-[10px] text-slate-400">（{String(collapsedFrom)} 名以后全零段已折叠）</span>
+        ) : null}
+      </div>
+
+      {/* 学校名次段表原样：行=班级+班主任，列=段+合计；本班高亮；末行全年级 */}
+      <div className="overflow-x-auto rounded-lg border border-slate-200">
+        <Table className="min-w-max text-xs">
+          <TableHeader>
+            <TableRow className="bg-slate-100">
+              <TableHead className="whitespace-nowrap border-r text-center">班级</TableHead>
+              <TableHead className="whitespace-nowrap border-r text-center">班主任</TableHead>
+              {data.grade_bands.slice(0, visibleCount).map((b) => (
+                <TableHead key={b.label} className="whitespace-nowrap text-center">{b.label}</TableHead>
+              ))}
+              {collapsedFrom != null ? (
+                <TableHead className="whitespace-nowrap text-center">({String(collapsedFrom)}以下)</TableHead>
+              ) : null}
+              <TableHead className="whitespace-nowrap text-center">合计</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {data.classes.map((c) => {
+              const isCurrent = c.class_num === data.current_class_num
+              return (
+                <TableRow key={c.class_num} className={cn(isCurrent && 'bg-brand-50/60 font-medium')}>
+                  <TableCell className="border-r text-center">{String(c.class_num).padStart(2, '0')}{isCurrent ? '（本班）' : ''}</TableCell>
+                  <TableCell className="whitespace-nowrap border-r text-center">{c.teacher_name ?? '—'}</TableCell>
+                  {data.grade_bands.slice(0, visibleCount).map((b, i) => {
+                    const band = c.bands[i]
+                    const count = band == null ? 0 : band.count
+                    return (
+                      <TableCell key={b.label} className={cn('text-center tabular-nums', count === 0 && 'text-slate-300', bandCellTone(count, c.total))}>
+                        {String(count)}
+                      </TableCell>
+                    )
+                  })}
+                  {collapsedFrom != null ? (
+                    <TableCell className="text-center tabular-nums text-slate-400">
+                      {String(c.bands.slice(visibleCount).reduce((sum, b) => sum + b.count, 0))}
+                    </TableCell>
+                  ) : null}
+                  <TableCell className="text-center tabular-nums font-semibold">{String(c.total)}</TableCell>
+                </TableRow>
+              )
+            })}
+            <TableRow className="bg-slate-50 font-semibold">
+              <TableCell className="border-r text-center">全年级</TableCell>
+              <TableCell className="border-r" />
+              {data.grade_bands.slice(0, visibleCount).map((b) => (
+                <TableCell key={b.label} className="text-center tabular-nums">{String(b.count)}</TableCell>
+              ))}
+              {collapsedFrom != null ? (
+                <TableCell className="text-center tabular-nums">
+                  {String(data.grade_bands.slice(visibleCount).reduce((sum, b) => sum + b.count, 0))}
+                </TableCell>
+              ) : null}
+              <TableCell className="text-center tabular-nums">{String(gradeTotal)}</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   )
 }
 
@@ -454,13 +706,11 @@ export function HomeroomScores() {
   const [classAverages, setClassAverages] = useState<HomeroomClassAveragesResponse | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
 
-  // 段位分布
-  const [bandMetric, setBandMetric] = useState<string>('__total__')
-  const [bands, setBands] = useState<HomeroomBandsResponse | null>(null)
-  const [bandsError, setBandsError] = useState<string | null>(null)
-  // F10/F11：后端 bands 对无名次口径返回 409（确定性不可算），区别于网络/瞬时错误展示
-  const [bandsUnavailable, setBandsUnavailable] = useState(false)
-  const [bandsNonce, setBandsNonce] = useState(0)
+  // 名次段分布（2026-10-19：读导入的名次段表 3+3/主三门，替代按学生名次现算的旧段位卡）
+  const [rankBands, setRankBands] = useState<HomeroomRankBandsResponse | null>(null)
+  const [rankBandsError, setRankBandsError] = useState<string | null>(null)
+  const [rankBandsMetric, setRankBandsMetric] = useState<string | null>(null)
+  const [rankBandsNonce, setRankBandsNonce] = useState(0)
 
   // 旧班主任重点关注：临界段、薄弱段、严重偏科
   const [focus, setFocus] = useState<HomeroomFocusResponse | null>(null)
@@ -600,40 +850,25 @@ export function HomeroomScores() {
     [exams, selectedExam],
   )
 
-  // 段位指标选项：各总分口径（value 前缀 __total__ 区分，subject 参数承载 total_type）+ 各科；
-  // 当前值失效时回退首个选项
-  const metricOptions = useMemo(() => {
-    const opts: Array<{ value: string; label: string }> = []
-    for (const t of stats?.totals ?? []) opts.push({ value: `__total__${t.total_type}`, label: `总分（${t.total_type}）` })
-    for (const s of subjectCols) opts.push({ value: s, label: s })
-    return opts
-  }, [stats, subjectCols])
-  const activeMetric =
-    metricOptions.find((o) => o.value === bandMetric)?.value ?? metricOptions[0]?.value ?? null
-
-  // 段位分布：考试或指标变化即重拉（只比对 bandsReqRef，绝不作废 stats/students 回包）
+  // 名次段分布：考试或口径变化即重拉（只比对 bandsReqRef，绝不作废 stats/students 回包）；
+  // 首次不传口径由后端取第一个可用口径，回包后同步本地选择态
   useEffect(() => {
-    if (selectedExam == null || activeMetric == null) return
+    if (selectedExam == null) return
     const req = ++bandsReqRef.current
-    setBands(null)
-    setBandsError(null)
-    setBandsUnavailable(false)
-    fetchHomeroomBands(
-      activeMetric.startsWith('__total__')
-        ? { exam_name: selectedExam, metric: 'total', subject: activeMetric.slice('__total__'.length), ...scopeQ }
-        : { exam_name: selectedExam, metric: 'score', subject: activeMetric, ...scopeQ },
-    )
-      .then((b) => {
+    setRankBands(null)
+    setRankBandsError(null)
+    fetchHomeroomRankBands(selectedExam, scopeQ, rankBandsMetric)
+      .then((r) => {
         if (req !== bandsReqRef.current) return
-        setBands(b)
+        setRankBands(r)
+        if (rankBandsMetric == null && r.total_type != null) setRankBandsMetric(r.total_type)
       })
       .catch((err: unknown) => {
         if (req !== bandsReqRef.current) return
-        setBands(null)
-        setBandsUnavailable(err instanceof ApiV1Error && err.status === 409)
-        setBandsError(apiErrorMessage(err))
+        setRankBands(null)
+        setRankBandsError(apiErrorMessage(err))
       })
-  }, [selectedExam, activeMetric, scopeQ, bandsNonce])
+  }, [selectedExam, scopeQ, rankBandsMetric, rankBandsNonce])
 
   useEffect(() => {
     if (selectedExam == null) {
@@ -874,10 +1109,33 @@ export function HomeroomScores() {
     }
   }, [choices, linkId, conflictList])
 
-  const maxBandCount = useMemo(
-    () => Math.max(...(bands?.bands ?? []).map((b) => b.count), 1),
-    [bands],
+  // 班名次（2026-10-19 明细表新列）：按各总分口径对本班有总分学生计算，
+  // 同分同名次（1,2,2,4 语义）、缺考不参与不编造；仅为浏览名次。
+  const rankTotalCols = useMemo<string[]>(
+    () => totalCols.filter((tt) => tt === '主三门' || tt === '3+3'),
+    [totalCols],
   )
+  const classRanksByTotal = useMemo(() => {
+    const out: Record<string, Map<string, number>> = {}
+    for (const tt of rankTotalCols) {
+      const valid = (students ?? [])
+        .map((s) => ({ s, v: s.totals?.[tt] ?? null }))
+        .filter((e): e is { s: HomeroomStudentRow; v: number } => e.v != null)
+        .sort((a, b) => b.v - a.v)
+      const m = new Map<string, number>()
+      let lastScore: number | null = null
+      let lastRank = 0
+      valid.forEach(({ s, v }, idx) => {
+        const rank = lastScore === v ? lastRank : idx + 1
+        lastScore = v
+        lastRank = rank
+        m.set(String(s.person_id), rank)
+      })
+      out[tt] = m
+    }
+    return out
+  }, [students, rankTotalCols])
+
   const distributionChartData = useMemo(
     () =>
       (rankDistribution?.bins ?? []).map((bin) => ({
@@ -1039,7 +1297,7 @@ export function HomeroomScores() {
                 <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl bg-slate-100/80 p-1 print:hidden">
                   <TabsTrigger value="averages" className="whitespace-nowrap">班级均分表</TabsTrigger>
                   <TabsTrigger value="students" className="whitespace-nowrap">学生成绩明细表</TabsTrigger>
-                  <TabsTrigger value="bands" className="whitespace-nowrap">班级名次段位表</TabsTrigger>
+                  <TabsTrigger value="bands" className="whitespace-nowrap">名次段分布</TabsTrigger>
                   <TabsTrigger value="frequency" className="whitespace-nowrap">排名频次统计</TabsTrigger>
                   <TabsTrigger value="range" className="whitespace-nowrap">排名区间筛选</TabsTrigger>
                   <TabsTrigger value="focus" className="whitespace-nowrap">重点关注</TabsTrigger>
@@ -1050,13 +1308,15 @@ export function HomeroomScores() {
                 </TabsContent>
 
                 <TabsContent value="students">
-              {/* 学生成绩表：行点击展开跨学年趋势 */}
+              {/* 学生成绩明细表（2026-10-19 表头按学校导出重制）：
+                  学号/班级/学籍/姓名 + 语数英单列 + 六选科(原始/等级) +
+                  +3总分 + 主三门/3+3(总分/百分位/校名次/班名次)；行点击展开趋势 */}
               <Card>
                 <CardHeader>
-                  <CardTitle>学生成绩表</CardTitle>
+                  <CardTitle>学生成绩明细表</CardTitle>
                   <CardDescription>
                     {stats ? `${selectedExamLabel} · 范围 ${String(stats.cohort_size)} 人 · ` : ''}
-                    按总分降序仅为浏览排序，非正式名次；点击行可展开跨学年趋势。
+                    缺考显示「—」；班名次按本班同口径总分计算（同分同名次），校名次来自导入明细；点击行可展开跨学年趋势。
                     {stats?.small_sample === true ? <Badge variant="warning" className="ml-2">样本&lt;5</Badge> : null}
                   </CardDescription>
                 </CardHeader>
@@ -1077,25 +1337,37 @@ export function HomeroomScores() {
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
-                      <Table>
+                      <Table className="min-w-max">
                         <TableHeader>
-                          <TableRow>
-                            <TableHead className="whitespace-nowrap text-xs">姓名</TableHead>
-                            <TableHead className="whitespace-nowrap text-xs">别名</TableHead>
-                            {subjectCols.map((subj) => (
-                              <TableHead key={subj} className="whitespace-nowrap text-xs text-right">
-                                {subj}
-                              </TableHead>
+                          <TableRow className="bg-slate-100">
+                            <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学号</TableHead>
+                            <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
+                            <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学籍</TableHead>
+                            <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">姓名</TableHead>
+                            {subjectColumnGroups(subjectCols).map((g) => g.paired ? (
+                              <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
+                            ) : (
+                              <TableHead key={g.subject} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
                             ))}
-                            {totalCols.map((tt) => (
-                              <TableHead
-                                key={tt}
-                                className="whitespace-nowrap text-xs text-right font-semibold"
-                              >
-                                总分（{tt}）
-                              </TableHead>
+                            {totalCols.filter((tt) => !rankTotalCols.includes(tt)).map((tt) => (
+                              <TableHead key={tt} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs font-semibold">{tt}总分</TableHead>
                             ))}
-                            <TableHead className="w-10 print:hidden" aria-label="趋势" />
+                            {rankTotalCols.map((tt) => (
+                              <TableHead key={tt} colSpan={4} className="whitespace-nowrap border-r text-center text-xs font-semibold">{tt}总分</TableHead>
+                            ))}
+                            <TableHead rowSpan={2} className="w-10 print:hidden" aria-label="趋势" />
+                          </TableRow>
+                          <TableRow className="bg-slate-50">
+                            {subjectColumnGroups(subjectCols).flatMap((g) => g.paired ? [
+                              <TableHead key={`${g.subject}-raw`} className="whitespace-nowrap text-center text-xs">原始</TableHead>,
+                              <TableHead key={`${g.subject}-graded`} className="whitespace-nowrap border-r text-center text-xs">等级</TableHead>,
+                            ] : [])}
+                            {rankTotalCols.flatMap((tt) => [
+                              <TableHead key={`${tt}-score`} className="whitespace-nowrap text-center text-xs">总分</TableHead>,
+                              <TableHead key={`${tt}-pct`} className="whitespace-nowrap text-center text-xs">百分位</TableHead>,
+                              <TableHead key={`${tt}-school`} className="whitespace-nowrap text-center text-xs">校名次</TableHead>,
+                              <TableHead key={`${tt}-class`} className="whitespace-nowrap border-r text-center text-xs">班名次</TableHead>,
+                            ])}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -1113,66 +1385,104 @@ export function HomeroomScores() {
                                   aria-expanded={expanded}
                                   onClick={() => setExpandedPerson(expanded ? null : key)}
                                 >
-                                  <TableCell className="whitespace-nowrap text-sm font-medium text-slate-900">
-                                    {s.name ?? '（未命名）'}
-                                  </TableCell>
-                                  <TableCell className="whitespace-nowrap text-xs text-slate-500">
+                                  <TableCell className="whitespace-nowrap border-r text-xs tabular-nums text-slate-500">
                                     {s.alias ?? '—'}
                                   </TableCell>
-                                  {subjectCols.map((subj) => {
-                                    const v = s.scores?.[subj] ?? null
-                                    const conflict = conflicts?.get(subj) ?? null
-                                    return (
-                                      <TableCell
-                                        key={subj}
-                                        className={cn(
-                                          'whitespace-nowrap text-right tabular-nums text-sm',
-                                          conflict
-                                            ? 'cursor-pointer bg-warning-50 text-warning-700'
-                                            : v == null
-                                              ? 'text-slate-300'
-                                              : 'text-slate-900',
-                                        )}
-                                        title={
-                                          conflict
-                                            ? `两域分数不一致待人工核对（教学域 ${
-                                                conflict.teaching_score == null ? '缺考' : `${String(conflict.teaching_score)} 分`
-                                              }）；点击确认规范值`
-                                            : undefined
-                                        }
-                                        onClick={
-                                          conflict
-                                            ? (e) => {
-                                                // 格子级入口：不触发行展开
-                                                e.stopPropagation()
-                                                openConflicts({
-                                                  personId: s.person_id,
-                                                  personName: s.name ?? '（未命名）',
-                                                  subject: subj,
-                                                  examName: selectedExam ?? '',
-                                                })
-                                              }
-                                            : undefined
-                                        }
-                                      >
-                                        {v == null ? '—' : formatScore(v)}
-                                        {conflict ? <span className="ml-1 text-[10px]">※</span> : null}
-                                      </TableCell>
-                                    )
+                                  <TableCell className="border-r text-center text-xs text-slate-500">
+                                    {s.class_num != null ? String(s.class_num).padStart(2, '0') : '—'}
+                                  </TableCell>
+                                  <TableCell className="border-r text-center text-xs text-slate-500">
+                                    {s.xueji != null ? String(s.xueji) : '—'}
+                                  </TableCell>
+                                  <TableCell className="whitespace-nowrap border-r text-sm font-medium text-slate-900">
+                                    {s.name ?? '（未命名）'}
+                                  </TableCell>
+                                  {subjectColumnGroups(subjectCols).flatMap((g) => {
+                                    if (!g.paired) {
+                                      const v = s.scores?.[g.subject] ?? null
+                                      const conflict = conflicts?.get(g.subject) ?? null
+                                      return [
+                                        <TableCell
+                                          key={g.subject}
+                                          className={cn(
+                                            'whitespace-nowrap border-r text-right tabular-nums text-sm',
+                                            conflict
+                                              ? 'cursor-pointer bg-warning-50 text-warning-700'
+                                              : v == null
+                                                ? 'text-slate-300'
+                                                : 'text-slate-900',
+                                          )}
+                                          title={
+                                            conflict
+                                              ? `两域分数不一致待人工核对（教学域 ${
+                                                  conflict.teaching_score == null ? '缺考' : `${String(conflict.teaching_score)} 分`
+                                                }）；点击确认规范值`
+                                              : undefined
+                                          }
+                                          onClick={
+                                            conflict
+                                              ? (e) => {
+                                                  // 格子级入口：不触发行展开
+                                                  e.stopPropagation()
+                                                  openConflicts({
+                                                    personId: s.person_id,
+                                                    personName: s.name ?? '（未命名）',
+                                                    subject: g.subject,
+                                                    examName: selectedExam ?? '',
+                                                  })
+                                                }
+                                              : undefined
+                                          }
+                                        >
+                                          {v == null ? '—' : formatScore(v)}
+                                          {conflict ? <span className="ml-1 text-[10px]">※</span> : null}
+                                        </TableCell>,
+                                      ]
+                                    }
+                                    const raw = s.scores?.[g.subject] ?? null
+                                    const graded = s.grade_scores?.[g.subject] ?? null
+                                    return [
+                                      <TableCell key={`${g.subject}-raw`} className="whitespace-nowrap text-right tabular-nums text-sm">
+                                        {raw == null ? <span className="text-slate-300">—</span> : formatScore(raw)}
+                                      </TableCell>,
+                                      <TableCell key={`${g.subject}-graded`} className="whitespace-nowrap border-r text-right tabular-nums text-sm">
+                                        {graded == null ? <span className="text-slate-300">—</span> : formatScore(graded)}
+                                      </TableCell>,
+                                    ]
                                   })}
-                                  {totalCols.map((tt) => {
+                                  {totalCols.filter((tt) => !rankTotalCols.includes(tt)).map((tt) => {
                                     const v = s.totals?.[tt] ?? null
                                     return (
                                       <TableCell
                                         key={tt}
                                         className={cn(
-                                          'whitespace-nowrap text-right tabular-nums text-sm font-medium',
+                                          'whitespace-nowrap border-r text-right tabular-nums text-sm font-medium',
                                           v == null ? 'text-slate-300' : 'text-slate-900',
                                         )}
                                       >
                                         {v == null ? '—' : formatScore(v)}
                                       </TableCell>
                                     )
+                                  })}
+                                  {rankTotalCols.flatMap((tt) => {
+                                    const v = s.totals?.[tt] ?? null
+                                    const pct = s.percentiles?.[tt] ?? null
+                                    const schoolRank = s.ranks?.[tt] ?? null
+                                    const classRank = classRanksByTotal[tt]?.get(key) ?? null
+                                    return [
+                                      <TableCell key={`${tt}-score`} className={cn('whitespace-nowrap text-right tabular-nums text-sm font-medium', v == null ? 'text-slate-300' : 'text-slate-900')}>
+                                        {v == null ? '—' : formatScore(v)}
+                                      </TableCell>,
+                                      <TableCell key={`${tt}-pct`} className="whitespace-nowrap text-right tabular-nums text-xs">
+                                        {pct == null ? <span className="text-slate-300">—</span> : `${String(Math.round(pct * 10000) / 100)}%`}
+                                      </TableCell>,
+                                      <TableCell key={`${tt}-school`} className="whitespace-nowrap text-right tabular-nums text-xs">
+                                        {schoolRank == null ? <span className="text-slate-300">—</span> : String(schoolRank)}
+                                      </TableCell>,
+                                      <TableCell key={`${tt}-class`} className="whitespace-nowrap border-r text-right tabular-nums text-xs">
+                                        {classRank == null ? <span className="text-slate-300">—</span> : String(classRank)}
+                                      </TableCell>,
+                                    ]
                                   })}
                                   <TableCell className="print:hidden">
                                     <ChevronDown
@@ -1186,7 +1496,13 @@ export function HomeroomScores() {
                                 {expanded ? (
                                   <TableRow className="hover:bg-transparent">
                                     <TableCell
-                                      colSpan={2 + subjectCols.length + totalCols.length + 1}
+                                      colSpan={
+                                        4 +
+                                        subjectColumnGroups(subjectCols).reduce((n, g) => n + (g.paired ? 2 : 1), 0) +
+                                        (totalCols.length - rankTotalCols.length) +
+                                        rankTotalCols.length * 4 +
+                                        1
+                                      }
                                       className="bg-slate-50/70 p-4"
                                     >
                                       <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
@@ -1456,85 +1772,62 @@ export function HomeroomScores() {
                 </TabsContent>
 
                 <TabsContent value="bands">
-              {/* 段位分布：div 宽度百分比条形，不引图表库 */}
-              <Card>
-                <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <CardTitle>段位分布</CardTitle>
-                    <CardDescription>
-                      {activeMetric != null && bands?.total_type != null
-                        ? `口径 ${bands.total_type}；`
-                        : ''}
-                      段位阈值沿用既有分析配置；条形为人数可视化，非百分比排位。
-                    </CardDescription>
-                  </div>
-                  {/* 选择器为 button，打印时由全局规则隐藏（U01），标题保留 */}
-                  {metricOptions.length > 0 ? (
-                    <Select value={activeMetric ?? undefined} onValueChange={setBandMetric}>
-                      <SelectTrigger className="h-8 w-[170px] text-xs" aria-label="段位指标">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {metricOptions.map((o) => (
-                          <SelectItem key={o.value} value={o.value}>
-                            {o.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : null}
-                </CardHeader>
-                <CardContent>
-                  {bandsError && bandsUnavailable ? (
-                    /* 契约 p3 §2.1 v2.1（F10）：无名次口径时 bands 恒 409，前端呈现
-                       「不可计算」提示卡而非错误分段或永久骨架 */
-                    <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3">
-                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                  {/* 名次段分布（2026-10-19）：读导入的名次段表（3+3总分/主三门两口径）；
+                      堆叠条样式与教学工作台分数段卡同源（Viridis，段色按段绝对位置、
+                      高名次亮端），表格为学校名次段表原样（行=班级，列=段）。 */}
+                  <Card>
+                    <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div>
-                        <p className="text-sm font-medium text-slate-600">段位不可计算（无名次口径）</p>
-                        <p className="mt-0.5 text-xs text-slate-400">
-                          段位阈值口径为年级名次，当前范围没有名次数据；引入合法名次来源前不呈现任何分段。
-                        </p>
+                        <CardTitle>名次段分布</CardTitle>
+                        <CardDescription>
+                          {rankBands != null && rankBands.classes.length > 0
+                            ? `${rankBands.exam_name} · ${rankBands.total_type} 口径 · 全年级 ${String(rankBands.grade_bands.reduce((sum, b) => sum + b.count, 0))} 人；分段按导入的名次段表。`
+                            : '按导入的《3+3总分名次段》《主三门名次段》表展示各班名次段人数。'}
+                        </CardDescription>
                       </div>
-                    </div>
-                  ) : bandsError ? (
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm text-slate-600">{bandsError}</p>
-                      <Button variant="outline" size="sm" onClick={() => setBandsNonce((n) => n + 1)}>
-                        重试
-                      </Button>
-                    </div>
-                  ) : bands == null ? (
-                    <Skeleton className="h-32 w-full" />
-                  ) : bands.bands.length === 0 ? (
-                    <p className="py-6 text-center text-sm text-slate-500">
-                      当前指标暂无段位数据（该场可能全部缺考或尚未导入）。
-                    </p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {bands.bands.map((b) => {
-                        const pct = Math.round((b.count / maxBandCount) * 100)
-                        return (
-                          <li key={b.label} className="flex items-center gap-3">
-                            <span className="w-24 shrink-0 truncate text-xs text-slate-500" title={b.label}>
-                              {b.label}
-                            </span>
-                            <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-100">
-                              <div
-                                className="h-full rounded-full bg-gradient-to-r from-[#1f7fd6] to-[#35b9e9]"
-                                style={{ width: `${String(pct)}%` }}
-                              />
-                            </div>
-                            <span className="w-14 shrink-0 text-right text-xs tabular-nums text-slate-600">
-                              {String(b.count)} 人
-                            </span>
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  )}
-                </CardContent>
-              </Card>
+                      {rankBands != null && rankBands.available_total_types.length > 0 ? (
+                        <Select
+                          value={rankBandsMetric ?? rankBands.total_type ?? undefined}
+                          onValueChange={setRankBandsMetric}
+                        >
+                          <SelectTrigger className="h-8 w-[170px] text-xs" aria-label="名次段口径">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {rankBands.available_total_types.map((tt) => (
+                              <SelectItem key={tt} value={tt}>
+                                {tt === '3+3' ? '3+3总分' : `${tt}总分`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                    </CardHeader>
+                    <CardContent>
+                      {rankBandsError ? (
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm text-slate-600">{rankBandsError}</p>
+                          <Button variant="outline" size="sm" onClick={() => setRankBandsNonce((n) => n + 1)}>
+                            重试
+                          </Button>
+                        </div>
+                      ) : rankBands == null ? (
+                        <Skeleton className="h-40 w-full" />
+                      ) : rankBands.classes.length === 0 ? (
+                        <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3">
+                          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                          <div>
+                            <p className="text-sm font-medium text-slate-600">本场考试尚未导入名次段表</p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              请到「数据上传」随考试上传学校的《3+3总分名次段表》与《主三门名次段表》，导入后这里展示各班分段人数。
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <RankBandsPanel data={rankBands} />
+                      )}
+                    </CardContent>
+                  </Card>
                 </TabsContent>
               </Tabs>
             </>

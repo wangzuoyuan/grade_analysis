@@ -295,12 +295,15 @@ def test_explicit_link_projection_and_revocation(client, world):
     w.db.add(link)
     w.db.flush()
     w.db.add(wm.LinkedStudent(link_id=link.id, homeroom_identity_id=w.pids[0], teaching_identity_id=ident.id, confirm_basis='synthetic-test'))
-    # Leave only H source homework+scores; T sees this mapped student, not his H classmate.
     w.db.commit()
     response = client.get('/api/v1/teaching/diagnosis/homework-students', params={'academic_year_id': w.ay, 'teaching_class_id': tc.id})
     assert response.status_code == 200, response.text
     student = response.json()['students'][0]
-    assert student['person_id'] == ident.id and student['paired_n'] == 8
+    # 2026-10 两域成绩不互通：即使 link 授权 current_subject_score+
+    # current_subject_homework，配对学生的 H 域成绩/作业也不再投影进
+    # 教学侧时间线——名单仍只有该教学班成员，配对数恒 0
+    assert student['person_id'] == ident.id and student['paired_n'] == 0
+    assert student['timeline'] == []
     assert len(response.json()['students']) == 1
     link.share_categories = 'roster,current_subject_score'
     w.db.commit()

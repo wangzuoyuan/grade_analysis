@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const page = readFileSync(new URL('../src/components/scores/TeachingScores.tsx', import.meta.url), 'utf8')
+const bandColors = readFileSync(new URL('../src/components/scores/band-colors.ts', import.meta.url), 'utf8')
 const api = readFileSync(new URL('../src/lib/api-v1.ts', import.meta.url), 'utf8')
 const backend = readFileSync(new URL('../../backend/app/api/analysis.py', import.meta.url), 'utf8')
 const backendSchema = readFileSync(new URL('../../backend/app/api/analysis_schemas.py', import.meta.url), 'utf8')
@@ -58,13 +59,15 @@ test('堆叠条段悬浮显示段名/人数/占比（Radix Tooltip，非原生 t
 })
 
 test('段位配色采用 Viridis 官方锚点（2026-10-18 用户拍板：不自配色）', () => {
-  assert.match(page, /const VIRIDIS_ANCHORS = \[/, 'Viridis 锚点常量必须在场')
+  // 2026-10-19：配色工具抽至 band-colors.ts 供两工作台共用，断言改读共享文件
+  assert.match(page, /import \{ bandBarColor \} from '\.\/band-colors'/, '教学卡须引用共享配色工具')
+  assert.match(bandColors, /export const VIRIDIS_ANCHORS = \[/, 'Viridis 锚点常量必须在场')
   // matplotlib 官方 8 点采样的首尾锚点（高分段亮端 → 低分段暗端）
-  assert.match(page, /'#fde725'/, '锚点须含亮端 #fde725（高分段）')
-  assert.match(page, /'#440154'/, '锚点须含暗端 #440154（低分段）')
-  assert.match(page, /感知均匀[\s\S]*?色盲安全/, '须注明色系出处与特性')
-  assert.match(page, /function hexToRgb/, '须有 hex→RGB 解析供插值')
-  assert.match(page, /VIRIDIS_ANCHORS\.length - 2/, '插值须钳制在锚点区间内')
+  assert.match(bandColors, /'#fde725'/, '锚点须含亮端 #fde725（高分段）')
+  assert.match(bandColors, /'#440154'/, '锚点须含暗端 #440154（低分段）')
+  assert.match(bandColors, /感知均匀[\s\S]*?色盲安全/, '须注明色系出处与特性')
+  assert.match(bandColors, /export function hexToRgb/, '须有 hex→RGB 解析供插值')
+  assert.match(bandColors, /VIRIDIS_ANCHORS\.length - 2/, '插值须钳制在锚点区间内')
   assert.doesNotMatch(page, /hsl\(201 74%/, '不得再残留旧的自配 HSL 渐变')
 })
 

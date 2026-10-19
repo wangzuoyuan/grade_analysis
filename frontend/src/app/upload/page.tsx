@@ -304,7 +304,7 @@ function LegacyUploadPage() {
 
   const modeHint =
     mode === 'homeroom'
-      ? '当前工作台：班主任。每场考试可同时选择学生成绩明细表和班级均分表；前者导入本班成绩（全科+总分入班主任域），后者导入全年级各班均分与班级排名。'
+      ? '当前工作台：班主任。每场考试可同时选择学生成绩明细表、班级均分表和名次段表（3+3总分/主三门两张）；明细表导入本班成绩（全科+总分），均分表导入全年级各班指标，名次段表供成绩分析页「名次段分布」展示。'
       : '当前工作台：教学。仅导入任教学科，其他学科列将被过滤（计入文件警告）。'
 
   const teachingAllClasses = mode === 'teaching' && typeof filter.teaching_class_id !== 'number'

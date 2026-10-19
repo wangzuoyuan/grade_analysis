@@ -151,7 +151,7 @@ test('班主任考试详情恢复旧版六板块与顶部排名分段图', () =>
   for (const label of [
     '班级均分表',
     '学生成绩明细表',
-    '班级名次段位表',
+    '名次段分布',
     '排名频次统计',
     '排名区间筛选',
     '重点关注',
@@ -169,7 +169,16 @@ test('班主任考试详情恢复旧版六板块与顶部排名分段图', () =>
   assert.match(homeroomScores, /total_ranks/, '须展示各总分口径班级排名')
   assert.match(homeroomScores, /平行班|groupName/, '须按班级类型分组')
   assert.match(homeroomScores, /平均.*最高.*最低/s, '每个班型须有平均最高最低汇总')
-  assert.match(uploadPage, /学生成绩明细表和班级均分表/, '上传页须明确支持同场两个 Excel')
+  // 2026-10-19 表头按学校导出重制：选科 原始分/等级分 子列、总分指标包、班型合并单元格
+  assert.match(homeroomScores, /subjectColumnGroups/, '学科列须按 原始/等级 分组')
+  assert.match(homeroomScores, /rowSpan=\{typeSpans\[idx\]\}/, '班级类型列须同值合并单元格')
+  assert.match(homeroomScores, /班型排名/, '排名列须标注班型内口径')
+  assert.match(homeroomScores, /及格率/, '均分表须展示及格率等指标包子列')
+  // 明细表表头按图2：学号/班级/学籍/姓名 + 校名次/班名次
+  assert.match(homeroomScores, /学籍/, '明细表须有学籍列')
+  assert.match(homeroomScores, /班名次/, '明细表须有班名次（本班口径前端计算）')
+  assert.match(homeroomScores, /classRanksByTotal/, '班名次须由前端按本班总分计算')
+  assert.match(uploadPage, /学生成绩明细表.*班级均分表.*名次段表/, '上传页须明确支持同场三类 Excel')
 })
 
 test('small_sample 与 estimated 标注存在（E04）', () => {
@@ -211,14 +220,14 @@ test('迟到响应按资源分离序号丢弃，失败进错误态不白屏（F1
     assert.match(src, /if \(req !== dataReqRef\.current\) return/, `${name}迟到回包必须丢弃`)
     assert.match(src, /apiErrorMessage/, `${name}错误须经统一文案映射`)
   }
-  assert.match(homeroomScores, /bandsReqRef\.current/, '段位分布须有独立请求序号')
+  assert.match(homeroomScores, /bandsReqRef\.current/, '名次段分布须有独立请求序号')
   assert.match(homeroomScores, /trendsReqRef\.current/, '趋势须有独立请求序号')
-  // 段位 effect 递增的必须是段位自己的序号（F11 根因回归）
-  const bandsCallIdx = homeroomScores.indexOf('fetchHomeroomBands(')
-  assert.ok(bandsCallIdx > 0, '应能定位段位请求调用')
+  // 段位 effect 递增的必须是段位自己的序号（F11 根因回归；2026-10-19 改读名次段表）
+  const bandsCallIdx = homeroomScores.indexOf('fetchHomeroomRankBands(')
+  assert.ok(bandsCallIdx > 0, '应能定位名次段分布请求调用')
   const bandsCtx = homeroomScores.slice(Math.max(0, bandsCallIdx - 400), bandsCallIdx)
-  assert.match(bandsCtx, /\+\+bandsReqRef\.current/, '段位 effect 必须递增 bandsReqRef')
-  assert.doesNotMatch(bandsCtx, /dataReqRef\.current/, '段位 effect 不得触碰 stats/students 序号')
+  assert.match(bandsCtx, /\+\+bandsReqRef\.current/, '名次段分布 effect 必须递增 bandsReqRef')
+  assert.doesNotMatch(bandsCtx, /dataReqRef\.current/, '名次段分布 effect 不得触碰 stats/students 序号')
 })
 
 test('导航入口与宽表横向滚动（U01）', () => {

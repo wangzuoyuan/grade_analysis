@@ -141,9 +141,10 @@ def test_f03_roster_hides_shared_fields_when_enrolled_after_exam(client, v1_seed
         assert v1_seed.jia_h_id in by_pid  # 名册按查询时点：甲在班
         assert by_pid[v1_seed.jia_h_id].get("shared_subject_score") is None
         assert by_pid[v1_seed.jia_h_id].get("shared_conflict") is None
-        assert by_pid[v1_seed.yi_h_id].get("shared_conflict") == {
-            "teaching_score": 85.0
-        }  # 乙考试时点在班：冲突提示照常
+        # 2026-10 两域成绩不互通：乙（考试时点在班）同样不再出现
+        # 跨域冲突提示——共享分数字段对全班恒缺席
+        assert by_pid[v1_seed.yi_h_id].get("shared_subject_score") is None
+        assert by_pid[v1_seed.yi_h_id].get("shared_conflict") is None
     finally:
         _enrollment(db, v1_seed, v1_seed.jia_h_id).valid_from = date(2025, 9, 1)
         db.commit()
@@ -252,8 +253,9 @@ def test_f08_teaching_stats_uses_exam_time_members(client, v1_seed):
 
 
 def test_f09_h_only_exam_readable_from_teaching(client, v1_seed, f09_seed):
-    """H-only 物理事实：teaching readable_exam_summaries 列出该考试，
-    teaching 统计含该科（反向投影计入均分/分母）。"""
+    """2026-10 两域成绩不互通：H-only 物理事实不再经反向投影进入
+    teaching——考试清单只列本域事件；统计端点因考试存在性检查跨域而
+    返回 200，但数据为本域空态（valid_count=0）。"""
     from app.api import _queries as q
 
     s = v1_seed
@@ -261,9 +263,9 @@ def test_f09_h_only_exam_readable_from_teaching(client, v1_seed, f09_seed):
     try:
         summaries = q.readable_exam_summaries(db, ctx)
         names = [e["exam_name"] for e in summaries]
-        assert EXAM_H_ONLY in names  # H-only 考试出现在 teaching 考试清单
-        entry = next(e for e in summaries if e["exam_name"] == EXAM_H_ONLY)
-        assert entry["subjects"] == ["物理"] and entry["row_count"] == 1
+        # 2026-10 两域成绩不互通：H-only 考试不出现在 teaching 考试清单
+        assert EXAM_H_ONLY not in names
+        assert set(names) == {EXAM_T_ONLY, EXAM_E1}  # 本域事件照常在列
     finally:
         db.close()
 
@@ -271,15 +273,17 @@ def test_f09_h_only_exam_readable_from_teaching(client, v1_seed, f09_seed):
         f"{API}/teaching/analysis/exams/{quote(EXAM_H_ONLY)}/stats",
         params={"academic_year_id": s.ay_id, "teaching_class_id": s.t6_id},
     )
+    # 2026-10 两域成绩不互通：反向投影取消后教学侧读不到任何该考事实，
+    # 统计为本域空态（valid_count=0），均分 None 而非借 H 域 66 分
     assert r.status_code == 200
     body = r.json()
-    assert body["valid_count"] == 1 and body["avg"] == 66.0
-    assert body["cohort_size"] == 3  # 考试时点 T6 成员甲乙丁
+    assert body["valid_count"] == 0
+    assert body["avg"] is None
 
 
 def test_f09_t_only_exam_readable_from_homeroom(client, v1_seed, f09_seed):
-    """T-only 物理事实：homeroom readable_exam_summaries 列出该考试，
-    homeroom 统计 subjects 含该科，/scores 出现 teaching 来源投影行。"""
+    """2026-10 两域成绩不互通：T-only 物理事实不再经正向投影进入
+    homeroom——考试清单只列本域事件；/scores 不出现 teaching 来源行。"""
     from app.api import _queries as q
 
     s = v1_seed
@@ -287,10 +291,9 @@ def test_f09_t_only_exam_readable_from_homeroom(client, v1_seed, f09_seed):
     try:
         summaries = q.readable_exam_summaries(db, ctx)
         names = [e["exam_name"] for e in summaries]
-        assert EXAM_T_ONLY in names  # T-only 考试出现在 homeroom 考试清单
-        entry = next(e for e in summaries if e["exam_name"] == EXAM_T_ONLY)
-        assert entry["subjects"] == ["物理"] and entry["row_count"] == 1
-        # 冲突事实不放大行数：E1 仍为本域 15 行（甲乙 T 值只作冲突提示）
+        # 2026-10 两域成绩不互通：T-only 考试不出现在 homeroom 考试清单
+        assert EXAM_T_ONLY not in names
+        # 本域事件照常在列：E1 仍为本域 15 行
         e1 = next(e for e in summaries if e["exam_name"] == EXAM_E1)
         assert e1["row_count"] == 15
     finally:
@@ -300,10 +303,10 @@ def test_f09_t_only_exam_readable_from_homeroom(client, v1_seed, f09_seed):
         f"{API}/homeroom/analysis/exams/{quote(EXAM_T_ONLY)}/stats",
         params={"academic_year_id": s.ay_id, "class_id": s.h6_id},
     )
+    # 2026-10 两域成绩不互通：正向投影取消后 H 域读不到该考任何科目
     assert r.status_code == 200
     body = r.json()
-    assert [x["subject"] for x in body["subjects"]] == ["物理"]
-    assert body["subjects"][0]["avg"] == 77.0 and body["subjects"][0]["valid_count"] == 1
+    assert body["subjects"] == []
 
     r2 = client.get(
         f"{API}/scores",
@@ -314,13 +317,10 @@ def test_f09_t_only_exam_readable_from_homeroom(client, v1_seed, f09_seed):
         },
     )
     assert r2.status_code == 200
+    # 2026-10 两域成绩不互通：/scores 无任何 teaching 来源投影行
     rows = r2.json()["rows"]
-    jia = next(
-        row
-        for row in rows
-        if row["person_id"] == s.jia_h_id and row["subject"] == "物理"
-    )
-    assert jia["score"] == 77.0 and jia["source_domain"] == "teaching"
+    assert rows == []
+    assert all(row.get("source_domain") != "teaching" for row in rows)
 
 
 def test_f09_cancel_link_removes_all_projections(client, v1_seed, f09_seed):

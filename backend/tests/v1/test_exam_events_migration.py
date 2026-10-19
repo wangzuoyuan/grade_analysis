@@ -45,7 +45,8 @@ with engine.connect() as c:
  assert c.execute(text('SELECT COUNT(*) FROM score_fact WHERE exam_event_id IS NULL')).scalar()==0
  assert c.execute(text('SELECT COUNT(*) FROM workspace_exam_event WHERE merged_into_id IS NOT NULL')).scalar()==0
  assert c.execute(text("SELECT exam_event_id FROM workspace_class_average")).scalar()==c.execute(text("SELECT exam_event_id FROM score_fact WHERE data_domain='homeroom' LIMIT 1")).scalar()
- assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0020'
+ # 2026-10 迁移链头已推进到 0021（rank band 导入与 xueji 列），升级终点随链更新。
+ assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0021'
 command.downgrade(cfg,'0019')
 with engine.connect() as c:
  assert c.execute(text('PRAGMA foreign_key_check')).fetchall()==[]

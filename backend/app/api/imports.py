@@ -71,6 +71,7 @@ from app.db.workspace_models import (
     TeachingClass,
     TeachingClassMember,
     WorkspaceClassAverage,
+    WorkspaceRankBand,
     WsStudentAlias,
     WsStudentIdentity,
 )
@@ -231,12 +232,58 @@ def _historical_alias_rows(db: Session, domain: str, alias_value: str, academic_
     )
 
 
+def _same_class_legacy_alias_row(
+    db: Session,
+    domain: str,
+    alias_value: str,
+    name: Optional[str],
+    class_ids: Optional[List[int]],
+):
+    """未标学年（NULL）且无有效期证据的 legacy 学号行，凭「同学号 + 同名 +
+    本班在册」三重证据直接接续。
+
+    2026-10 重名事故修复：migration:h 迁移行普遍没有 valid_from，G06 的
+    有效期覆盖判据永远无法命中；同班同名同学号的旧身份被绕开后导入会
+    新建第二身份，名册出现重名行 + 旧身份全「—」。三重证据齐备时直接
+    认定同一人（学号/姓名/班级单独任一都不够）；证据不足仍回候选（F06）。
+    """
+    if domain != "homeroom" or not class_ids or not name:
+        return None
+    rows = (
+        db.query(WsStudentAlias)
+        .filter(
+            WsStudentAlias.data_domain == domain,
+            WsStudentAlias.alias_value == alias_value,
+            WsStudentAlias.academic_year_id.is_(None),
+        )
+        .order_by(WsStudentAlias.id.asc())
+        .all()
+    )
+    for row in rows:
+        identity = db.get(WsStudentIdentity, row.identity_id)
+        if identity is None or (identity.display_name or "") != name:
+            continue
+        enrolled = (
+            db.query(Enrollment)
+            .filter(
+                Enrollment.identity_id == row.identity_id,
+                Enrollment.admin_class_id.in_(class_ids),
+                Enrollment.status == "active",
+            )
+            .first()
+        )
+        if enrolled is not None:
+            return row
+    return None
+
+
 def _resolve_file_students(
     db: Session,
     domain: str,
     academic_year_id: int,
     students: list,
     file_date: Optional[date],
+    class_ids: Optional[List[int]] = None,
 ):
     """一个文件的学生身份只读解析（契约 §1.1 v2.1/v2.2）。
 
@@ -265,6 +312,10 @@ def _resolve_file_students(
     for stu in students:
         alias = stu["alias"]
         row = _current_alias_row(db, domain, alias, academic_year_id, file_date)
+        if row is None:
+            row = _same_class_legacy_alias_row(
+                db, domain, alias, stu.get("name"), class_ids
+            )
         if row is not None:
             identity_by_alias[alias] = row.identity_id
             matched_rows[alias] = row
@@ -298,7 +349,9 @@ def _resolve_file_students(
                     }
                 )
         else:
-            new_students.append({"name": stu.get("name"), "alias": alias})
+            new_students.append(
+                {"name": stu.get("name"), "alias": alias, "xueji": stu.get("xueji")}
+            )
 
     names = q.names_for(db, sorted(set(ids_needed)))
     year_ids = {c["academic_year_id"] for c in candidates}
@@ -499,7 +552,8 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
         candidates: list = []
         if parsed.parsed_ok and parsed.kind == "student_scores":
             identity_by_alias, new_students, conflicts, candidates = _resolve_file_students(
-                db, ctx.data_domain, ctx.academic_year_id, parsed.students, parsed.exam_date
+                db, ctx.data_domain, ctx.academic_year_id, parsed.students, parsed.exam_date,
+                class_ids=list(ctx.class_ids) if ctx.data_domain == "homeroom" else None,
             )
             # 库内撞号：preview 仅警告（与文件内撞号同一防呆语义，确认时拒绝）
             warnings.extend(conflicts)
@@ -528,6 +582,8 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
                 row_count=(
                     len(parsed.rows)
                     if parsed.kind == "student_scores"
+                    else len(parsed.rank_bands.get("classes") or [])
+                    if parsed.kind == "rank_bands"
                     else len(parsed.class_averages)
                 ),
                 known_students=known,
@@ -548,13 +604,14 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
                 "grade": parsed.grade,
                 "rows": parsed.rows,
                 "class_averages": parsed.class_averages,
+                "rank_bands": parsed.rank_bands,
                 "students": parsed.students,
             }
         )
 
     # 考试日期一致性（契约 §1.1 v2.1）：批内或与库内同 exam_name 不同
     # exam_date → preview 计 warnings（confirm 时整批 409，不静默合并）。
-    # 只查将入库的成绩明细与班级均分文件，与 confirm 的校验口径一致
+    # 只查将入库的成绩明细、班级均分与名次段文件，与 confirm 的校验口径一致
     date_conflicts = _exam_date_conflicts(
         db,
         ctx.data_domain,
@@ -562,7 +619,7 @@ def _preview_multipart(form, db: Session) -> ImportsPreviewResponse:
         [
             (f.get("exam_name"), f.get("exam_date"))
             for f in snapshot_files
-            if f.get("kind") in {"student_scores", "class_averages"}
+            if f.get("kind") in {"student_scores", "class_averages", "rank_bands"}
         ],
     )
     if date_conflicts:
@@ -770,7 +827,7 @@ def _apply_import_confirm(req, db, batch, snapshot):
             }
             for f in snapshot.get("files") or []
             if not f.get("parsed_ok")
-            or f.get("kind") not in ("student_scores", "class_averages")
+            or f.get("kind") not in ("student_scores", "class_averages", "rank_bands")
         ]
         if failed_files:
             raise LinkVersionConflict(
@@ -784,10 +841,14 @@ def _apply_import_confirm(req, db, batch, snapshot):
         f for f in snapshot.get("files") or []
         if f.get("parsed_ok") and f.get("kind") == "class_averages"
     ]
+    rank_band_files = [
+        f for f in snapshot.get("files") or []
+        if f.get("parsed_ok") and f.get("kind") == "rank_bands"
+    ]
 
     # Resolve read-only first; event creation is deferred until all preflight checks pass.
     event_choices = {}
-    for f in [*files, *average_files]:
+    for f in [*files, *average_files, *rank_band_files]:
         preview = f.get("exam_resolution")
         choice = req.exam_choices.get(f["filename"])
         if f.get("batch_date_choice") and choice is None:
@@ -797,8 +858,8 @@ def _apply_import_confirm(req, db, batch, snapshot):
         f["resolved_event_id"] = eid
         event_choices[f["filename"]] = eid
     # Old tokens retain their original date-conflict protection.
-    if any("exam_resolution" not in f for f in [*files, *average_files]) and _exam_date_conflicts(
-            db, ctx.data_domain, ctx.academic_year_id, [(f.get("exam_name"), f.get("exam_date")) for f in [*files, *average_files]]):
+    if any("exam_resolution" not in f for f in [*files, *average_files, *rank_band_files]) and _exam_date_conflicts(
+            db, ctx.data_domain, ctx.academic_year_id, [(f.get("exam_name"), f.get("exam_date")) for f in [*files, *average_files, *rank_band_files]]):
         raise LinkVersionConflict("同 exam_name 存在不同 exam_date，请重新预览并明确选择考试")
 
     # ── 阶段 A：只读预检 + 写入计划（任何冲突在写库前拒绝，零写入）──
@@ -840,7 +901,8 @@ def _apply_import_confirm(req, db, batch, snapshot):
             ):
                 continue
             file_map, file_new, conflicts, file_cands = _resolve_file_students(
-                db, ctx.data_domain, ctx.academic_year_id, [stu], file_date
+                db, ctx.data_domain, ctx.academic_year_id, [stu], file_date,
+                class_ids=list(ctx.class_ids) if ctx.data_domain == "homeroom" else None,
             )
             if conflicts:
                 # 库内撞号：整文件 409（错误 detail 列出冲突对）。
@@ -1058,6 +1120,88 @@ def _apply_import_confirm(req, db, batch, snapshot):
                 }
             )
 
+    # 名次段表预检：自然键 (domain, year, event_or_name, grade, total_type,
+    # class_num)，与均分表同一套 幂等skip/revise/冲突 语义。
+    rank_band_inserts: list = []
+    rank_band_revises: list = []
+    rank_band_skips = 0
+    rank_band_plans: dict = {}
+    for f in rank_band_files:
+        rank_band = f.get("rank_bands") or {}
+        exam_name = f.get("exam_name")
+        exam_date = date.fromisoformat(f["exam_date"]) if f.get("exam_date") else None
+        exams_seen.setdefault(exam_name, exam_date)
+        total_type = rank_band.get("total_type")
+        for cls in rank_band.get("classes") or []:
+            key = (exam_name, f.get("resolved_event_id"), total_type, int(cls["class_num"]))
+            plan = {
+                "filename": f["filename"],
+                "exam_name": exam_name,
+                "exam_date": exam_date,
+                "grade": int(f["grade"]),
+                "total_type": total_type,
+                "class_num": int(cls["class_num"]),
+                "teacher_name": cls.get("teacher_name"),
+                "bands": cls.get("bands") or [],
+            }
+            previous = rank_band_plans.get(key)
+            if previous is not None and previous["bands"] != plan["bands"]:
+                value_conflicts.append(
+                    {
+                        "kind": "rank_bands",
+                        "person": f"{cls['class_num']}班",
+                        "subject": f"名次段表（{total_type}）",
+                        "exam_name": exam_name,
+                        "existing_score": None,
+                        "new_score": None,
+                    }
+                )
+                continue
+            rank_band_plans[key] = plan
+
+    def _same_rank_band_values(existing: WorkspaceRankBand, plan: dict) -> bool:
+        return (
+            existing.total_type == plan["total_type"]
+            and existing.teacher_name == plan["teacher_name"]
+            and (existing.bands or []) == (plan["bands"] or [])
+        )
+
+    for plan in rank_band_plans.values():
+        base_query = db.query(WorkspaceRankBand).filter(
+            WorkspaceRankBand.data_domain == ctx.data_domain,
+            WorkspaceRankBand.academic_year_id == ctx.academic_year_id,
+            WorkspaceRankBand.grade == plan["grade"],
+            WorkspaceRankBand.total_type == plan["total_type"],
+            WorkspaceRankBand.class_num == plan["class_num"],
+        )
+        eid = event_choices[plan["filename"]]
+        if eid:
+            matches = base_query.filter(
+                WorkspaceRankBand.exam_event_id.in_(events.event_ids(db, eid))
+            ).order_by(WorkspaceRankBand.id).all()
+        else:
+            matches = base_query.filter(
+                WorkspaceRankBand.exam_event_id.is_(None),
+                WorkspaceRankBand.exam_name == plan["exam_name"],
+            ).order_by(WorkspaceRankBand.id).all()
+        if not matches:
+            rank_band_inserts.append(plan)
+        elif all(_same_rank_band_values(m, plan) for m in matches):
+            rank_band_skips += 1
+        elif req.revise:
+            rank_band_revises.extend((m, plan) for m in matches)
+        else:
+            value_conflicts.append(
+                {
+                    "kind": "rank_bands",
+                    "person": f"{plan['class_num']}班",
+                    "subject": f"名次段表（{plan['total_type']}）",
+                    "exam_name": plan["exam_name"],
+                    "existing_score": None,
+                    "new_score": None,
+                }
+            )
+
     for plan in batch_rows.values():
         row = plan["row"]
         exam_name = plan["exam_name"]
@@ -1123,7 +1267,9 @@ def _apply_import_confirm(req, db, batch, snapshot):
 
         for new in new_students:
             ident = WsStudentIdentity(
-                data_domain=ctx.data_domain, display_name=new.get("name") or None
+                data_domain=ctx.data_domain,
+                display_name=new.get("name") or None,
+                xueji=new.get("xueji"),
             )
             db.add(ident)
             db.flush()
@@ -1160,13 +1306,18 @@ def _apply_import_confirm(req, db, batch, snapshot):
             identity_by_alias[new["alias"]] = ident.id
             students_created += 1
 
-        # 历史学年命中：为本学年补登 alias（幂等：本学年已有则跳过）
+        # 历史学年命中：为本学年补登 alias（幂等：本学年已有则跳过）；
+        # 顺带回填「学籍」展示代码（仅在身份尚无值时，不覆盖既有登记）
         for f in files:
             for stu in f.get("students") or []:
                 alias = stu["alias"]
                 ident_id = identity_by_alias.get(alias)
                 if ident_id is None:
                     continue
+                if stu.get("xueji") is not None:
+                    ident = db.get(WsStudentIdentity, ident_id)
+                    if ident is not None and ident.xueji is None:
+                        ident.xueji = stu["xueji"]
                 exists = (
                     db.query(WsStudentAlias)
                     .filter(
@@ -1219,7 +1370,7 @@ def _apply_import_confirm(req, db, batch, snapshot):
                     members_synced += 1
 
         created_events = {}
-        for f in [*files, *average_files]:
+        for f in [*files, *average_files, *rank_band_files]:
             eid = event_choices[f["filename"]]
             key = (f["exam_name"], f.get("grade") or ctx.grade, f.get("exam_date"))
             if eid is None:
@@ -1304,6 +1455,31 @@ def _apply_import_confirm(req, db, batch, snapshot):
             existing.source = f"import:{plan['filename']}"
             existing.data_revision = (existing.data_revision or 1) + 1
 
+        for plan in rank_band_inserts:
+            db.add(
+                WorkspaceRankBand(
+                    data_domain=ctx.data_domain,
+                    academic_year_id=ay.id,
+                    exam_name=plan["exam_name"],
+                    exam_event_id=event_choices[plan["filename"]],
+                    exam_date=plan["exam_date"],
+                    grade=plan["grade"],
+                    total_type=plan["total_type"],
+                    class_num=plan["class_num"],
+                    teacher_name=plan["teacher_name"],
+                    bands=plan["bands"],
+                    source=f"import:{plan['filename']}",
+                )
+            )
+        for existing, plan in rank_band_revises:
+            if existing.exam_event_id is None:
+                existing.exam_event_id = event_choices[plan["filename"]]
+            existing.exam_date = plan["exam_date"]
+            existing.teacher_name = plan["teacher_name"]
+            existing.bands = plan["bands"]
+            existing.source = f"import:{plan['filename']}"
+            existing.data_revision = (existing.data_revision or 1) + 1
+
         # teaching 成员同步：文件里 known 学生（含确认接续的既有人）当前
         # 不在教学班 → 补成员行（F07：生效日同 max 规则，绝不用今天；
         # 幂等：唯一键 (teaching_class_id, identity_id, valid_from) 已存在
@@ -1350,9 +1526,9 @@ def _apply_import_confirm(req, db, batch, snapshot):
         raise
 
     return ImportsConfirmResponse(
-        imported=len(inserts) + len(average_inserts),
-        skipped=skips + average_skips,
-        revised=len(revises) + len(average_revises),
+        imported=len(inserts) + len(average_inserts) + len(rank_band_inserts),
+        skipped=skips + average_skips + rank_band_skips,
+        revised=len(revises) + len(average_revises) + len(rank_band_revises),
         exams=[
             ImportConfirmExam(exam_name=name, exam_date=d.isoformat() if d else None)
             for name, d in exams_seen.items()

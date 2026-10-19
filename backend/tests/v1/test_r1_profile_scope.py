@@ -50,8 +50,8 @@ def test_homeroom_profile_totals_only_target_person(client, v1_seed):
 
 
 def test_homeroom_profile_never_leaks_classmate_scores(client, v1_seed):
-    """甲画像任何 score 字段绝不含他人值；91 只允许出现在物理条目的
-    shared_conflict 提示里，不得成为一条独立成绩。"""
+    """甲画像任何 score 字段绝不含他人值；2026-10 两域成绩不互通后
+    teaching 域 91 连冲突提示也不再出现，不得成为一条独立成绩。"""
     body = _profile(client, v1_seed.jia_h_id)
     scores = {e["score"] for e in _all_exams(body)}
     assert scores == {88.0, 92.0, 95.0, 90.0, 275.0}
@@ -65,7 +65,8 @@ def test_homeroom_profile_never_leaks_classmate_scores(client, v1_seed):
     physics = next(g for g in body["subjects"] if g["subject"] == "物理")["exams"]
     assert len(physics) == 1
     assert physics[0]["score"] == 90.0
-    assert physics[0].get("shared_conflict") == {"teaching_score": 91.0}
+    # 2026-10 两域成绩不互通：画像不再附跨域冲突提示
+    assert physics[0].get("shared_conflict") is None
 
 
 def test_homeroom_profile_per_person_isolation(client, v1_seed):
@@ -74,6 +75,7 @@ def test_homeroom_profile_per_person_isolation(client, v1_seed):
     by_subject = {g["subject"]: g["exams"] for g in body["subjects"]}
     assert by_subject["语文"][0]["score"] == 76.0
     assert by_subject["物理"][0]["score"] == 84.0
-    assert by_subject["物理"][0].get("shared_conflict") == {"teaching_score": 85.0}
+    # 2026-10 两域成绩不互通：乙画像同样无跨域冲突提示
+    assert by_subject["物理"][0].get("shared_conflict") is None
     totals = {g["total_type"]: g["exams"] for g in (body.get("totals") or [])}
     assert totals["主三门"][0]["score"] == 236.0

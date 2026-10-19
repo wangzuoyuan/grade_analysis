@@ -54,6 +54,8 @@ from app.api.analysis_schemas import (
     HomeroomRankFrequencyExam,
     HomeroomRankFrequencyResponse,
     HomeroomRankFrequencyStudent,
+    HomeroomRankBandClass,
+    HomeroomRankBandsResponse,
     HomeroomRankDistributionResponse,
     HomeroomRankDistributionSeries,
     HomeroomRankMetric,
@@ -86,8 +88,10 @@ from app.db.workspace_models import (
     HomeworkSubmission,
     ScoreFact,
     WsStudentNote,
+    WsStudentIdentity,
     TeachingClass,
     WorkspaceClassAverage,
+    WorkspaceRankBand,
 )
 from app.analysis import definitions as defs
 from app.analysis.config import (
@@ -179,19 +183,18 @@ def _exam_exists_in_domain(
 def _exam_exists_for_teaching(
     db: Session, academic_year_id: int, exam_name: str
 ) -> bool:
-    """teaching 端点的考试存在性：教学侧计量含经 §1.4.1 反向投影的
-    H 域行（两者都算分母/名次），故放宽为任一域存在该考试；两域皆无
-    该考试才是越界 404。"""
+    """teaching 端点的考试存在性（2026-10 两域成绩不互通后放宽保留）：
+    任一域存在该考试即不算越界 404（本班无行 → 200 空态），目录
+    （/shared/exams）仍只列本域事件。"""
     return _exam_exists_in_domain(
         db, "teaching", academic_year_id, exam_name
     ) or _exam_exists_in_domain(db, "homeroom", academic_year_id, exam_name)
 
 
 def _exam_exists_for_homeroom(db: Session, ctx, exam_name: str) -> bool:
-    """homeroom 端点的考试存在性（F09 统一可读事实口径）：本域存在即
-    可读；本域无该考试但有生效关联（ctx.link_id 只在 status='active'
-    且有效期内解析出）且对侧教学域存在 → 对侧行可投影进统计，同样算
-    可读。取消关联后回退严格本域口径（对侧考试即越界 404）。"""
+    """homeroom 端点的考试存在性：任一域存在该考试即不算越界 404
+    （本班无行 → 200 空态）。2026-10 两域成绩不互通后不再投影对侧
+    成绩，此处仅维持存在性语义（目录只列本域事件）。"""
     if _exam_exists_in_domain(db, "homeroom", ctx.academic_year_id, exam_name):
         return True
     if ctx.link_id is None:
@@ -452,18 +455,47 @@ def homeroom_class_averages(
     total_types = [key for key in preferred_totals if key in total_keys]
     total_types.extend(sorted(total_keys - set(total_types)))
 
-    ranks_by_total = {}
+    def _avg_of(record: WorkspaceClassAverage, total_type: str) -> Optional[float]:
+        """口径均分：新格式（指标包）取 均分 键，旧格式裸数值即均分。"""
+        entry = (record.total_averages or {}).get(total_type)
+        if entry is None:
+            return None
+        if isinstance(entry, dict):
+            return entry.get("均分")
+        return float(entry)
+
+    def _normalize_total_entry(value) -> Optional[dict]:
+        """下发口径指标包（均分/及格率/高分率/低分率/标准差）。
+
+        旧数据裸数值归一化为 {均分: v}；文件自带的校名次仅入库备查、
+        不下发（用户口径：展示应用计算的班型内排名）。"""
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            payload = {
+                key: value[key]
+                for key in ("均分", "及格率", "高分率", "低分率", "标准差")
+                if key in value
+            }
+            return payload or None
+        return {"均分": value}
+
+    # 排名按班级类型分组（平行班/实验班各自 1..n，同分同名次）；整列
+    # 无有效值（旧均分表整列 0 表示该口径不可用）→ 该组排名全 None，
+    # 保留原始 0 供核对，不把所有班编造成并列第 1。
+    ranks_by_total: Dict[str, Dict[int, Optional[int]]] = {}
+    type_groups: Dict[str, list] = {}
+    for record in records:
+        type_groups.setdefault(record.class_type or "未分类", []).append(record)
     for total_type in total_types:
-        pairs = [
-            (record.id, (record.total_averages or {}).get(total_type))
-            for record in records
-        ]
-        # 旧均分表会用整列 0 表示该口径本场不可用。保留原始 0 供核对，
-        # 但不把所有班都编造成并列第 1。
-        if not any(value is not None and value > 0 for _, value in pairs):
-            ranks_by_total[total_type] = {record_id: None for record_id, _ in pairs}
-        else:
-            ranks_by_total[total_type] = _rank_map(pairs)
+        ranks_by_total[total_type] = {}
+        for group_records in type_groups.values():
+            pairs = [(r.id, _avg_of(r, total_type)) for r in group_records]
+            if not any(value is not None and value > 0 for _, value in pairs):
+                for record_id, _ in pairs:
+                    ranks_by_total[total_type][record_id] = None
+            else:
+                ranks_by_total[total_type].update(_rank_map(pairs))
     class_type_order = {"平行班": 0, "平行": 0, "实验班": 1, "实验": 1}
     records.sort(
         key=lambda record: (
@@ -489,7 +521,10 @@ def homeroom_class_averages(
                 class_num=record.class_num,
                 teacher_name=record.teacher_name,
                 subjects={key: (record.subject_averages or {}).get(key) for key in subjects},
-                totals={key: (record.total_averages or {}).get(key) for key in total_types},
+                totals={
+                    key: _normalize_total_entry((record.total_averages or {}).get(key))
+                    for key in total_types
+                },
                 total_ranks={
                     key: ranks_by_total[key].get(record.id) for key in total_types
                 },
@@ -536,29 +571,63 @@ def homeroom_exam_students(
     )
     by_person: Dict[int, Dict[str, Optional[float]]] = {}
     totals_by_person: Dict[int, Dict[str, Optional[float]]] = {}
+    grade_scores_by_person: Dict[int, Dict[str, Optional[float]]] = {}
+    percentiles_by_person: Dict[int, Dict[str, Optional[float]]] = {}
+    ranks_by_person: Dict[int, Dict[str, Optional[int]]] = {}
     conflicts_by_person: Dict[int, dict] = {}
     for e in entries:
         if e.fact.total_type is None:
             by_person.setdefault(e.person_id, {})[e.fact.subject] = e.fact.score
+            if e.fact.grade_score is not None:
+                grade_scores_by_person.setdefault(e.person_id, {})[e.fact.subject] = e.fact.grade_score
+            if e.fact.grade_percentile is not None:
+                percentiles_by_person.setdefault(e.person_id, {})[e.fact.subject] = e.fact.grade_percentile
         else:
             totals_by_person.setdefault(e.person_id, {})[e.fact.total_type] = e.fact.score
+            if e.fact.grade_percentile is not None:
+                percentiles_by_person.setdefault(e.person_id, {})[e.fact.total_type] = e.fact.grade_percentile
+            rank = defs.resolve_year_rank(e.fact.xueji_rank, e.fact.grade_rank)
+            if rank is not None:
+                ranks_by_person.setdefault(e.person_id, {})[e.fact.total_type] = rank
         if e.conflict is not None:
             conflicts_by_person[e.person_id] = e.conflict
 
     alias_map = q.aliases_for(db, member_ids, "homeroom", ctx.academic_year_id)
     name_map = q.names_for(db, member_ids)
+    xueji_map = {
+        identity.id: identity.xueji
+        for identity in db.query(WsStudentIdentity)
+        .filter(WsStudentIdentity.id.in_(member_ids))
+        .all()
+    }
+    admin_class = db.get(AdministrativeClass, ctx.class_ids[0])
+    admin_class_num = admin_class.class_num if admin_class is not None else None
     students = []
     for person_id in member_ids:
         entry = HomeroomAnalysisStudent(
             person_id=person_id,
             name=name_map.get(person_id),
             alias=alias_map.get(person_id),
+            xueji=xueji_map.get(person_id),
+            class_num=admin_class_num,
             scores={
                 subject: by_person.get(person_id, {}).get(subject)
                 for subject in subject_keys
             },
+            grade_scores={
+                subject: grade_scores_by_person.get(person_id, {}).get(subject)
+                for subject in subject_keys
+            },
+            percentiles={
+                key: percentiles_by_person.get(person_id, {}).get(key)
+                for key in [*subject_keys, *total_keys]
+            },
             totals={
                 total_type: totals_by_person.get(person_id, {}).get(total_type)
+                for total_type in total_keys
+            },
+            ranks={
+                total_type: ranks_by_person.get(person_id, {}).get(total_type)
                 for total_type in total_keys
             },
         )
@@ -1004,9 +1073,9 @@ def homeroom_trends(
     db: Session = Depends(get_db),
 ) -> TrendsResponse:
     """跨学年分段趋势（E03）：person 必须在当前 homeroom 作用域；
-    读取该人 H 域事实 + 经 §1.4.1 投影门的 teaching 投影行（仅当前
-    学年、H 域无该场才补条目；值不同保留 H 值不投影），按学年分组输出。
-    响应结构按学年分组即阻断跨年连算，不输出任何跨学年同比字段。"""
+    读取该人 H 域事实（2026-10 用户裁决：两域成绩不互通，不再并入
+    teaching 投影行），按学年分组输出。响应结构按学年分组即阻断跨年
+    连算，不输出任何跨学年同比字段。"""
     teacher_id = current_teacher_id(db)
     ctx = _resolve_homeroom_ctx(db, teacher_id, academic_year_id, class_id, term_id)
     if person_id not in ctx.member_person_ids:
@@ -1023,17 +1092,6 @@ def homeroom_trends(
         )
         .all()
     )
-    projected: List[ScoreFact] = []
-    if ctx.link_id is not None:
-        link = db.get(HomeroomTeachingLink, ctx.link_id)
-        h_keys = {(f.subject, q.fact_key(db, f)) for f in facts if f.total_type is None}
-        for t_fact, _h_id in q.gated_teaching_facts_for_homeroom(
-            db, ctx, link, h_ids=[person_id]
-        ):
-            # H 域已有同场（值同或值异）→ 保留 H 条目，不重复/不替换
-            if (t_fact.subject, q.fact_key(db, t_fact)) in h_keys:
-                continue
-            projected.append(t_fact)
 
     def _point(f: ScoreFact) -> TrendExamPoint:
         if f.total_type is not None:
@@ -1062,9 +1120,6 @@ def homeroom_trends(
             group["subjects"].setdefault(f.subject, []).append(_point(f))
         else:
             group["totals"].setdefault(f.total_type, []).append(_point(f))
-    for f in projected:  # 投影行归属当前学年（gated 门按 ctx 学年取数）
-        group = years_raw.setdefault(ctx.academic_year_id, {"subjects": {}, "totals": {}})
-        group["subjects"].setdefault(f.subject, []).append(_point(f))
 
     ay_rows = (
         db.query(AcademicYear)
@@ -1085,6 +1140,94 @@ def homeroom_trends(
         person_id=person_id,
         name=q.names_for(db, [person_id]).get(person_id),
         years=years,
+    )
+
+
+# ────────────────────── homeroom：名次段分布（读导入名次段表） ──────────────────────
+
+
+@router.get(
+    "/homeroom/analysis/exams/{exam_name}/rank-bands",
+    response_model=HomeroomRankBandsResponse,
+)
+@domain_endpoint
+def homeroom_rank_bands(
+    exam_name: str,
+    total_type: Optional[str] = None,
+    academic_year_id: Optional[int] = None,
+    class_id: Optional[int] = None,
+    term_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+) -> HomeroomRankBandsResponse:
+    """段位分布：读取随考试导入的名次段表（3+3总分/主三门两口径）。
+
+    数据只来自 workspace_rank_band（homeroom 域/同学年/同年级），不从学生
+    名次现算、不跨工作台取数；无导入数据时 classes 为空列表（前端呈现
+    上传引导空态，绝不回退到全年级或编造分段）。"""
+    ctx = _resolve_homeroom_ctx(
+        db, current_teacher_id(db), academic_year_id, class_id, term_id
+    )
+    admin_class = db.get(AdministrativeClass, ctx.class_ids[0])
+    records = (
+        q.filter_exam(db.query(WorkspaceRankBand), db, WorkspaceRankBand, exam_name)
+        .filter(
+            WorkspaceRankBand.data_domain == "homeroom",
+            WorkspaceRankBand.academic_year_id == ctx.academic_year_id,
+            WorkspaceRankBand.grade == admin_class.grade,
+        )
+        .all()
+    )
+    unique_records = {}
+    for record in sorted(records, key=lambda r: r.id):
+        unique_records[(record.total_type, record.class_num)] = record
+
+    available_total_types: List[str] = []
+    for tt, _ in unique_records:
+        if tt not in available_total_types:
+            available_total_types.append(tt)
+    preferred = ["3+3", "主三门", "五门", "九门", "+3"]
+    available_total_types.sort(
+        key=lambda tt: (preferred.index(tt) if tt in preferred else 99, tt)
+    )
+    chosen = total_type if total_type in available_total_types else (
+        available_total_types[0] if available_total_types else None
+    )
+
+    classes = [
+        HomeroomRankBandClass(
+            class_num=record.class_num,
+            teacher_name=record.teacher_name,
+            total=sum(int(band.get("count") or 0) for band in record.bands or []),
+            bands=list(record.bands or []),
+        )
+        for (tt, _), record in sorted(
+            unique_records.items(), key=lambda kv: (kv[0][1], kv[1].id)
+        )
+        if tt == chosen
+    ]
+    grade_bands: List[dict] = []
+    if classes:
+        band_count = max(len(c.bands) for c in classes)
+        for idx in range(band_count):
+            label = None
+            count = 0
+            for c in classes:
+                if idx < len(c.bands):
+                    band = c.bands[idx]
+                    label = band.get("label")
+                    count += int(band.get("count") or 0)
+            if label is not None:
+                grade_bands.append({"label": label, "count": count})
+
+    return HomeroomRankBandsResponse(
+        metadata=_analysis_metadata(ctx, "exam"),
+        exam_name=q.exam_label(db, exam_name),
+        grade=admin_class.grade,
+        total_type=chosen,
+        available_total_types=available_total_types,
+        current_class_num=admin_class.class_num,
+        classes=classes,
+        grade_bands=grade_bands,
     )
 
 

@@ -66,7 +66,10 @@ class HomeroomClassAverageRow(BaseModel):
     class_num: int
     teacher_name: Optional[str] = None
     subjects: Dict[str, Optional[float]] = Field(default_factory=dict)
-    totals: Dict[str, Optional[float]] = Field(default_factory=dict)
+    # 每口径的指标包：均分/及格率/高分率/低分率/标准差（旧数据仅均分，其余
+    # 键缺省 null；校名次为文件自带值，仅入库备查不下发）
+    totals: Dict[str, Optional[dict]] = Field(default_factory=dict)
+    # 班型内排名：按 class_type 分组（平行班/实验班各自 1..n，同分同名次）
     total_ranks: Dict[str, Optional[int]] = Field(default_factory=dict)
 
 
@@ -83,13 +86,21 @@ class HomeroomClassAveragesResponse(BaseModel):
 
 class HomeroomAnalysisStudent(BaseModel):
     """单人单场成绩行：scores/totals 的键为该场本班出现的学科/总分并集，
-    无行科目记 null（缺考显示"—"口径，不编造、不省略）。"""
+    无行科目记 null（缺考显示"—"口径，不编造、不省略）。
+
+    grade_scores 为选科等级分；percentiles 为年级百分位（单科+总分）；
+    ranks 为各总分口径校名次（学籍名次优先口径）。"""
 
     person_id: int
     name: Optional[str] = None
     alias: Optional[str] = None
+    xueji: Optional[int] = None
+    class_num: Optional[int] = None
     scores: Dict[str, Optional[float]] = Field(default_factory=dict)
+    grade_scores: Dict[str, Optional[float]] = Field(default_factory=dict)
+    percentiles: Dict[str, Optional[float]] = Field(default_factory=dict)
     totals: Dict[str, Optional[float]] = Field(default_factory=dict)
+    ranks: Dict[str, Optional[int]] = Field(default_factory=dict)
     # linked 学生任教学科两域同场值不同时的待人工核对提示：
     # {"teaching_score": <对方值>}；绝不静默采用对方值（§1.4.1 R5）
     shared_conflicts: Optional[dict] = None
@@ -98,6 +109,31 @@ class HomeroomAnalysisStudent(BaseModel):
 class HomeroomExamStudentsResponse(BaseModel):
     metadata: AnalysisMetadata
     students: List[HomeroomAnalysisStudent] = Field(default_factory=list)
+
+
+class HomeroomRankBandClass(BaseModel):
+    """名次段表一个班的行：bands 与导入文件列序一致。"""
+
+    class_num: int
+    teacher_name: Optional[str] = None
+    total: int = 0
+    bands: List[dict] = Field(default_factory=list)
+
+
+class HomeroomRankBandsResponse(BaseModel):
+    """段位分布（读导入的名次段表，不依赖学生名次现算）。
+
+    classes 为各班行；grade_bands 为全年级各段合计；无导入数据时
+    classes 为空列表（前端给上传引导空态）。"""
+
+    metadata: AnalysisMetadata
+    exam_name: str
+    grade: Optional[int] = None
+    total_type: Optional[str] = None
+    available_total_types: List[str] = Field(default_factory=list)
+    current_class_num: Optional[int] = None
+    classes: List[HomeroomRankBandClass] = Field(default_factory=list)
+    grade_bands: List[dict] = Field(default_factory=list)
 
 
 class FocusBandConfig(BaseModel):

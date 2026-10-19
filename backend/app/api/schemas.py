@@ -920,6 +920,7 @@ class ImportNewItem(BaseModel):
 
     name: Optional[str] = None
     alias: str
+    xueji: Optional[int] = None
 
     model_config = ConfigDict(
         json_schema_extra={"examples": [{"name": "秦庚", "alias": "2025H6-09"}]}
@@ -944,7 +945,7 @@ class ImportsPreviewItem(BaseModel):
     """单个上传文件的解析条目（契约 §1.1）。"""
 
     filename: str
-    kind: str  # student_scores | class_averages | unknown
+    kind: str  # student_scores | class_averages | rank_bands | unknown
     parsed_ok: bool
     message: Optional[str] = None
     exam_name: Optional[str] = None

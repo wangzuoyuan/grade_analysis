@@ -446,7 +446,8 @@ command.upgrade(cfg,'head')
 with engine.connect() as c:
  assert c.execute(text('SELECT score,teaching_exam_id FROM score_fact')).one()==(0,None)
  assert c.execute(text('PRAGMA foreign_key_check')).fetchall()==[]
- assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0020'
+ # 2026-10 迁移链头已推进到 0021（rank band 导入与 xueji 列），升级终点随链更新。
+ assert c.execute(text('SELECT version_num FROM alembic_version')).scalar()=='0021'
 '''
     r=subprocess.run([sys.executable,'-c',source],cwd=root,env=env,capture_output=True,text=True)
     assert r.returncode==0,r.stdout+r.stderr

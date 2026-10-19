@@ -243,11 +243,14 @@ def test_shared_scores_authorization_and_private_notes_never_cross(client, atten
         content="合成私密档案",follow_up="合成私密待办",review_date=w.today,status="open"))
     w.db.commit()
     a=next(s for s in summary(client,w)["students"] if s["person_id"]==w.pids[0])
-    assert "learning" in a["categories"] and not a["followups"]
+    # 2026-10 两域成绩不互通：hp 的 H 域成绩行即使已 link + current_subject_score
+    # 授权也不再投影进 A 的教学时间线——"learning" 类风险只能来自本域事实
+    assert "learning" not in a["categories"] and not a["followups"]
     assert "合成私密" not in json.dumps(summary(client,w),ensure_ascii=False)
     link.share_categories="roster"
     w.db.commit()
     a=next(s for s in summary(client,w)["students"] if s["person_id"]==w.pids[0])
+    # 2026-10 两域成绩不互通：撤销成绩共享授权后教学侧同样读不到（隔离恒成立）
     assert "learning" not in a["categories"]
 
 

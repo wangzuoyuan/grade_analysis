@@ -461,8 +461,8 @@ export interface ImportIdentityCandidate {
   basis: string
 }
 
-/** 文件识别类型（契约 §1.1：学生分数表 / 班级均分表 / 未识别）。 */
-export type ImportPreviewKind = 'student_scores' | 'class_averages' | 'unknown'
+/** 文件识别类型（契约 §1.1：学生分数表 / 班级均分表 / 名次段表 / 未识别）。 */
+export type ImportPreviewKind = 'student_scores' | 'class_averages' | 'rank_bands' | 'unknown'
 
 /** preview 单文件解析结果；缺考计数等风险信息在 warnings（契约 §1.1）。 */
 export interface ImportPreviewItem {
@@ -493,7 +493,7 @@ export interface ImportsPreviewResult {
 
 /** confirm 409 时随错误体返回的冲突条目（契约 §1.2：person/subject/exam/库内值/新值）。 */
 export interface ImportConfirmConflict {
-  kind?: 'student_scores' | 'class_averages'
+  kind?: 'student_scores' | 'class_averages' | 'rank_bands'
   person: string
   subject: string | null
   exam_name: string
@@ -586,12 +586,23 @@ export interface HomeroomStatsResponse {
   small_sample?: boolean
 }
 
+/** 班级均分行（2026-10-19 表头按学校导出重制）：totals 为口径→指标包
+ * （均分/及格率/高分率/低分率/标准差；旧数据仅 均分 键，无数据口径为 null）；
+ * total_ranks 为班型内排名（平行班/实验班各自 1..n）。 */
+export interface HomeroomClassAverageTotalEntry {
+  均分?: number | null
+  及格率?: number | null
+  高分率?: number | null
+  低分率?: number | null
+  标准差?: number | null
+}
+
 export interface HomeroomClassAverageRow {
   class_type: string | null
   class_num: number
   teacher_name: string | null
   subjects: Record<string, number | null>
-  totals: Record<string, number | null>
+  totals: Record<string, HomeroomClassAverageTotalEntry | null>
   total_ranks: Record<string, number | null>
 }
 
@@ -606,6 +617,33 @@ export interface HomeroomClassAveragesResponse {
   rows: HomeroomClassAverageRow[]
 }
 
+/** 名次段分布（2026-10-19）：读导入的名次段表（3+3总分/主三门两口径）。
+ *  bands 为 {label, lo, hi, count}；无导入时 classes 为空数组。 */
+export interface HomeroomRankBandItem {
+  label: string
+  lo: number | null
+  hi: number | null
+  count: number
+}
+
+export interface HomeroomRankBandClass {
+  class_num: number
+  teacher_name: string | null
+  total: number
+  bands: HomeroomRankBandItem[]
+}
+
+export interface HomeroomRankBandsResponse {
+  metadata: ResponseMetadata
+  exam_name: string
+  grade: number | null
+  total_type: string | null
+  available_total_types: string[]
+  current_class_num: number | null
+  classes: HomeroomRankBandClass[]
+  grade_bands: HomeroomRankBandItem[]
+}
+
 /**
  * 学生行的任教学科冲突集合（契约 §2.1 students.shared_conflicts）：
  * 键为学科名，值为对方（教学域）记录分。后端也可能返回数组（条目带 subject），
@@ -615,13 +653,20 @@ export type SharedConflictsValue =
   | Record<string, LinkSharedConflict>
   | Array<LinkSharedConflict & { subject?: string }>
 
-/** 班主任学生行（契约 §2.1）；scores/totals 值缺考为 null，绝不转 0。 */
+/** 班主任学生行（契约 §2.1）；scores/totals 值缺考为 null，绝不转 0。
+ *  2026-10-19 扩展：grade_scores 选科等级分、percentiles 百分位（学科+总分）、
+ *  ranks 各总分口径校名次、xueji 学籍代码、class_num 行政班号。 */
 export interface HomeroomStudentRow {
   person_id: PersonId
   name: string | null
   alias: string | null
+  xueji?: number | null
+  class_num?: number | null
   scores: Record<string, number | null>
+  grade_scores?: Record<string, number | null>
+  percentiles?: Record<string, number | null>
   totals: Record<string, number | null>
+  ranks?: Record<string, number | null>
   shared_conflicts?: SharedConflictsValue | null
 }
 
@@ -1080,7 +1125,12 @@ export function readImportConflicts(err: unknown): ImportConfirmConflict[] | nul
     const o = item as Record<string, unknown>
     if (typeof o.person !== 'string' || typeof o.exam_name !== 'string') continue
     list.push({
-      kind: o.kind === 'class_averages' ? 'class_averages' : 'student_scores',
+      kind:
+        o.kind === 'class_averages'
+          ? 'class_averages'
+          : o.kind === 'rank_bands'
+            ? 'rank_bands'
+            : 'student_scores',
       person: o.person,
       subject: typeof o.subject === 'string' ? o.subject : null,
       exam_name: o.exam_name,
@@ -1173,6 +1223,21 @@ export function fetchHomeroomClassAverages(
     withQuery(
       `${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/class-averages`,
       { ...q },
+    ),
+  )
+}
+
+/** GET /api/v1/homeroom/analysis/exams/{exam_name}/rank-bands（2026-10-19）：
+ *  段位分布读导入的名次段表；total_type 缺省取第一个可用口径。 */
+export function fetchHomeroomRankBands(
+  examName: string,
+  q: AnalysisScopeQuery = {},
+  totalType?: string | null,
+): Promise<HomeroomRankBandsResponse> {
+  return request<HomeroomRankBandsResponse>(
+    withQuery(
+      `${API_V1_BASE}/homeroom/analysis/exams/${encodeURIComponent(examName)}/rank-bands`,
+      { ...q, ...(totalType ? { total_type: totalType } : {}) },
     ),
   )
 }

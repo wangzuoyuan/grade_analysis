@@ -13,9 +13,9 @@
 - 行为零业务写入（仅 import_batch 台账行）：解析文件（homeroom 复用 H 解析器全科；
   teaching 复用 T 解析器并**只保留任教学科列**——延续教学版"主动过滤其他学科"行为），
   解析结果 JSON + 范围/成员快照存 `import_batch.scope_json`，`content_digest` 存文件哈希串。
-- 响应：`{token, expires_at, mode, items: [{filename, kind: student_scores|class_averages|unknown,
+- 响应：`{token, expires_at, mode, items: [{filename, kind: student_scores|class_averages|rank_bands|unknown,
   parsed_ok, message?, exam_name, exam_date, subject?, class_label?, row_count,
-  known_students, new_students: [{name, alias}], identity_candidates?: [{alias, name, person_id,
+  known_students, new_students: [{name, alias, xueji?}], identity_candidates?: [{alias, name, person_id,
   academic_year_id, academic_year_name, basis}], warnings: [str]}]}`
 - warnings 至少覆盖：同学号不同姓名（**本学年在册命中**的 H 撞号防呆语义，确认时整文件拒绝；
   跨学年/未标学年历史同号异名出候选清单而非撞号警告）、同文件重复学号、
@@ -38,6 +38,11 @@
     默认生成候选；仅当该 alias 行自身有效期（valid_from/valid_to）明确覆盖目标文件日期
     （可证实该号事发时仍在册）方可直接命中为 known。任何路径确认接续后均按 F07 补学籍，
     不存在"只补 alias 不补学籍"的例外。
+    **v2.3（2026-10-19 重名事故扩展）**：未标学年且无有效期证据的 legacy 行（如 migration:h
+    迁移行），凭「同学号 + 同名（display_name）+ 本班在册 Enrollment」三重证据直接命中为
+    known（homeroom 模式）；任一证据缺失仍走候选。三重证据是 G06 判据的收窄扩展——
+    2026-10 生产事故中此类行永远无法通过有效期判据，导致同班同名同学号的旧身份被绕开、
+    导入新建第二身份（名册重名 + 旧身份全「—」）。
   - 无匹配 → 新建（new_students）。
   - 成员有效期（F07）：新建成员 `valid_from = max(学年 start_date, 文件日期)`，未知文件日期时
     用学年 start_date——**绝不用"今天"冒充历史**；经确认接续的既有人：补登本学年 alias，且
@@ -75,6 +80,17 @@
     MultipleResultsFound；保留班级类型、班主任、各科均分与各总分口径。它与学生明细可以在同一次
     多文件 preview/confirm 中提交，并与整批共享原子性、日期一致性、
     幂等和 `revise` 修订规则；不得从当前行政班的 `ScoreFact` 样本反推或冒充全年级班均表。
+    **v2.3（2026-10-19）总分指标包**：高二/高三均分表的总分子列（均分/及格率/高分率/低分率/标准差）
+    与顶级「3+3校名次/主三门校名次」列全部入库——`total_averages` JSON 由裸数值升级为
+    指标包 dict（及格率等 0<v≤1 自动 ×100 统一存百分数；旧数据读端归一化为 `{均分: v}`）；
+    校名次仅入库备查、读接口不下发（展示用应用计算的班型内排名）。
+  - `rank_bands` 文件（v2.3，2026-10-19）：学校《六门/三门总分名次段表》导入，判型为
+    row2=「班级/班主任/段列…」且段列含「-」。落独立表 `workspace_rank_band`（每行一个班，
+    `bands: [{label, lo, hi, count}]` 与文件列序一致），自然键
+    `(domain, academic_year_id, event_or_name, grade, total_type, class_num)`，幂等 skip/
+    revise/409 语义与均分表同一套；口径由标题+文件名判定（「六门」→3+3，「三门/主三」→主三门）；
+    非数字班号行忽略；无考试名，须由表单 `exam_name`/考试选择流程挂事件（纯名次段考试的
+    事件可见性由 exam_events.candidates 纳入 rank_band 行支撑，重导幂等不另建事件）。
   - 幂等/冲突（按自然键 `(domain, academic_year_id, exam_name, identity, subject_key, total_key)` 与库内比对）：
     同值 → skipped；无键 → 插入；**不同值 → revise=false 时整批 409 + `conflicts`
     列表（person/subject/exam_name/库内值/新值）零写入；revise=true 时覆写并 `data_revision+1`（E05 修订语义）**。
@@ -93,9 +109,11 @@
 - teaching 缺省 teaching_class_id = 同学年同学科全部教学班**并集**（集成者修订：与 /api/v1/scores
   教学模式"全部所教班"缺省一致；仅 §1.1 导入 preview/confirm 在多教学班时要求显式选择）。
 - **v2.1（F09）统一可读事实口径**：`/shared/exams`、`/api/v1/scores`、`{mode}/students` 列表/画像、
-  §2 全部分析端点必须基于**同一**可读事实查询（本域事实 + 经 p1-api §1.4.1 五条件门的对侧投影 +
-  冲突规则）。考试列表按此口径列考试：H-only 事实经门可读时，teaching 模式必须能列出该考试；
-  T-only 事实同理。各端点不得自建第二套投影/过滤逻辑。
+  §2 全部分析端点必须基于**同一**可读事实查询。各端点不得自建第二套投影/过滤逻辑。
+  **v2.3（2026-10-19 用户裁决）两域成绩不互通**：该统一口径的「对侧投影」分支整体降为不启用——
+  readable_facts 只读本域事实+去重，跨域冲突标记不再产生；`/shared/exams` 与各域考试目录只列
+  本域事件（按事件直查的考试存在性仍放宽为任一域存在 → 200 空态）。名册/作业共享与
+  HomeroomTeachingLink 不受影响。
 
 ### 1.4.1 考试维度成员口径（v2.1，F08；v2.2 修订 G07）
 
@@ -136,14 +154,20 @@
 
 - `GET exams/{exam_name}/stats` → `{metadata, subjects: [{subject, avg, max, min, valid_count,
   missing_count, score_basis}], totals: [{total_type, avg, max, min, valid_count}], cohort_size}`
-- `GET exams/{exam_name}/students` → `{metadata, students: [{person_id, name, alias, scores:
-  {subject: score|null}, totals: {total_type: score|null}, shared_conflicts?}]}`
-  （linked 学生的任教学科冲突按 §1.4.1 标注 shared_conflict，供前端展示"待人工核对"）
+- `GET exams/{exam_name}/students` → `{metadata, students: [{person_id, name, alias, xueji?, class_num?,
+  scores: {subject: score|null}, grade_scores?: {subject: grade_score|null}, percentiles?: {subject_or_total:
+  pct|null}, totals: {total_type: score|null}, ranks?: {total_type: school_rank|int}, shared_conflicts?}]}`
+  （v2.3，2026-10-19 明细表按学校导出重制：xueji 为身份学籍代码、class_num 为行政班号、
+  grade_scores 为选科等级分、percentiles 为年级百分位（0-1）、ranks 为各总分口径校名次——
+  resolve_year_rank 口径，缺考 null。2026-10 两域成绩不互通后 shared_conflicts 不再产生，字段保留兼容）
 - `GET exams/{exam_name}/class-averages` → `{metadata, grade, subjects, total_types,
-  current_class_num, rows: [{class_type, class_num, teacher_name, subject_averages, total_averages, total_ranks}]}`。
-  数据只读自已确认导入的官方班级均分表；总分排名按全体已导入班级同口径均分降序、同分同名次计算。
-  某总分口径全为 0 时视为来源未提供，排名返回空，不制造并列第一。
-  `current_class_num` 为当前班主任绑定行政班班号（前端班级对比页用于高亮本班；无绑定班时为 null）。
+  current_class_num, rows: [{class_type, class_num, teacher_name, subjects, totals, total_ranks}]}`。
+  数据只读自已确认导入的官方班级均分表。**v2.3（2026-10-19）**：`totals` 为口径→指标包
+  `{均分, 及格率, 高分率, 低分率, 标准差}`（旧数据归一化为 `{均分}`，无数据口径 null；文件自带
+  校名次入库备查不下发）；`total_ranks` 为**班型内排名**——按 class_type 分组（平行班/实验班/
+  未分类各自）同口径均分降序、同分同名次计算。某总分口径某组全为 0 时视为来源未提供，
+  排名返回空，不制造并列第一。`current_class_num` 为当前班主任绑定行政班班号（前端班级
+  对比页用于高亮本班；无绑定班时为 null）。
 - `GET trends?person_id=` → `{person_id, name, years: [{academic_year_id, academic_year_name,
   subjects: {subject: [{exam_name, exam_date, score, grade_score?}]}, totals: {...}}]}`
   （E03：跨学年分段展示，不跨年直接比较九科总分；响应按学年分组即结构上防止跨年连算）
@@ -152,7 +176,14 @@
   绝不可以原始分镜像比较）。当前 ws 域不存年级名次事实，因此 bands 一律返回 409
   invalid_scope_param（detail=「段位阈值口径为年级名次，当前范围无名次数据，不可计算」），
   直至引入合法名次来源或显式的分数段配置（独立于名次阈值、按学科/分制定义）。
-  前端显示"段位不可计算（无名次口径）"，不得呈现错误分段。
+  （v2.3 注：本端点保留给 AI 工具/重点关注阈值口径；成绩分析页 UI 改用下方 rank-bands。）
+- `GET exams/{exam_name}/rank-bands?total_type=`（v2.3，2026-10-19 名次段分布）→ `{metadata,
+  exam_name, grade, total_type, available_total_types, current_class_num, classes:
+  [{class_num, teacher_name, total, bands: [{label, lo, hi, count}]}], grade_bands}`。
+  数据只读 workspace_rank_band（homeroom 域/同学年/同年级），不从学生名次现算、不跨工作台取数；
+  分段与人数完全来自导入的名次段表；`total_type` 缺省取第一个可用口径（preferred 顺序
+  3+3→主三门）；无导入数据时 classes 为空列表（200，前端呈现上传引导空态，绝不 404、
+  绝不回退全年级或编造分段）；`grade_bands` 为全年级各段合计。
 
 ### 2.2 teaching（/api/v1/teaching/analysis/*）
 
@@ -184,8 +215,10 @@
 
 ## 3. 前端页面（P3-FE 波次）
 
-- `/homeroom/scores`：考试选择（/shared/exams）→ 考试概览、完整年级班均表（班型分组、各科、总分/排名、
-  分组平均/最高/最低及导出）、学生明细、名次段位、排名频次、区间筛选、重点关注。
+- `/homeroom/scores`：考试选择（/shared/exams）→ 考试概览、完整年级班均表（表头按学校导出：班级类型
+  同值合并单元格、语数英单列、六选科原始/等级子列、总分指标包子列+班型内排名，分组平均/最高/最低及导出）、
+  学生成绩明细表（学号/班级/学籍/姓名 + 选科原始/等级 + 总分/百分位/校名次/班名次，班名次本班口径）、
+  名次段分布（读导入名次段表：堆叠条 + 学校表格样式）、排名频次、区间筛选、重点关注。
 - `/teaching/scores`：考试选择 → 单科 stats + 分数段分析卡（本段/累计/累计比例 + 人数/最值/均分/σ，
   段宽 5/10/20，多班范围含合并列；全零尾段折叠）+ 学生行（rank/grade_score/source_domain，分班展示）
   + 班级对比卡。

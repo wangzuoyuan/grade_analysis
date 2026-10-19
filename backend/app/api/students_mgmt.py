@@ -2833,27 +2833,9 @@ def student_report(
     subject_facts = [f for f in facts if f.total_type is None]
     total_facts = [f for f in facts if f.total_type is not None]
 
-    # 关联学科投影（§1.4.1，R5，与画像同规则）：H 无该场 → 加 teaching 条目；
-    # 值不同 → 保留 H 条目并附 shared_conflict；值相同 → 不重复添加
+    # 2026-10 用户裁决：两域成绩不互通，画像/打印不再并入 teaching 投影行。
     conflicts: Dict = {}
     teaching_extra: List = []
-    if ctx.link_id is not None:
-        link = db.get(HomeroomTeachingLink, ctx.link_id)
-        for t_fact, _h_id in q.gated_teaching_facts_for_homeroom(
-            db, ctx, link, h_ids=[person_id]
-        ):
-            h_match = next(
-                (
-                    f
-                    for f in subject_facts
-                    if f.subject == t_fact.subject and q.fact_key(db, f) == q.fact_key(db, t_fact)
-                ),
-                None,
-            )
-            if h_match is None:
-                teaching_extra.append(t_fact)
-            elif h_match.score != t_fact.score:
-                conflicts[(t_fact.subject, q.fact_key(db, t_fact))] = t_fact.score
 
     grouped: dict = {}
     for fact in sorted(

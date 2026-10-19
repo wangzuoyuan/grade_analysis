@@ -10,8 +10,9 @@
   允许撤销；源域 DELETE 保持全批次依赖检查。
 - G03 跨域可写集 = 事件时点授权成员 ∩ 批次 expected_members_json 快照；
   快照外的人 PATCH → 422 零写入，提交率不被暗中扩人。
-- G08 相关性成绩侧走 readable_facts 统一投影：T 本域无物理成绩时，
-  合法 H 投影样本仍进入 pairs（非 n=0）。
+- G08（2026-10 口径变更：两域成绩不互通）相关性成绩侧走 readable_facts
+  统一隔离口径：T 本域物理成绩清空后，H 域事实不再作为投影样本进入
+  pairs——pairs=[]、n=0。
 - expected_count：看板 groups 返回组内批次应交快照真实合计（不再恒 0）。
 
 注意模块内共享同一物理库、用例按定义顺序推进（link 授权状态由各用例
@@ -400,12 +401,12 @@ def test_g03_cross_patch_outside_snapshot_422_zero_writes(
 # ────────────────────── G08 相关性统一投影 ──────────────────────
 
 
-def test_g08_correlation_uses_unified_projection_for_teaching(
+def test_g08_correlation_teaching_requires_own_domain_scores(
     client, v1_seed, db_session
 ):
-    """清空 T 本域「2025期中」物理成绩后：teaching 相关性仍经
-    readable_facts 拿到合法 H 投影样本（pairs 非空、n=2），而非直连
-    本域 facts 得到 pairs=[]、n=0。"""
+    """（2026-10 口径变更：两域成绩不互通）清空 T 本域「2025期中」物理
+    成绩后：teaching 相关性不再经 readable_facts 拿到 H 投影样本——
+    pairs=[]、n=0、r 不可计算；教学域成绩样本只能来自本域事实。"""
     p = _h_preview(
         client, v1_seed, assigned_date="2025-09-15", homework_type="G08练习",
         input={"kind": "detailed",
@@ -436,14 +437,9 @@ def test_g08_correlation_uses_unified_projection_for_teaching(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    pair_ids = {pr["person_id"]: pr for pr in body["pairs"]}
-    # 甲乙的成绩全部来自 H 域投影（T 本域已清空），X 来自共享作业批次
-    assert set(pair_ids) == {v1_seed.jia_t_id, v1_seed.yi_t_id}
-    assert pair_ids[v1_seed.jia_t_id]["y"] == 1  # 90 分班内第一（投影值）
-    assert pair_ids[v1_seed.jia_t_id]["x"] == 1.0
-    assert pair_ids[v1_seed.yi_t_id]["y"] == 2
-    assert pair_ids[v1_seed.yi_t_id]["x"] == 0.0
-    assert body["n"] == 2
+    # 2026-10 两域成绩不互通：H 域 90/84 不再投影进教学相关性样本
+    assert body["pairs"] == []
+    assert body["n"] == 0
     assert body["r"] is None
     assert any("n=" in c for c in body["caveats"])
 

@@ -97,9 +97,10 @@ def test_r6_revive_empty_link_and_history_grant(client, v1_seed):
     assert missing.json()["error"] == "resource_out_of_scope"
 
 
-def test_r6_create_pairs_then_conflict_projection(client, v1_seed):
+def test_r6_create_pairs_roster_link_without_score_projection(client, v1_seed):
     """显式 POST 配对 甲(h)↔甲(t)、乙(h)↔乙(t)：created=2；GET 返回两条；
-    H 名册读到 v2 冲突语义 shared_conflict（绝不静默取 teaching 值）。"""
+    2026-10 两域成绩不互通——H 名册不再读到教学域冲突/共享分数字段，
+    但 linked_teaching_class_id 关联标记保留。"""
     r = client.post(
         f"{API}/shared/links/{v1_seed.link_id}/students",
         json={
@@ -136,10 +137,13 @@ def test_r6_create_pairs_then_conflict_projection(client, v1_seed):
     assert jia["teaching_name"] == "秦甲·T"
 
     by_pid = _homeroom_students(client, v1_seed)
-    assert by_pid[v1_seed.jia_h_id]["shared_conflict"] == {"teaching_score": 91.0}
-    assert by_pid[v1_seed.jia_h_id]["shared_subject_score"] is None
-    assert by_pid[v1_seed.yi_h_id]["shared_conflict"] == {"teaching_score": 85.0}
-    assert by_pid[v1_seed.bing_h_id]["shared_conflict"] is None
+    # 2026-10 两域成绩不互通：配对建立后 H 名册也只有本域口径——
+    # 无 shared_conflict、无 shared_subject_score；关联标记仍在。
+    assert by_pid[v1_seed.jia_h_id].get("shared_conflict") is None
+    assert by_pid[v1_seed.jia_h_id].get("shared_subject_score") is None
+    assert by_pid[v1_seed.jia_h_id].get("linked_teaching_class_id") == v1_seed.t6_id
+    assert by_pid[v1_seed.yi_h_id].get("shared_conflict") is None
+    assert by_pid[v1_seed.bing_h_id].get("shared_conflict") is None
 
 
 def test_r6_repeat_post_is_idempotent_skip(client, v1_seed):
@@ -263,8 +267,10 @@ def test_r6_delete_pair_stops_sharing_immediately(client, v1_seed):
     assert jia.get("shared_conflict") is None
     assert jia.get("shared_subject_score") is None
     assert jia.get("linked_teaching_class_id") is None
-    # 乙的配对不受影响
-    assert by_pid[v1_seed.yi_h_id]["shared_conflict"] == {"teaching_score": 85.0}
+    # 乙的配对不受影响（关联标记保留；成绩字段两域不互通下恒空）
+    # 2026-10 两域成绩不互通：乙仍无 shared_conflict（不再取 teaching 85）
+    assert by_pid[v1_seed.yi_h_id].get("shared_conflict") is None
+    assert by_pid[v1_seed.yi_h_id].get("linked_teaching_class_id") == v1_seed.t6_id
 
     # 重复 DELETE 同一行 → 404；不存在的 link → 404
     again = client.delete(
@@ -308,7 +314,9 @@ def test_r6_share_scope_categories_and_history(client, v1_seed):
     by_pid = _homeroom_students(client, v1_seed)
     assert by_pid[v1_seed.yi_h_id].get("shared_conflict") is None
 
-    # 重新显式授权考试当日 → 共享恢复（"正常"）
+    # 重新显式授权考试当日 → 授权配置生效（version 递增），但
+    # 2026-10 两域成绩不互通：即使历史授权放开，名册也不再出现
+    # 教学域冲突/共享分数字段（成绩读取与授权状态解耦）
     grant = client.post(
         f"{API}/shared/links/{link_id}/share-scope",
         json={"share_history_from": EXAM_E1_DATE},
@@ -316,7 +324,8 @@ def test_r6_share_scope_categories_and_history(client, v1_seed):
     assert grant.status_code == 200
     assert grant.json()["version"] > restore.json()["version"]  # 每次变更递增
     by_pid = _homeroom_students(client, v1_seed)
-    assert by_pid[v1_seed.yi_h_id]["shared_conflict"] == {"teaching_score": 85.0}
+    assert by_pid[v1_seed.yi_h_id].get("shared_conflict") is None
+    assert by_pid[v1_seed.yi_h_id].get("shared_subject_score") is None
 
     # 非法类别 / 空列表 / 非法日期 → 422 invalid_scope_param
     bad_category = client.post(

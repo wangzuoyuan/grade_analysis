@@ -366,9 +366,11 @@ def test_teaching_domain_scope_isolation(client, p2c3_seed):
     assert sp["imbalance"]["missing_reason"] == "teaching_no_total"
 
     ls = body["learning_state"]
-    assert ls["main_type"] == "作业风险型"  # 连缺 2 天达到作业风险阈值
-    # 修复 12.2：总分依赖类型整体不可计算（作业风险仍如实判出）
-    assert ls["classification_status"] == "not_computable"
+    # 2026-10 两域成绩不互通：教学域只剩本域 1 场有效考试 → B2 走
+    # insufficient_data 门（主类型 null），作业风险降为次标签如实呈现
+    assert ls["main_type"] is None
+    assert ls["secondary_tags"] == ["作业风险型"]  # 连缺 2 天仍如实判出
+    assert ls["classification_status"] == "insufficient_data"
 
     obs = body["teacher_observations"]
     assert obs["visible_domain"] == "teaching"
@@ -378,8 +380,10 @@ def test_teaching_domain_scope_isolation(client, p2c3_seed):
     assert all("近期状态波动" not in item["content"] for item in obs["items"])
 
     texts = [item["text"] for item in body["suggestions"]["items"]]
-    assert len(texts) == 1
+    # 2026-10 两域成绩不互通：作业风险 + 数据不足提示共 2 条
+    assert len(texts) == 2
     assert "连缺 2 天" in texts[0]
+    assert "数据不足" in texts[1]
 
 
 def test_out_of_scope_person_404(client, p2c3_seed):

@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 # 改为包内导入，使 webapp 可独立部署。
 from app.ingest.analyze_exam_scores import (
     classify_workbook,
+    detect_total_type,
     parse_class_averages,
     parse_student_scores,
 )
@@ -303,6 +304,34 @@ def find_grade23_class_average_header(ws: Any) -> int | None:
     return None
 
 
+TOTAL_AVG_RATE_SUBS = {"及格率", "高分率", "低分率"}
+
+
+def _collect_total_avg_sub(
+    total_cols: dict[str, dict[str, int]], total_type: str, normalized_sub: str, col: int
+) -> None:
+    """总分口径下的子列归位：均分/及格率/高分率/低分率/标准差。
+
+    兼容两种学校导出：旧格式总分列无子列（子头为空/分数/总分），新格式
+    挂 均分+四指标子列。"""
+    sub = normalized_sub.removesuffix("%")
+    if sub in {"", "分数", "原始分", "总分", "均分"}:
+        total_cols.setdefault(total_type, {})["均分"] = col
+    elif sub in TOTAL_AVG_RATE_SUBS or sub == "标准差":
+        total_cols.setdefault(total_type, {})[sub] = col
+
+
+def _rank_col_total_type(base: str) -> str | None:
+    """「3+3校名次/主三门校名次」等列的口径归一。"""
+    if "3+3" in base or "3＋3" in base:
+        return "3+3"
+    if "主三" in base:
+        return "主三门"
+    if base in {"加3同均分", "加三均分", "+3总分", "+3", "加3"}:
+        return "+3"
+    return None
+
+
 def parse_excel_grade23_class_averages(path: Path) -> dict:
     """解析高二/高三 3+3 班级均分表 Excel - """
     wb = load_workbook(path, data_only=True, read_only=False)
@@ -317,13 +346,12 @@ def parse_excel_grade23_class_averages(path: Path) -> dict:
     class_col = None
     teacher_col = None
     subject_cols: dict[str, int] = {}
-    total_cols: dict[str, int] = {}
+    total_cols: dict[str, dict[str, int]] = {}
 
     for col, (top, sub) in enumerate(zip(top_headers, sub_headers), start=1):
         normalized_top = top.replace(" ", "")
         normalized_sub = sub.replace(" ", "")
         normalized_sub_type = normalized_sub.removesuffix("分")
-        is_score_total_col = normalized_sub in {"", "分数", "原始分", "总分"}
 
         if normalized_top in {"班型", "班级类型"}:
             class_type_col = col
@@ -351,12 +379,18 @@ def parse_excel_grade23_class_averages(path: Path) -> dict:
         elif normalized_top in GRADE23_CLASS_AVG_ELECTIVE_SUBJECTS and normalized_sub_type in {"原始", "等级"}:
             subject = GRADE23_SHORT_SUBJECTS.get(normalized_top, normalized_top)
             subject_cols[f"{subject}_{normalized_sub_type}"] = col
-        elif normalized_top in {"加3同均分", "加三均分", "+3总分", "+3", "加3"} and is_score_total_col:
-            total_cols["+3"] = col
-        elif normalized_top in {"主三门", "主三门总分"} and is_score_total_col:
-            total_cols["主三门"] = col
-        elif ("3+3" in normalized_top or normalized_top.startswith("所有")) and is_score_total_col:
-            total_cols["3+3"] = col
+        elif normalized_top.endswith("校名次") or normalized_top.endswith("班名次"):
+            # 学校表自带的校名次/班名次列：入库备查（展示用应用计算的班型内排名）
+            kind = "校名次" if normalized_top.endswith("校名次") else "班名次"
+            tt = _rank_col_total_type(normalized_top[: -len(kind)])
+            if tt is not None:
+                total_cols.setdefault(tt, {})[kind] = col
+        elif normalized_top in {"加3同均分", "加三均分", "+3总分", "+3", "加3"}:
+            _collect_total_avg_sub(total_cols, "+3", normalized_sub, col)
+        elif normalized_top in {"主三门", "主三门总分"}:
+            _collect_total_avg_sub(total_cols, "主三门", normalized_sub, col)
+        elif "3+3" in normalized_top or "3＋3" in normalized_top or normalized_top.startswith("所有"):
+            _collect_total_avg_sub(total_cols, "3+3", normalized_sub, col)
 
     if class_col is None:
         return {"kind": "unknown", "message": "班级均分表缺少班级列"}
@@ -380,11 +414,19 @@ def parse_excel_grade23_class_averages(path: Path) -> dict:
             for subject, col in subject_cols.items()
             if (value := number(ws.cell(row_idx, col).value)) is not None
         }
-        total_averages = {
-            total_type: value
-            for total_type, col in total_cols.items()
-            if (value := number(ws.cell(row_idx, col).value)) is not None
-        }
+        total_averages: dict[str, Any] = {}
+        for total_type, sub_cols in total_cols.items():
+            entry: dict[str, Any] = {}
+            for sub_key, col in sub_cols.items():
+                value = number(ws.cell(row_idx, col).value)
+                if value is None:
+                    continue
+                if sub_key in TOTAL_AVG_RATE_SUBS:
+                    # 学校两种导出并存：0.91（比例）与 91（百分数），统一存百分数
+                    value = round(value * 100, 1) if 0 < value <= 1 else round(value, 1)
+                entry[sub_key] = value
+            if entry:
+                total_averages[total_type] = entry
 
         class_averages.append(
             {
@@ -399,12 +441,86 @@ def parse_excel_grade23_class_averages(path: Path) -> dict:
     return {"kind": "class_averages", "class_averages": class_averages}
 
 
-def parse_excel_grade23(file_path: str, grade: int) -> dict:
-    """解析高二/高三 3+3 Excel:学生成绩明细表或班级均分表 - """
-    path = Path(file_path)
-    if not is_grade23_student_sheet(path):
-        return parse_excel_grade23_class_averages(path)
+def is_grade23_rank_band_sheet(path: Path) -> bool:
+    """名次段表判型：第 2 行为「班级/班主任/名次段列…」且段列含「-」区间。"""
+    wb = load_workbook(path, data_only=True, read_only=False)
+    ws = wb[wb.sheetnames[0]]
+    row2 = [clean(ws.cell(2, col).value) for col in range(1, min(ws.max_column, 6) + 1)]
+    if len(row2) < 3 or row2[0] != "班级" or row2[1] != "班主任":
+        return False
+    return any("-" in value for value in row2[2:])
 
+
+def _band_range(label: str) -> tuple[int | None, int | None]:
+    """段标签「1-40」解析为左闭右闭整数区间；容忍全角破折号与空格。"""
+    text = label.replace("－", "-").replace("—", "-").replace(" ", "")
+    if "-" not in text:
+        return None, None
+    lo_text, _, hi_text = text.rpartition("-")
+    try:
+        return int(lo_text), int(hi_text)
+    except ValueError:
+        return None, None
+
+
+def parse_excel_grade23_rank_bands(path: Path) -> dict:
+    """解析高二/高三名次段表：每行一个班级，列为名次段人数。
+
+    学校导出（如「六门总分名次段表一（在籍）」「三门总分名次段表一（在籍）」）：
+    第 1 行合并标题（用于口径识别），第 2 行 班级/班主任/段列，第 3 行起数据。
+    口径由标题+文件名经 detect_total_type 判定（六门→3+3，三门→主三门）。
+    """
+    wb = load_workbook(path, data_only=True, read_only=False)
+    ws = wb[wb.sheetnames[0]]
+    title = clean(ws.cell(1, 1).value)
+    total_type = detect_total_type(title + path.name)
+    band_cols: list[tuple[int, str]] = []
+    for col in range(3, ws.max_column + 1):
+        label = clean(ws.cell(2, col).value)
+        if label:
+            band_cols.append((col, label))
+    classes: list[dict[str, Any]] = []
+    for row_idx in range(3, ws.max_row + 1):
+        row_class_num = class_num(ws.cell(row_idx, 1).value)
+        if row_class_num is None:
+            continue
+        teacher = clean(ws.cell(row_idx, 2).value) or None
+        bands = []
+        for col, label in band_cols:
+            lo, hi = _band_range(label)
+            count = integer(ws.cell(row_idx, col).value) or 0
+            bands.append({"label": label, "lo": lo, "hi": hi, "count": count})
+        if not bands:
+            continue
+        classes.append(
+            {
+                "class_num": row_class_num,
+                "teacher_name": teacher,
+                "bands": bands,
+            }
+        )
+    return {
+        "kind": "rank_bands",
+        "rank_band": {
+            "total_type": total_type,
+            "title": title or None,
+            "classes": classes,
+        },
+    }
+
+
+def parse_excel_grade23(file_path: str, grade: int) -> dict:
+    """解析高二/高三 3+3 Excel:学生成绩明细表、班级均分表或名次段表 - """
+    path = Path(file_path)
+    if is_grade23_student_sheet(path):
+        return parse_excel_grade23_student_rows(path, grade)
+    if is_grade23_rank_band_sheet(path):
+        return parse_excel_grade23_rank_bands(path)
+    return parse_excel_grade23_class_averages(path)
+
+
+def parse_excel_grade23_student_rows(path: Path, grade: int) -> dict:
+    """解析高二/高三学生成绩明细表（已由判型确认是明细表）。"""
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb[wb.sheetnames[0]]
     students: list[dict[str, Any]] = []

@@ -166,14 +166,18 @@ def test_score_bands_single_class_scope_and_merged(client, bands_seed, v1_seed):
 
 
 def test_score_bands_reverse_projection_counts(client, bands_seed, v1_seed):
-    """仅 H 域有甲的行：经 §1.4.1 投影门进入段统计（F09 同 stats 口径）。"""
+    """2026-10 两域成绩不互通：仅 H 域有甲的行不再投影进教学分数段——
+    T6 该场为空态（valid_count=0、各段 0 人、比例 null）。"""
     s = v1_seed
     body = _bands(
         client, EXAM_PROJ_BANDS, academic_year_id=s.ay_id, teaching_class_id=s.t6_id
     )
     t6 = body["classes"][0]
-    assert t6["valid_count"] == 1 and t6["max"] == 95.0 and t6["avg"] == 95.0
-    assert _band(t6, 90)["count"] == 1 and _band(t6, 90)["cumulative_pct"] == 100.0
+    # 2026-10 两域成绩不互通：H 域 95 分不进 T6 段统计分母
+    assert t6["valid_count"] == 0 and t6["max"] is None and t6["avg"] is None
+    assert all(band["count"] == 0 for band in t6["bands"])
+    assert _band(t6, 90)["count"] == 0
+    assert _band(t6, 90)["cumulative_pct"] is None  # 0 人分母 → 比例 null
 
 
 def test_score_bands_unknown_exam_404(client, bands_seed, v1_seed):

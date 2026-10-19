@@ -11,6 +11,7 @@ const legacyTemplates: Template[] = [
   { file: 'homeroom-g1-averages', label: '高一班级均分', filename: '高一班级均分模板' },
   { file: 'homeroom-g23-students', label: '高二 / 高三全科成绩明细', filename: '高二高三全科成绩明细模板' },
   { file: 'homeroom-g23-averages', label: '高二 / 高三班级均分', filename: '高二高三班级均分模板' },
+  { file: 'homeroom-g23-rank-bands', label: '高二 / 高三名次段表（3+3 / 主三门）', filename: '高二高三名次段表模板' },
 ]
 
 export function ScoreImportTemplates({ mode, grade = 2, legacy = false }: {
@@ -22,7 +23,8 @@ export function ScoreImportTemplates({ mode, grade = 2, legacy = false }: {
   const platform = mode === 'teaching' && !legacy
   const compatibleTemplates = mode === 'teaching' ? [
     ...legacyTemplates.filter(t => t.file.includes('-g1-')),
-    ...['高二', '高三'].flatMap(g => legacyTemplates.filter(t => t.file.includes('-g23-')).map(t => ({
+    // 名次段表仅班主任域导入，教学侧不提供
+    ...['高二', '高三'].flatMap(g => legacyTemplates.filter(t => t.file.includes('-g23-') && !t.file.includes('rank-bands')).map(t => ({
       ...t, label: t.label.replace('高二 / 高三', g), filename: t.filename.replace('高二高三', g),
     }))),
   ] : legacyTemplates
@@ -76,7 +78,7 @@ export function ScoreImportTemplates({ mode, grade = 2, legacy = false }: {
       ? grade === 1
         ? '学籍排名、年级百分位可留空后补。质量表填写本次实际班级，任课教师为空的真实班级仍纳入对比。'
         : '等级分可留空后补，补录沿用同一明细模板。教学班全部纳入对比，行政班仅纳入任课教师非空的班级。'
-      : '班级填写行政班数字班号。上传时明确填写考试名称和日期；同场明细与均分表使用相同考试名称和日期。'}
+      : '班级填写行政班数字班号。上传时明确填写考试名称和日期；同场明细与均分表使用相同考试名称和日期。名次段表标题决定口径：「六门总分名次段表」按 3+3、「三门总分名次段表」按主三门。'}
       {mode === 'teaching' && legacy ? ' 旧格式只导入本人任教学科；单科质量分析请返回教学平台单科导入。' : null}
     </p>
     {platform ? <p className="text-xs leading-5 text-slate-500">比率和百分位按百分比填写，如 25%。应考、实考、均分、标准差及等级人数均按官方数据填写，未知项留空；不根据原始分推算等级分。</p> : null}

@@ -1,4 +1,6 @@
-"""R3 回归：共享类别白名单与历史日期边界（契约 §1.2.2 + §1.4.1 条件 2/3）。
+"""R3 回归：共享类别白名单与历史日期边界（契约 §1.2.2；2026-10 口径
+变更：两域成绩不互通——成绩投影/冲突提示已随 readable_facts 隔离移除，
+下列「不投影」断言在新口径下恒成立；名册共享门仍按 §1.2.2 生效）。
 
 - share_categories 不含 current_subject_score → 成绩零投影（含冲突提示），
   roster 名册投影不受影响；
@@ -112,8 +114,9 @@ def test_link_valid_from_after_exam_blocks_history(client, v1_seed):
 
 
 def test_share_history_from_boundary(client, v1_seed):
-    """share_history_from=考试当日 → 恰好恢复授权（>= 含等号）；
-    设为考试次日 → 再次阻断。"""
+    """share_history_from 边界（2026-10 口径变更：两域成绩不互通）——
+    无论次日（边界外）还是当日（>= 含等号）授权，H /scores 都不再出现
+    教学域投影行/冲突提示：成绩读取与历史授权状态解耦，本域值恒可读。"""
     db = _db()
     try:
         # 次日授权：边界外一天即不共享
@@ -123,7 +126,8 @@ def test_share_history_from_boundary(client, v1_seed):
         assert all(r.get("shared_conflict") is None for r in rows)
         assert not any(r["score"] in (91.0, 85.0) for r in rows)
 
-        # 当日授权：恢复共享（冲突按 §1.4.1 报提示，不静默取值）
+        # 当日授权：授权配置合法生效，但 2026-10 两域成绩不互通——
+        # 历史门放开也不再产生教学域投影/冲突，甲物理仍只有本域 90
         _link(db, v1_seed).share_history_from = EXAM_E1_DATE
         db.commit()
         rows = _homeroom_scores(client, v1_seed)
@@ -134,7 +138,8 @@ def test_share_history_from_boundary(client, v1_seed):
         ]
         assert len(jia_phys) == 1
         assert jia_phys[0]["score"] == 90.0
-        assert jia_phys[0].get("shared_conflict") == {"teaching_score": 91.0}
+        assert jia_phys[0].get("shared_conflict") is None
+        assert not any(r["score"] in (91.0, 85.0) for r in rows)
     finally:
         _link(db, v1_seed).share_history_from = None
         db.commit()

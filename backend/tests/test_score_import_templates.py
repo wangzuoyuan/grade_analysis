@@ -2,7 +2,7 @@
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from app.ingest.teaching_platform import parse
 from app.ingest.ws_parse import parse_homeroom_file, parse_teaching_file
@@ -120,7 +120,26 @@ def test_homeroom_class_average_downloads(tmp_path, grade):
     row = result.class_averages[0]
     assert row["class_num"] == 6
     assert row["subject_averages"]["语文"] == 0 and row["subject_averages"]["数学"] == 88
-    assert row["total_averages"]["主三门"] == 240
+    # 高二三总分口径升级为指标包（模板无子列 → {均分: v}）；高一路径仍为裸数值
+    assert row["total_averages"]["主三门"] == ({"均分": 240.0} if grade in (2, 3) else 240)
     teaching = parse_teaching_file(target, f"高{'一' if grade == 1 else '二' if grade == 2 else '三'}班级均分模板.xlsx", "数学", None, "模板合成考试", "2030-10-10")
     assert teaching.parsed_ok and teaching.grade == grade
     assert teaching.class_averages[0]["subject_averages"]["数学"] == 88
+
+
+def test_homeroom_rank_band_file_roundtrip(tmp_path):
+    # ws_parse 对名次段文件：kind=rank_bands、rank_band 原样透传、message 含口径与人数
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["六门总分名次段表一（在籍）"])
+    ws.append(["班级", "班主任", "1-40", "41-80", "81-120", "121-160"])
+    ws.append(["06", "模板教师", 2, 3, 1, 0])
+    ws.append(["合计", "—", 2, 3, 1, 0])  # 非数字班级行：忽略
+    target = tmp_path / "高二合成名次段期初考名次段.xlsx"
+    wb.save(target)
+    result = parse_homeroom_file(target, target.name, 2, 6, "模板合成考试", "2030-10-10")
+    assert result.parsed_ok and result.kind == "rank_bands"
+    assert result.rank_bands["total_type"] == "3+3"
+    assert [c["class_num"] for c in result.rank_bands["classes"]] == [6]
+    assert result.rank_bands["classes"][0]["bands"][0] == {"label": "1-40", "lo": 1, "hi": 40, "count": 2}
+    assert "3+3 口径" in result.message and "共 6 人" in result.message

@@ -36,7 +36,7 @@ class ParsedImportFile:
     """一个上传文件的规范化解析结果（preview 响应 items 与快照共用）。"""
 
     filename: str
-    kind: str = "unknown"  # student_scores | class_averages | unknown
+    kind: str = "unknown"  # student_scores | class_averages | rank_bands | unknown
     parsed_ok: bool = False
     message: Optional[str] = None
     exam_name: Optional[str] = None
@@ -44,10 +44,12 @@ class ParsedImportFile:
     subject: Optional[str] = None  # teaching 模式恒为任教学科
     grade: Optional[int] = None
     class_label: Optional[str] = None  # teaching 模式：文件中出现的班级标签汇总
-    # 学生成绩规范化行；班级均分使用下方独立集合，不落 ScoreFact。
+    # 学生成绩规范化行；班级均分/名次段使用下方独立集合，不落 ScoreFact。
     rows: List[dict] = field(default_factory=list)
     # 全年级班级均分行；与学生成绩分开存储，确认时落专用表。
     class_averages: List[dict] = field(default_factory=list)
+    # 名次段表（每行一个班级的名次段人数分布），确认时落专用表。
+    rank_bands: Optional[dict] = None
     # 去重学生清单（按学号聚合；rows 的身份事实源）
     students: List[dict] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -89,6 +91,8 @@ def _aggregate_students(raw_students: List[dict]) -> tuple[List[dict], List[str]
                 "name": name,
                 "class_num": stu.get("class_num"),
                 "class_label": stu.get("class_label"),
+                # 学籍代码随学生清单透传（confirm 回填身份展示列）
+                "xueji": stu.get("xueji"),
             }
         elif existing["name"] != name:
             # 同学号不同姓名：防两人成绩混档，确认时整文件 409
@@ -159,6 +163,25 @@ def parse_homeroom_file(
         averages = parsed.get("class_averages") or []
         result.class_averages = averages
         result.message = f"班级均分表：识别到 {len(averages)} 个班级，确认后入库"
+        return result
+
+    if result.kind == "rank_bands":
+        rank_band = parsed.get("rank_band") or {}
+        classes = rank_band.get("classes") or []
+        result.rank_bands = rank_band
+        if not classes:
+            result.parsed_ok = False
+            result.message = "名次段表：未识别到任何班级数据行（班级列须为数字班号）"
+            return result
+        total_students = sum(
+            band.get("count") or 0
+            for cls in classes
+            for band in cls.get("bands") or []
+        )
+        result.message = (
+            f"名次段表（{rank_band.get('total_type')} 口径）：识别到 {len(classes)} 个班级、"
+            f"共 {total_students} 人，确认后入库"
+        )
         return result
 
     raw_students = parsed.get("students") or []

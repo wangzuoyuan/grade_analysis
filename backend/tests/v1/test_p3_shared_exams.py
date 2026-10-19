@@ -165,15 +165,16 @@ def test_shared_exams_teaching_subject_and_scope_guard(client, v1_seed):
 
     # 多教学班未显式 teaching_class_id → 并集（集成者修订：与 /scores 教学模式
     # 的"全部所教班"缺省一致；仅导入 preview/confirm 仍要求多班显式）。
-    # F09 统一投影：并集范围经 T6 的 active link 反向投影可见 H6 域的
-    # P3S2/P3S1（甲乙各 1 行物理）；2025期中 = T6(甲乙丁 3 行) + T8(戊己 2 行)。
+    # 2026-10 两域成绩不互通：并集范围不再经 T6 的 active link 反向投影
+    # 可见 H6 域的 P3S2/P3S1——教学考试目录只列本域事件；
+    # 2025期中 = T6(甲乙丁 3 行) + T8(戊己 2 行)。
     r2 = client.get(f"{API}/shared/exams", params={"mode": "teaching"})
     assert r2.status_code == 200, r2.text
     exams2 = r2.json()["exams"]
-    assert [e["exam_name"] for e in exams2] == ["P3S2", "P3S1", "2025期中"]
+    # 2026-10 两域成绩不互通：H 域 P3S2/P3S1 不出现在 teaching 目录
+    assert [e["exam_name"] for e in exams2] == ["2025期中"]
     by_name = {e["exam_name"]: e for e in exams2}
     assert by_name["2025期中"]["row_count"] == 5
-    assert by_name["P3S1"]["row_count"] == 2
     assert all(e["subjects"] == [SUBJECT] for e in exams2)
 
 

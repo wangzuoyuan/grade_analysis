@@ -1020,6 +1020,9 @@ def readable_facts(
         return []
 
     roots = canonical_map(db, ctx.academic_year_id)
+    # 2026-10 用户裁决：两工作台成绩信息不互通（各自上传、互不投影）。
+    # readable_facts 只读本域事实；关联（link）仅继续服务名册/作业共享，
+    # 不再把对侧域成绩投影进成绩读取（F09 投影门在此降为「不启用」）。
     if ctx.mode == "homeroom":
         own = _fact_query(
             db, "homeroom", ctx, ids, scope_class_ids, exam_name=exam_name
@@ -1033,40 +1036,9 @@ def readable_facts(
             )
             for f in own
         ]
-        if ctx.link_id is None:
-            return _deduplicate_entries(db, entries, exam_name, roots)
-        link = db.get(HomeroomTeachingLink, ctx.link_id)
-        own_by_key = {
-            (e.person_id, e.fact.subject, fact_key(db, e.fact, roots)): e
-            for e in entries
-            if e.fact.total_type is None
-        }
-        for t_fact, h_id in gated_teaching_facts_for_homeroom(
-            db, ctx, link, exam_name, h_ids=ids
-        ):
-            entry = own_by_key.get((h_id, t_fact.subject, fact_key(db, t_fact, roots)))
-            if entry is not None:
-                # 值不同（含一方缺考）：保留本域值并附提示；值相同视为
-                # 已一致的规范值，不投影、不重复（R5）
-                if field_conflicts(entry.fact, t_fact):
-                    entry.conflict = {"teaching_score": t_fact.score}
-                    if entry.fact.exam_event_id or set(field_conflicts(entry.fact, t_fact)) != {"score"}:
-                        entry.conflict["fields"] = field_conflicts(entry.fact, t_fact)
-                    entry.conflict_fact = t_fact
-            else:
-                entries.append(
-                    ReadableFact(
-                        fact=t_fact,
-                        person_id=h_id,
-                        source_domain="teaching",
-                        class_ref_id=link.admin_class_id,
-                        projected=True,
-                    )
-                )
         return _deduplicate_entries(db, entries, exam_name, roots)
 
-    # teaching：仅任教学科；linked 学生 H 域同学科事实反向投影（T 域
-    # 已有同场（值同或值异）保留 T 行、不投影、不附字段）。
+    # teaching：仅任教学科本域事实。
     own = teaching_facts(db, ctx, scope_class_ids, ctx.subject, ids, exam_name)
     entries = [
         ReadableFact(
@@ -1077,31 +1049,6 @@ def readable_facts(
         )
         for f in own
     ]
-    taken_keys = {(e.person_id, e.fact.subject, fact_key(db, e.fact, roots)): e for e in entries}
-    for tc_id in scope_class_ids:
-        link = active_link_for_teaching_class(db, tc_id, ctx.academic_year_id, ctx.as_of)
-        if link is None or link.subject != ctx.subject:
-            continue
-        for h_fact, t_id in gated_homeroom_facts_for_teaching(
-            db, ctx, link, exam_name, t_ids=ids
-        ):
-            key = (t_id, h_fact.subject, fact_key(db, h_fact, roots))
-            if key in taken_keys:
-                own_entry = taken_keys[key]
-                if field_conflicts(own_entry.fact, h_fact):
-                    own_entry.conflict = {"homeroom_score": h_fact.score, "fields": field_conflicts(own_entry.fact, h_fact)}
-                    own_entry.conflict_fact = h_fact
-                continue
-            taken_keys[key] = ReadableFact(fact=h_fact, person_id=t_id, source_domain="homeroom", class_ref_id=tc_id, projected=True)
-            entries.append(
-                ReadableFact(
-                    fact=h_fact,
-                    person_id=t_id,
-                    source_domain="homeroom",
-                    class_ref_id=tc_id,
-                    projected=True,
-                )
-            )
     return _deduplicate_entries(db, entries, exam_name, roots)
 
 

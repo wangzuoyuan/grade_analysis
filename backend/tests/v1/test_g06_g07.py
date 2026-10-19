@@ -14,8 +14,9 @@
   * 经正式 POST archive（transferred/graduated, valid_to=2026-08-01）
     离班后，2025-11-06 历史考试的 stats/students 人群不变（含该生）；
     /homeroom/students 当前名册不再含该生。
-  * 共享投影（有 link 时）：H-only 历史考试从 teaching 统计/考试清单
-    仍可读（考试时点成员交集不看 status）。
+  * 共享投影（2026-10 口径变更：两域成绩不互通）：H-only 历史考试从
+    teaching 统计/考试清单一律不可读（本域隔离）；H 侧统计仍按考试
+    时点成员交集读出离班学生（不看 status）。
   * 考后入班（valid_from 晚于考试日）不进历史考试人群。
 
 在 tests/v1/conftest.py 合成样本（v1_seed）之上 ORM 直种场景；所有
@@ -597,12 +598,13 @@ def test_g07_joined_after_exam_not_in_history(client, v1_seed):
         db.close()
 
 
-def test_g07_shared_projection_keeps_archived_student_for_history_exam(
+def test_g07_h_only_exam_isolated_and_archive_keeps_h_history(
     client, v1_seed
 ):
-    """共享投影（有 link 时）：甲经正式 archive 离班后，其 H-only 历史
-    考试事实仍从 teaching 可读（考试时点成员交集只看有效期，不看当前
-    status）；考试清单同步保留。"""
+    """（2026-10 口径变更：两域成绩不互通）H-only 历史考试事实不再从
+    teaching 可读：教学统计/考试清单均不见该考试；甲经正式 archive 离班
+    后，H 侧历史考试统计仍按考试时点成员交集读出该生（不看当前
+    status）——离班记录绝不伪装 active。"""
     from app.db import workspace_models as wm
 
     db = _db()
@@ -633,31 +635,49 @@ def test_g07_shared_projection_keeps_archived_student_for_history_exam(
         assert r.status_code == 200, r.text
         return r.json()
 
-    # 离班前：反向投影可读（基线）
-    base = _teaching_stats()
-    assert base["valid_count"] == 1 and base["avg"] == 66.0
-    assert base["cohort_size"] == 3
+    def _homeroom_stats():
+        r = client.get(
+            f"{API}/homeroom/analysis/exams/{quote(EXAM_G7_PROJ)}/stats",
+            params={"academic_year_id": v1_seed.ay_id, "class_id": v1_seed.h6_id},
+        )
+        assert r.status_code == 200, r.text
+        physics = next(x for x in r.json()["subjects"] if x["subject"] == "物理")
+        return physics
+
+    # 离班前：H 本域可读 66；teaching 不再反向投影（valid_count=0）
+    base_h = _homeroom_stats()
+    assert base_h["valid_count"] == 1 and base_h["avg"] == 66.0
+    # 2026-10 两域成绩不互通：H-only 事实不再进入教学域统计
+    base_t = _teaching_stats()
+    assert base_t["valid_count"] == 0 and base_t["avg"] is None
+    assert base_t["cohort_size"] == 3
+
+    # 教学域考试目录只列本域事件：H-only 考试不出现（本域 2025期中 仍在）
+    listed = client.get(
+        f"{API}/shared/exams",
+        params={
+            "mode": "teaching",
+            "academic_year_id": v1_seed.ay_id,
+            "teaching_class_id": v1_seed.t6_id,
+        },
+    )
+    assert listed.status_code == 200, listed.text
+    teaching_exams = {e["exam_name"] for e in listed.json()["exams"]}
+    assert EXAM_G7_PROJ not in teaching_exams
+    assert EXAM_E1 in teaching_exams
 
     r = _archive(client, v1_seed, v1_seed.jia_h_id, "transferred", "2026-08-01")
     assert r.status_code == 200, r.text
 
     try:
-        # 离班后：历史考试投影不变（2026-01-10 时甲双侧均在册）
-        after = _teaching_stats()
-        assert after["valid_count"] == 1 and after["avg"] == 66.0
-        assert after["cohort_size"] == 3
+        # 离班后（2026-01-10 时甲双侧均在册）：H 侧历史考试统计不变
+        # （考试时点成员交集不看当前 status）
+        after_h = _homeroom_stats()
+        assert after_h["valid_count"] == 1 and after_h["avg"] == 66.0
 
-        # 考试清单（统一可读口径）仍列出该考试
-        listed = client.get(
-            f"{API}/shared/exams",
-            params={
-                "mode": "teaching",
-                "academic_year_id": v1_seed.ay_id,
-                "teaching_class_id": v1_seed.t6_id,
-            },
-        )
-        assert listed.status_code == 200, listed.text
-        assert EXAM_G7_PROJ in {e["exam_name"] for e in listed.json()["exams"]}
+        # teaching 侧维持隔离：仍无该考试可读成绩
+        after_t = _teaching_stats()
+        assert after_t["valid_count"] == 0 and after_t["avg"] is None
     finally:
         db = _db()
         try:

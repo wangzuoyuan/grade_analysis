@@ -428,11 +428,12 @@ def test_report_profile_roster_and_notes_summary(client, v1_seed):
     assert body["roster"]["class_id"] == v1_seed.h6_id
     assert body["roster"]["seat_no"] == 1 and body["roster"]["status"] == "active"
 
-    # 画像与共享投影：H 物理 90 与 T 91 冲突 → 保留 H 条目并附 shared_conflict
+    # 2026-10 两域成绩不互通：报告画像只读本域事实——H 物理 90 保留、
+    # 与 T 91 的同场分值差不再附 shared_conflict
     physics = next(s for s in body["subjects"] if s["subject"] == "物理")
     exam = physics["exams"][0]
     assert exam["source_domain"] == "homeroom"
-    assert exam["shared_conflict"] == {"teaching_score": 91.0}
+    assert exam["shared_conflict"] is None
     chinese = next(s for s in body["subjects"] if s["subject"] == "语文")
     assert chinese["exams"][0]["score"] == 88.0
     totals = next(t for t in body["totals"] if t["total_type"] == "主三门")

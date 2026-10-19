@@ -1,7 +1,7 @@
 """Canonical exam identity. No score, membership or sharing permissions live here."""
 from sqlalchemy import or_, cast, String
 from app.core.errors import InvalidScopeParam, LinkVersionConflict
-from app.db.workspace_models import WorkspaceExamEvent, ScoreFact, TeachingExamScope, WorkspaceClassAverage, AdministrativeClass
+from app.db.workspace_models import WorkspaceExamEvent, ScoreFact, TeachingExamScope, WorkspaceClassAverage, WorkspaceRankBand, AdministrativeClass
 from app.db.models import Teacher
 
 
@@ -71,13 +71,16 @@ def candidates(db, ctx, name, grade, day):
         academic_year_id=ctx.academic_year_id) if e.exam_event_id)
     visible.update(canonical_id(db, e.exam_event_id) for e in db.query(WorkspaceClassAverage).filter_by(
         academic_year_id=ctx.academic_year_id) if e.exam_event_id)
+    # 2026-10-19：名次段表导入也会挂事件（纯名次段考试的再导入/归并依赖此可见性）
+    visible.update(canonical_id(db, e.exam_event_id) for e in db.query(WorkspaceRankBand).filter_by(
+        academic_year_id=ctx.academic_year_id) if e.exam_event_id)
     result = []
     for event in db.query(WorkspaceExamEvent).filter_by(academic_year_id=ctx.academic_year_id, exam_name=name, merged_into_id=None):
         if event.id not in visible or (grade is not None and event.grade not in (None, grade)):
             continue
         ids = event_ids(db, event.id)
         dates, domains = set(), set()
-        for model in (ScoreFact, TeachingExamScope, WorkspaceClassAverage):
+        for model in (ScoreFact, TeachingExamScope, WorkspaceClassAverage, WorkspaceRankBand):
             for row in db.query(model).filter(model.exam_event_id.in_(ids)):
                 if row.exam_date:
                     dates.add(row.exam_date.isoformat())

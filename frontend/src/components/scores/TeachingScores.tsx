@@ -115,29 +115,9 @@ function bandLabel(low: number, high: number | null): string {
   return high == null ? `[${edge(low)}, +∞)` : `[${edge(low)}, ${edge(high)})`
 }
 
-/** 堆叠条段位配色：Viridis 官方 8 点锚点（matplotlib 默认色图，感知均匀、
- * 全类型色盲安全；分数为量纲——高分段取亮端、低分段取暗端），任意段数线性 RGB 插值。 */
-const VIRIDIS_ANCHORS = [
-  '#fde725', '#a0da39', '#4ac16d', '#1fa187', '#277f8e', '#365c8d', '#46327e', '#440154',
-]
-
-function hexToRgb(hex: string): [number, number, number] {
-  return [
-    parseInt(hex.slice(1, 3), 16),
-    parseInt(hex.slice(3, 5), 16),
-    parseInt(hex.slice(5, 7), 16),
-  ]
-}
-
-function bandBarColor(index: number, total: number): string {
-  const t = total <= 1 ? 0 : index / (total - 1)
-  const p = t * (VIRIDIS_ANCHORS.length - 1)
-  const i = Math.min(Math.floor(p), VIRIDIS_ANCHORS.length - 2)
-  const f = p - i
-  const a = hexToRgb(VIRIDIS_ANCHORS[i])
-  const b = hexToRgb(VIRIDIS_ANCHORS[i + 1])
-  return `rgb(${a.map((v, k) => Math.round(v + (b[k] - v) * f)).join(', ')})`
-}
+// 段位配色自本文件抽出至 band-colors.ts（两工作台共用，2026-10-19）；
+// 锚点色值/插值钳制的契约断言改为读共享文件。
+import { bandBarColor } from './band-colors'
 
 /** 本段格热力底色：占本班有效人数比例分档（纯静态类，无运行时拼类名）。 */
 function bandCellTone(count: number, valid: number): string {

@@ -149,11 +149,15 @@ def test_shared_origin_readonly_and_no_cross_domain_delete(client,world):
     p=preview(client,world,'homeroom')
     assert confirm(client,p,'homeroom').status_code==200
     exams=catalog(client,world,'homeroom')
-    shared=next(e for e in exams if e['exam_name']=='合成管理考')
-    assert shared['can_delete'] is False and shared['projected_students']==1
-    r=client.post('/api/v1/homeroom/exams/delete-preview',json={'academic_year_id':world.ay,'class_id':world.h,'exam_key':shared['key']})
+    # 2026-10 两域成绩不互通：教学域事件不再投影进班主任目录，删完本域事实后
+    # 本场考试在班主任目录彻底消失（原为 can_delete=False 的共享只读行）。
+    assert all(e['exam_name']!='合成管理考' for e in exams)
+    # 跨域删除防线仍在：拿教学侧目录里本场考试的 key 去班主任删除入口必 404，教学域数据不受影响。
+    teaching_row=next(e for e in catalog(client,world) if e['exam_name']=='合成管理考' and e['grade']==2)
+    r=client.post('/api/v1/homeroom/exams/delete-preview',json={'academic_year_id':world.ay,'class_id':world.h,'exam_key':teaching_row['key']})
     assert r.status_code==404
     assert db.get(w.TeachingExamScope,world.exam) is not None
+    assert db.query(w.ScoreFact).filter_by(data_domain='teaching',teaching_exam_id=world.exam).count()==2
 
 
 def test_name_domain_year_and_foreign_key_guards(client,world,v1_seed):

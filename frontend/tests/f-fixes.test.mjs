@@ -100,13 +100,13 @@ test('F06：上传页渲染候选确认 UI，未决候选禁用确认；选「�
   assert.match(identityPanel, /role="radiogroup"/, '候选选择须为单选组（键盘可操作）')
 })
 
-test('F10/F11：bands 无名次口径 409 渲染「不可计算」提示卡而非骨架', () => {
-  assert.match(homeroomScores, /bandsUnavailable/, 'bands 须区分 409 不可算与其他错误')
-  assert.match(homeroomScores, /err instanceof ApiV1Error && err\.status === 409/, '409 判定须基于 ApiV1Error 状态码')
-  assert.match(homeroomScores, /段位不可计算（无名次口径）/, '必须呈现契约固定文案「段位不可计算（无名次口径）」')
-  assert.match(homeroomScores, /不呈现任何分段/, '须说明不呈现错误分段')
-  const unavailableIdx = homeroomScores.indexOf('bandsUnavailable ?')
-  assert.ok(unavailableIdx > 0, '应能定位不可算提示分支')
-  const branch = homeroomScores.slice(unavailableIdx, homeroomScores.indexOf(') : bandsError ?', unavailableIdx))
-  assert.doesNotMatch(branch, /Skeleton/, '不可算提示分支不得渲染骨架')
+test('名次段分布：读导入名次段表，无导入呈现上传引导空态（2026-10-19 改造）', () => {
+  // 2026-10-19 两域成绩不互通 + 段位分布改读导入名次段表：旧 F10「409 不可计算」
+  // 提示卡退役，替换为无导入时的上传引导空态。
+  assert.match(homeroomScores, /fetchHomeroomRankBands/, '段位分布走 rank-bands 端点')
+  assert.match(homeroomScores, /尚未导入名次段表/, '空态必须引导上传名次段表')
+  assert.match(homeroomScores, /3\+3总分名次段表.*主三门名次段表|主三门名次段表.*3\+3总分名次段表/s, '空态须点名两张表')
+  assert.match(homeroomScores, /rankBandsMetric/, '口径选择态存在（3+3/主三门）')
+  assert.doesNotMatch(homeroomScores, /bandsUnavailable/, '旧 409 不可算分支应移除')
+  assert.doesNotMatch(homeroomScores, /fetchHomeroomBands/, '旧 F10 端点不再被页面使用')
 })

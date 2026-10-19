@@ -118,6 +118,9 @@ class WsStudentIdentity(Base):
     data_domain = Column(String(16), nullable=False)
     display_name = Column(String(64), nullable=True)
     note = Column(Text, nullable=True)
+    # 学校明细表的「学籍」代码（1=闵中学籍 3=文绮学籍 4=外省市体育生和复学），
+    # 仅展示用，不参与身份解析；存量身份无值显示「—」。
+    xueji = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -512,6 +515,46 @@ class WorkspaceClassAverage(Base):
               "grade", "class_num", unique=True),
         Index(
             "idx_workspace_class_average_scope",
+            "data_domain", "academic_year_id", "exam_name", "grade",
+        ),
+    )
+
+
+class WorkspaceRankBand(Base):
+    """导入的全年级名次段表（如「六门总分名次段表」「三门总分名次段表」）。
+
+    与班级均分表同构的官方导出：每行一个班级，给出该班在各名次段的
+    人数。不是学生成绩事实，不能从 ScoreFact 反推；按工作台、学年、
+    考试、总分口径（total_type，如 '3+3'/'主三门'）和班号独立保存。
+    bands 为有序数组 [{label, lo, hi, count}]，段序与文件列序一致。
+    """
+
+    __tablename__ = "workspace_rank_band"
+    id = Column(Integer, primary_key=True)
+    data_domain = Column(String(16), nullable=False)
+    academic_year_id = Column(Integer, ForeignKey("academic_year.id"), nullable=False)
+    exam_name = Column(String(128), nullable=False)
+    exam_event_id = Column(Integer, ForeignKey("workspace_exam_event.id", name="fk_workspacerankband_event"), nullable=True)
+    exam_date = Column(Date, nullable=True)
+    grade = Column(Integer, nullable=False)
+    total_type = Column(String(32), nullable=False)
+    class_num = Column(Integer, nullable=False)
+    teacher_name = Column(String(64), nullable=True)
+    bands = Column(JSON, nullable=False, default=list)
+    source = Column(String(255), nullable=False, default="import")
+    data_revision = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "data_domain IN ('homeroom', 'teaching')",
+            name="ck_workspace_rank_band_domain",
+        ),
+        Index("uq_workspace_rank_band_natural_key", "data_domain", "academic_year_id", text("CASE WHEN exam_event_id IS NULL THEN 'name:' || exam_name ELSE 'event:' || exam_event_id END"),
+              "grade", "total_type", "class_num", unique=True),
+        Index(
+            "idx_workspace_rank_band_scope",
             "data_domain", "academic_year_id", "exam_name", "grade",
         ),
     )

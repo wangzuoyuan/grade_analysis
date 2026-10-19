@@ -376,11 +376,12 @@ def test_homeroom_students_projection_and_isolation(client, seed):
     assert jia["alias"] == "2025H6-01"
     assert jia["seat_no"] == 1
     assert jia["linked_teaching_class_id"] == seed.t6_id
-    # 契约 v2 §1.4.1：最近一场与 H 域同场同学科值冲突（90 vs 91）→
-    # 不设 shared_subject_score，改报 shared_conflict，绝不静默取 teaching 值
+    # 2026-10 两域成绩不互通：跨域投影与冲突标记一律不再产生——
+    # 同场同学科分值差（90 vs 91）既不设 shared_subject_score 也不报
+    # shared_conflict，H 名册只读本域事实
     assert jia["shared_subject_score"] is None
-    assert jia["shared_conflict"] == {"teaching_score": 91.0}
-    assert by_pid[seed.yi_h]["shared_conflict"] == {"teaching_score": 85.0}
+    assert jia["shared_conflict"] is None
+    assert by_pid[seed.yi_h]["shared_conflict"] is None
     bing = by_pid[seed.bing_h]
     assert bing["shared_subject_score"] is None
     assert bing["shared_conflict"] is None
@@ -449,14 +450,15 @@ def test_homeroom_scores_replace_semantics_and_isolation(client, seed):
     assert sum(1 for r in rows if r.get("subject") == "语文") == 3
     assert sum(1 for r in rows if r.get("subject") == "物理") == 3
 
-    # 关联交集成员（甲乙）物理与 teaching 域同场冲突（90/91、84/85）→
-    # 契约 v2 §1.4.1：保留 H 域行并附 shared_conflict，绝不替换/删行
+    # 2026-10 两域成绩不互通：/scores 只读本域事实，甲乙与 teaching 域
+    # 同场分值差（90/91、84/85）不再附 shared_conflict，也不出现任何
+    # teaching 来源行
     physics = {r["person_id"]: r for r in rows if r.get("subject") == "物理"}
     assert physics[seed.jia_h]["score"] == 90.0
     assert physics[seed.jia_h]["source_domain"] == "homeroom"
-    assert physics[seed.jia_h]["shared_conflict"] == {"teaching_score": 91.0}
+    assert physics[seed.jia_h]["shared_conflict"] is None
     assert physics[seed.yi_h]["score"] == 84.0
-    assert physics[seed.yi_h]["shared_conflict"] == {"teaching_score": 85.0}
+    assert physics[seed.yi_h]["shared_conflict"] is None
     assert physics[seed.bing_h]["score"] == 68.0
     assert physics[seed.bing_h]["source_domain"] == "homeroom"
     assert physics[seed.bing_h]["shared_conflict"] is None
@@ -509,10 +511,11 @@ def test_homeroom_profile_includes_teaching_projection(client, seed):
     assert set(subjects) == {"语文", "数学", "英语", "物理"}
     physics = subjects["物理"]["exams"]
     assert len(physics) == 1
-    # 契约 v2 §1.4.1：同场冲突保留 H 域 90 并附提示，不替换为 teaching 域 91
+    # 2026-10 两域成绩不互通：画像只读本域事实，同场分值差（90 vs 91）
+    # 不再附 shared_conflict 提示
     assert physics[0]["score"] == 90.0
     assert physics[0]["source_domain"] == "homeroom"
-    assert physics[0]["shared_conflict"] == {"teaching_score": 91.0}
+    assert physics[0]["shared_conflict"] is None
     assert subjects["语文"]["exams"][0]["source_domain"] == "homeroom"
 
     totals = {g["total_type"]: g for g in body["totals"]}

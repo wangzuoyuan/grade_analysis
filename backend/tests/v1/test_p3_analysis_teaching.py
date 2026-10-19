@@ -4,8 +4,8 @@
 不依赖导入链路。覆盖验收：
 - E02：0 分计入均分/名次；NULL 计 missing_count 不进分母；
   同分同名次（min-rank）且下一名跳号。
-- 反向投影：H 域行经 §1.4.1 投影门参与 teaching 名次并标 source_domain；
-  T 域已有同场事实时不投影、不重复计人。
+- 2026-10 两域成绩不互通：H 域行不再反向投影进 teaching 名次/分母
+  （EXAM_PROJECTED 用例守护隔离红线）。
 - E04：class-compare 全部行 source='estimated'；单班有效人数 <5 →
   small_sample=true。
 - 作用域：teaching_class_id 缺省=全部所教班并集；指定单班时其他班
@@ -23,7 +23,7 @@ API = "/api/v1"
 EXAM_BASE = "2025期中"  # v1_seed 原样：T6 甲91 乙85 丁NULL；H 域 90/84（同场不投影）
 EXAM_ZERO_NULL = "2025月考1"  # E02：0 与 NULL 并存
 EXAM_TIE = "2025月考2"  # E02：两人同分 + 下一名跳号
-EXAM_PROJECTED = "2025投影考"  # 仅 H 域有行的考试（反向投影参与名次）
+EXAM_PROJECTED = "2025投影考"  # 仅 H 域有行的考试（2026-10 后教学侧不可见）
 EXAM_SAME = "2025期末"  # E04 class-compare
 EXAM_MISSING = "2025没有"
 
@@ -120,27 +120,25 @@ def test_e02_min_rank_tie_and_jump(client, p3_seed, v1_seed):
 
 
 def test_reverse_projection_participates_in_rank(client, p3_seed, v1_seed):
-    """EXAM_PROJECTED 仅 H 域有甲的行：经 §1.4.1 投影门进入 teaching
-    响应（source_domain='homeroom'），参与名次与分母。"""
+    """2026-10 两域成绩不互通：EXAM_PROJECTED 仅 H 域有甲的行，教学侧
+    不再反向投影——学生表为空、统计 valid_count=0，H 域 95 分不进入
+    teaching 名次与分母。"""
     s = v1_seed
     body = _students(
         client, EXAM_PROJECTED, academic_year_id=s.ay_id, teaching_class_id=s.t6_id
     )
-    assert len(body["students"]) == 1
-    row = body["students"][0]
-    assert row["person_id"] == s.jia_t_id  # person_id 仍为响应所在域身份
-    assert row["score"] == 95.0 and row["rank"] == 1
-    assert row["source_domain"] == "homeroom"
-    assert row["class_label"] == "高二6班(教)"
-    assert "grade_score" in row  # 列在途时缺省 null，键结构按契约存在
+    # 2026-10 两域成绩不互通：无任何 homeroom 来源行进入教学响应
+    assert body["students"] == []
+    assert all(row.get("source_domain") != "homeroom" for row in body["students"])
 
     stats = _stats(
         client, EXAM_PROJECTED, academic_year_id=s.ay_id, teaching_class_id=s.t6_id
     )
-    assert stats["valid_count"] == 1 and stats["missing_count"] == 0
-    assert stats["avg"] == 95.0
-    assert stats["rank_min"] == 1 and stats["rank_max"] == 1
-    assert stats["cohort_size"] == 3  # 乙丁本场无行，不推断、不编造
+    # 2026-10 两域成绩不互通：均分 None，不得借 H 域 95 分参与名次
+    assert stats["valid_count"] == 0 and stats["missing_count"] == 0
+    assert stats["avg"] is None
+    assert stats["rank_min"] is None and stats["rank_max"] is None
+    assert stats["cohort_size"] == 3  # 成员解析不受投影取消影响（甲乙丁）
     assert stats["small_sample"] is True
 
 

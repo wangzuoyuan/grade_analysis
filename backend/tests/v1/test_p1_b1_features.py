@@ -501,9 +501,9 @@ def test_identical_scores_same_features(client, p1b1_seed):
 
 
 def test_teaching_domain_scope_isolation(client, p1b1_seed):
-    """甲·T：subjects 仅物理（H 域同学科事实经 F09 反向投影进入，仅任教学科）；
-    无总分行 → 总体类指标 not_computable、绝不跨域借读总分；
-    作业/档案只读本域（班主任域数学语文缺交与谈话档案不出现）。"""
+    """甲·T：subjects 仅物理且只读教学域本域事实（H 域期末/一模同学科
+    事实不再反向投影进入）；无总分行 → 总体类指标 not_computable、
+    绝不跨域借读总分；作业/档案只读本域。"""
     s = p1b1_seed.seed
     resp = _get(client, "/teaching/diagnosis/features", person_id=s.jia_t_id,
                 academic_year_id=s.ay_id)
@@ -512,16 +512,15 @@ def test_teaching_domain_scope_isolation(client, p1b1_seed):
 
     cl = body["indicators"]["current_level"]
     assert cl["status"] == "ok"
-    # 甲·T：subjects 仅物理（H 域同学科事实经 F09 反向投影进入，仅任教学科）；
-    # 无总分行 → 总体类指标 not_computable、绝不跨域借读总分；
-    # 作业/档案只读本域（班主任域数学语文缺交与谈话档案不出现）。
+    # 2026-10 两域成绩不互通：教学域只读本域考试——最近一场为期中
+    # （T 域 91 分、百分位 0.10），H 域期末（92 分/0.08）不再进入
     # 2026-10-18 修复 12.2：教学域无总分是口径不适用（teaching_no_total），
     # 不再误报 no_main3_row（暗示数据没导）。
-    assert cl["exam_name"] == EXAM_FINAL
-    assert cl["exam_key"] == EXAM_FINAL  # legacy 事实 exam_key==考试名（修复 3）
-    assert cl["as_of"] == "2026-01-15"
+    assert cl["exam_name"] == EXAM_MID
+    assert cl["exam_key"] == EXAM_MID  # legacy 事实 exam_key==考试名（修复 3）
+    assert cl["as_of"] == "2025-11-06"
     assert _by_subject(cl["subjects"]) == {
-        "物理": {"subject": "物理", "percentile": 0.08, "grade_score": None}
+        "物理": {"subject": "物理", "percentile": 0.10, "grade_score": None}
     }
     assert cl["main3"] == {
         "rank": None, "percentile": None, "basis": None, "missing_reason": "teaching_no_total",
@@ -547,7 +546,8 @@ def test_teaching_domain_scope_isolation(client, p1b1_seed):
     assert att["open_follow_ups"] == 1
     assert att["done_follow_ups_30d"] == 0
 
-    assert body["data_quality"]["valid_exam_count"] == 2
+    # 2026-10 两域成绩不互通：有效考试数只计教学域本域场次（仅期中）
+    assert body["data_quality"]["valid_exam_count"] == 1
     assert any("不跨域取数" in note for note in body["data_quality"]["notes"])
 
 
@@ -742,7 +742,7 @@ def test_class_features_homeroom(client, p1b1_seed):
 
 def test_class_features_teaching(client, p1b1_seed):
     """教学域班级汇总：T6+T8 并集、仅物理、无 missing_main3 键。
-    期末 exam 来自 linked 学生 H 域物理行的 F09 反向投影（仅任教学科）。"""
+    2026-10 两域成绩不互通：H 域期末物理行不再反向投影进入教学汇总。"""
     s = p1b1_seed.seed
     resp = _get(client, "/teaching/diagnosis/features/class", academic_year_id=s.ay_id)
     assert resp.status_code == 200, resp.text
@@ -754,13 +754,13 @@ def test_class_features_teaching(client, p1b1_seed):
     }
     stats = body["class_summary"]["missing_stats"]
     exams = {exam["exam_name"]: exam for exam in stats["exams"]}
-    assert set(exams) == {EXAM_MID, EXAM_FINAL}
+    # 2026-10 两域成绩不互通：教学域只列本域考试事件——期末（仅 H 域
+    # 有行）不再出现在教学缺失统计里
+    assert set(exams) == {EXAM_MID}
+    assert EXAM_FINAL not in exams
     mid = exams[EXAM_MID]
     assert mid["members_at"] == 5
     assert mid["missing_by_subject"] == {"物理": 0}  # 丁缺考有行、不缺行
     assert "missing_main3" not in mid  # 教学域无总分行口径
     assert mid["absent_by_subject"] == {"物理": 1}  # 丁·T 登记缺考（score NULL）
-    final = exams[EXAM_FINAL]
-    assert final["missing_by_subject"] == {"物理": 4}  # 仅甲·T 经投影有 H 域物理行
-    assert final["absent_by_subject"] == {}
     assert stats["students_without_exam_data"] == []
