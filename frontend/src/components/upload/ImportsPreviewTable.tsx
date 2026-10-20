@@ -37,14 +37,26 @@ function examCell(it: ImportPreviewItem): string {
 export function ImportsPreviewTable({ items, examChoices = {}, onExamChoice }: { items: ImportPreviewItem[]; examChoices?: Record<string, number | string>; onExamChoice?: (filename: string, choice: number | string) => void }) {
   return (
     <div className="overflow-x-auto">
-      <Table>
+      {/* table-fixed + colgroup 固定列宽：auto 布局下「考试」列里 w-full 的原生 select
+          固有宽度会把列撑到失控（select 溢出卡片、右侧列被盖、警告列被挤成竖排）。 */}
+      <Table className="table-fixed min-w-[960px]">
+        <colgroup>
+          <col className="w-[15%]" />
+          <col className="w-[7%]" />
+          <col className="w-[28%]" />
+          <col className="w-[13%]" />
+          <col className="w-[10%]" />
+          <col className="w-[10%]" />
+          <col className="w-[17%]" />
+        </colgroup>
         <TableHeader>
           <TableRow>
             <TableHead className="whitespace-nowrap text-xs">文件</TableHead>
             <TableHead className="whitespace-nowrap text-xs">类型</TableHead>
             <TableHead className="whitespace-nowrap text-xs">考试</TableHead>
             <TableHead className="whitespace-nowrap text-xs">学科 / 班级</TableHead>
-            <TableHead className="whitespace-nowrap text-right text-xs">成绩条目 / 班级行</TableHead>            <TableHead className="whitespace-nowrap text-right text-xs">已知 / 新学生</TableHead>
+            <TableHead className="text-right text-xs">成绩条目 / 班级行</TableHead>
+            <TableHead className="text-right text-xs">已知 / 新学生</TableHead>
             <TableHead className="text-xs">解析与警告</TableHead>
           </TableRow>
         </TableHeader>
@@ -62,8 +74,8 @@ export function ImportsPreviewTable({ items, examChoices = {}, onExamChoice }: {
               <TableCell className="whitespace-nowrap text-xs text-slate-600">
                 {KIND_LABEL[it.kind] ?? it.kind}
               </TableCell>
-              <TableCell className="whitespace-nowrap text-xs text-slate-600">
-                {examCell(it)}
+              <TableCell className="text-xs text-slate-600">
+                <span className="whitespace-nowrap">{examCell(it)}</span>
                 <ExamResolutionSelect resolution={it.exam_resolution} value={examChoices[it.filename]} onChange={v => onExamChoice?.(it.filename, v)}/>
               </TableCell>
               <TableCell className="whitespace-nowrap text-xs text-slate-600">
@@ -76,7 +88,7 @@ export function ImportsPreviewTable({ items, examChoices = {}, onExamChoice }: {
                 {String(it.known_students)} / {String(it.new_students.length)}
               </TableCell>
               <TableCell>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {it.parsed_ok ? (
                     <Badge variant="success">解析成功</Badge>
                   ) : (

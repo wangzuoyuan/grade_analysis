@@ -229,3 +229,14 @@ test('导航入口与宽表横向滚动（U01）', () => {
   assert.match(previewTable, /overflow-x-auto/, '预览表须横向滚动')
   assert.match(conflictsPanel, /overflow-x-auto/, '冲突表须横向滚动')
 })
+
+test('预览表列宽固定：考试归属下拉不溢出卡片、警告列不竖排', () => {
+  // auto 布局下 6 个 nowrap 列 + 「考试」列里 w-full 原生 select 的固有宽度，
+  // 会把 select 顶出天空卡片右缘盖住「学科 / 班级」列，并把唯一可换行的
+  // 「解析与警告」列挤成一个字宽（文字竖排）；必须 table-fixed + colgroup 定宽。
+  assert.match(previewTable, /<Table className="table-fixed min-w-\[960px\]">/, '预览表须 table-fixed 并带最小宽度')
+  const colMatches = previewTable.match(/<col className="w-\[\d+%\]" \/>/g) ?? []
+  assert.equal(colMatches.length, 7, `colgroup 须固定 7 列宽度（实际 ${colMatches.length}）`)
+  assert.match(previewTable, /<TableCell className="text-xs text-slate-600">\s*<span className="whitespace-nowrap">\{examCell/, '考试列单元格不得整体 nowrap（卡片内文案须可换行），考试名单行由 span 保证')
+  assert.match(previewTable, /flex flex-wrap items-center gap-1\.5/, '解析与警告徽章行须允许换行')
+})
