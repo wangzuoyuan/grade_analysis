@@ -69,6 +69,8 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - `DELETE /api/v1/homework/assignments/{id}`：软撤销 status='revoked'；其上有**晚于创建的**评价编辑
   → 409 列冲突清单；否则成功。撤销后指标即时重算。
 - `GET /api/v1/homework/assignments/{id}` → 详情（含 submissions 与 expected_members）。
+  教学工作台展开批次的逐人明细在前端按姓名拼音升序（同姓再按名字，同名按 person_id），
+  全部/缺交/已交等筛选及行编辑沿用同一排序；不改 API 顺序或班主任作业名单的展示顺序。
 
 ## 2. 读取 / 看板
 

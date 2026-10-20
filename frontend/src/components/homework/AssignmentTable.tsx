@@ -42,6 +42,7 @@ import {
   type WorkspaceMode,
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
+import { compareStudentNames } from '@/lib/student-order'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -1194,6 +1195,7 @@ export function AssignmentTable({
                     : items.map((a) => (
                         <FragmentRow
                           key={a.assignment_id}
+                          mode={mode}
                           item={a}
                           showType={showType}
                           expanded={expandedId === a.assignment_id}
@@ -1251,6 +1253,7 @@ export function AssignmentTable({
 
 /** 某个具体作业批次的逐人明细与编辑表格（平铺与合并展开共用）。 */
 function AssignmentDetailView({
+  mode,
   item,
   detail,
   detailError,
@@ -1265,6 +1268,7 @@ function AssignmentDetailView({
   onEditAssignment,
   onBackToOverview,
 }: {
+  mode: WorkspaceMode
   item: HomeworkAssignmentListItem
   detail: HomeworkAssignmentDetail | null
   detailError: string | null
@@ -1333,7 +1337,7 @@ function AssignmentDetailView({
 
   const filteredSubmissions = useMemo(() => {
     if (!detail) return []
-    return detail.submissions.filter((s) => {
+    const filtered = detail.submissions.filter((s) => {
       if (activeFilter === 'all') return true
       const edit = edits[String(s.person_id)]
       const currentStatus = edit?.status ?? (s.status as HomeworkStatus)
@@ -1356,7 +1360,9 @@ function AssignmentDetailView({
       if (activeFilter === 'negative') return Boolean(s.quality_negative)
       return true
     })
-  }, [detail, edits, activeFilter])
+    // 仅教学批次逐人明细按姓名拼音排序，编辑状态与筛选均不改变姓名顺序。
+    return mode === 'teaching' ? filtered.sort(compareStudentNames) : filtered
+  }, [detail, edits, activeFilter, mode])
 
   if (detailError) {
     return <p className="text-sm text-slate-600">{detailError}</p>
@@ -2363,6 +2369,7 @@ function DayGroupRow({
                 />
               ) : activeAssignment ? (
                 <AssignmentDetailView
+                  mode={mode}
                   item={activeAssignment}
                   detail={detail}
                   detailError={detailError}
@@ -2388,6 +2395,7 @@ function DayGroupRow({
 
 /** 表格一行 + 展开编辑区（Fragment 结构沿用成绩页行展开模式，供平铺模式与教学工作台使用）。 */
 function FragmentRow({
+  mode,
   item,
   showType,
   expanded,
@@ -2406,6 +2414,7 @@ function FragmentRow({
   patchError,
   onSaveEdits,
 }: {
+  mode: WorkspaceMode
   item: HomeworkAssignmentListItem
   /** 教学工作台展示作业种类；班主任工作台整列隐藏（含迁移批次 'legacy'）。 */
   showType: boolean
@@ -2522,6 +2531,7 @@ function FragmentRow({
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={showType ? 10 : 9} className="bg-slate-50/70 p-4">
             <AssignmentDetailView
+              mode={mode}
               item={item}
               detail={detail}
               detailError={detailError}

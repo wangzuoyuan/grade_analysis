@@ -1,0 +1,85 @@
+/* Ant Design 官方 Blue / Gray 色板：https://ant.design/docs/spec/colors/
+   与用户选定预览一致：隔行 blue-1，平均 blue-2，最高 blue-3，最低 gray-4。
+   仅作用于班主任均分表与成绩明细表。 */
+.table {
+  color: #262626;
+}
+
+.table th,
+.table td {
+  border: 1px solid #91caff;
+}
+
+.table thead th {
+  background: #bae0ff;
+  color: #003eb3;
+  text-align: center;
+}
+
+.table tbody > tr {
+  background: #ffffff;
+}
+
+.table tbody > tr[data-stripe='true'] {
+  background: #e6f4ff;
+}
+
+.table tbody > tr[data-stripe]:hover {
+  background: #bae0ff;
+}
+
+.table .classType {
+  background: #ffffff;
+  color: #595959;
+}
+
+.table .classNumber {
+  color: #0958d9;
+}
+
+.table .currentClassNumber {
+  box-shadow: inset 3px 0 0 #0958d9;
+}
+
+.table tbody > tr[data-summary] > * {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.table tbody > tr[data-summary='平均'] {
+  background: #bae0ff;
+  border-top: 2px solid #0958d9;
+}
+
+.table tbody > tr[data-summary='最高'] {
+  background: #91caff;
+  color: #003eb3;
+}
+
+.table tbody > tr[data-summary='最低'] {
+  background: #f0f0f0;
+}
+
+.table tbody > tr[data-summary] > .summaryLabel {
+  text-align: center;
+}
+
+.table tbody > tr[data-summary] > .summaryGroup {
+  background: #e6f4ff;
+  color: #0958d9;
+  text-align: center;
+}
+
+@media print {
+  .table tbody > tr[data-stripe],
+  .table tbody > tr[data-summary] {
+    background: #ffffff;
+    color: #262626;
+  }
+
+  .table tbody > tr[data-summary] > .summaryGroup {
+    background: #ffffff;
+    color: #262626;
+  }
+}

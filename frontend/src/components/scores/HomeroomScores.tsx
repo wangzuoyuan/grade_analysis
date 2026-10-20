@@ -4,8 +4,8 @@
  * 班主任工作台成绩分析页（契约 p3-imports-analysis.md §2.1/§3）。
  *
  * 数据全部来自 /api/v1：shared/exams（考试清单）、homeroom/analysis/*（stats/students/bands/trends）。
- * 计量红线（契约 §2.3）：缺考（score NULL）一律显示「—」不转 0；名次不在本页展示，
- * 表格按总分降序仅为浏览排序；趋势按学年分段展示，不跨年连线；迟到回包按资源分离的序号丢弃（F11：任一资源重拉
+ * 计量红线（契约 §2.3）：缺考（score NULL）一律显示「—」不转 0；
+ * 明细按显示学号升序，班名次独立按成绩计算；趋势按学年分段展示，不跨年连线；迟到回包按资源分离的序号丢弃（F11：任一资源重拉
  * 绝不使其他资源的合法回包失效），bands 在总分具备年级名次时计算，
  * 无名次口径的 409 呈现「不可计算」提示卡（F10）。
  */
@@ -85,6 +85,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
+import { displayStudentId } from '@/lib/student-id'
+import { compareStudentIds } from '@/lib/student-order'
 import { CorrelationCard } from '@/components/homework/CorrelationCard'
 import { homeworkScopeQuery } from '@/components/homework/shared'
 import {
@@ -97,6 +99,7 @@ import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, sortExamsDesc } from './shared'
 import { bandBarColor } from './band-colors'
+import tableStyles from './homeroom-tables.module.css'
 
 const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e05a68', '#64748b', '#0d9488', '#c2410c']
 
@@ -326,6 +329,11 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
     }
   }
 
+  const groupRanges: Array<[number, number]> = []
+  typeSpans.forEach((span, idx) => {
+    if (span > 0) groupRanges.push([idx, span])
+  })
+
   function exportCsv() {
     const header = ['班级类型', '班级', '班主任', ...resolved.subjects]
     for (const totalType of resolved.total_types) {
@@ -374,7 +382,7 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto rounded-lg border border-slate-200">
-          <Table className="min-w-max">
+          <Table className={cn('min-w-max', tableStyles.table)}>
             <TableHeader>
               <TableRow className="bg-slate-100">
                 <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级类型</TableHead>
@@ -405,72 +413,73 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((row, idx) => {
-                const isCurrent = row.class_num === resolved.current_class_num
+              {groupRanges.map(([start, span]) => {
+                const groupRows = rows.slice(start, start + span)
                 return (
-                  <TableRow key={String(row.class_num)} className={cn(isCurrent && 'bg-brand-50/60')}>
-                    {typeSpans[idx] > 0 ? (
-                      <TableCell rowSpan={typeSpans[idx]} className="whitespace-nowrap border-r align-middle text-center text-xs text-slate-500">{row.class_type ?? '未分类'}</TableCell>
-                    ) : null}
-                    <TableCell className="border-r text-center text-sm font-medium text-brand-700">{String(row.class_num).padStart(2, '0')}</TableCell>
-                    <TableCell className="whitespace-nowrap border-r text-sm">{row.teacher_name ?? '—'}</TableCell>
-                    {subjectGroups.map((g) => {
-                      if (!g.paired) {
-                        return <TableCell key={g.subject} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[g.subject])}</TableCell>
-                      }
-                      return [
-                        <TableCell key={`${g.subject}-raw`} className="text-right tabular-nums text-sm">{formatScore(row.subjects[`${g.subject}_原始`])}</TableCell>,
-                        <TableCell key={`${g.subject}-graded`} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[`${g.subject}_等级`])}</TableCell>,
-                      ]
+                  <Fragment key={start}>
+                    {groupRows.map((row, groupIndex) => {
+                      const idx = start + groupIndex
+                      const isCurrent = row.class_num === resolved.current_class_num
+                      return (
+                        <TableRow key={String(row.class_num)} data-stripe={groupIndex % 2 === 1}>
+                          {typeSpans[idx] > 0 ? (
+                            <TableCell rowSpan={typeSpans[idx]} className={cn('whitespace-nowrap border-r align-middle text-center text-xs', tableStyles.classType)}>{row.class_type ?? '未分类'}</TableCell>
+                          ) : null}
+                          <TableCell className={cn('border-r text-center text-sm font-medium', tableStyles.classNumber, isCurrent && tableStyles.currentClassNumber)}>
+                            {String(row.class_num).padStart(2, '0')}
+                            {isCurrent ? <span className="block text-xs">本班</span> : null}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap border-r text-sm">{row.teacher_name ?? '—'}</TableCell>
+                          {subjectGroups.map((g) => {
+                            if (!g.paired) {
+                              return <TableCell key={g.subject} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[g.subject])}</TableCell>
+                            }
+                            return [
+                              <TableCell key={`${g.subject}-raw`} className="text-right tabular-nums text-sm">{formatScore(row.subjects[`${g.subject}_原始`])}</TableCell>,
+                              <TableCell key={`${g.subject}-graded`} className="border-r text-right tabular-nums text-sm">{formatScore(row.subjects[`${g.subject}_等级`])}</TableCell>,
+                            ]
+                          })}
+                          {resolved.total_types.flatMap((totalType) => {
+                            const entry = row.totals[totalType]
+                            return [
+                              <TableCell key={`${totalType}-avg`} className="text-right tabular-nums text-sm font-medium">{formatScore(entry?.均分)}</TableCell>,
+                              <TableCell key={`${totalType}-pass`} className="text-right tabular-nums text-sm">{formatRate(entry?.及格率)}</TableCell>,
+                              <TableCell key={`${totalType}-high`} className="text-right tabular-nums text-sm">{formatRate(entry?.高分率)}</TableCell>,
+                              <TableCell key={`${totalType}-low`} className="text-right tabular-nums text-sm">{formatRate(entry?.低分率)}</TableCell>,
+                              <TableCell key={`${totalType}-sd`} className="text-right tabular-nums text-sm">{entry?.标准差 == null ? '—' : String(entry.标准差)}</TableCell>,
+                              <TableCell key={`${totalType}-rank`} className="border-r text-center tabular-nums text-sm font-medium">{row.total_ranks[totalType] ?? '—'}</TableCell>,
+                            ]
+                          })}
+                        </TableRow>
+                      )
                     })}
-                    {resolved.total_types.flatMap((totalType) => {
-                      const entry = row.totals[totalType]
-                      return [
-                        <TableCell key={`${totalType}-avg`} className="text-right tabular-nums text-sm font-medium">{formatScore(entry?.均分)}</TableCell>,
-                        <TableCell key={`${totalType}-pass`} className="text-right tabular-nums text-sm">{formatRate(entry?.及格率)}</TableCell>,
-                        <TableCell key={`${totalType}-high`} className="text-right tabular-nums text-sm">{formatRate(entry?.高分率)}</TableCell>,
-                        <TableCell key={`${totalType}-low`} className="text-right tabular-nums text-sm">{formatRate(entry?.低分率)}</TableCell>,
-                        <TableCell key={`${totalType}-sd`} className="text-right tabular-nums text-sm">{entry?.标准差 == null ? '—' : String(entry.标准差)}</TableCell>,
-                        <TableCell key={`${totalType}-rank`} className="border-r text-center tabular-nums text-sm font-medium">{row.total_ranks[totalType] ?? '—'}</TableCell>,
-                      ]
-                    })}
-                  </TableRow>
+                    {/* 班型分组汇总：平均/最高/最低（对均分与率、标准差列均有意义；排名列留空） */}
+                    {summaryKinds.map((kind, kindIndex) => (
+                      <TableRow key={`${start}-${kind}`} data-summary={kind}>
+                        {kindIndex === 0 ? <TableCell rowSpan={3} className={cn('whitespace-nowrap border-r align-middle text-xs font-semibold', tableStyles.summaryGroup)}>{groupRows[0].class_type ?? '未分类'}汇总</TableCell> : null}
+                        <TableCell colSpan={2} className={cn('border-r text-xs font-semibold', tableStyles.summaryLabel)}>{kind}</TableCell>
+                        {subjectGroups.map((g) => {
+                          if (!g.paired) {
+                            return <TableCell key={g.subject} className="border-r text-right tabular-nums text-sm font-semibold">{formatScore(summaryNumber(groupRows, (row) => row.subjects[g.subject], kind))}</TableCell>
+                          }
+                          return [
+                            <TableCell key={`${g.subject}-raw`} className="text-right tabular-nums text-sm font-semibold">{formatScore(summaryNumber(groupRows, (row) => row.subjects[`${g.subject}_原始`], kind))}</TableCell>,
+                            <TableCell key={`${g.subject}-graded`} className="border-r text-right tabular-nums text-sm font-semibold">{formatScore(summaryNumber(groupRows, (row) => row.subjects[`${g.subject}_等级`], kind))}</TableCell>,
+                          ]
+                        })}
+                        {resolved.total_types.flatMap((totalType) => [
+                          <TableCell key={`${totalType}-avg`} className="text-right tabular-nums text-sm font-semibold">{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.均分, kind))}</TableCell>,
+                          <TableCell key={`${totalType}-pass`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.及格率, kind))}</TableCell>,
+                          <TableCell key={`${totalType}-high`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.高分率, kind))}</TableCell>,
+                          <TableCell key={`${totalType}-low`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.低分率, kind))}</TableCell>,
+                          <TableCell key={`${totalType}-sd`}>{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.标准差, kind))}</TableCell>,
+                          <TableCell key={`${totalType}-rank`} className="border-r" />,
+                        ])}
+                      </TableRow>
+                    ))}
+                  </Fragment>
                 )
               })}
-              {/* 班型分组汇总：平均/最高/最低（对均分与率、标准差列均有意义；排名列留空） */}
-              {(() => {
-                const groupRanges: Array<[number, number]> = []
-                rows.forEach((_, idx) => {
-                  if (typeSpans[idx] > 0) groupRanges.push([idx, typeSpans[idx]])
-                })
-                return groupRanges.flatMap(([start, span]) => {
-                  const groupRows = rows.slice(start, start + span)
-                  return summaryKinds.map((kind) => (
-                    <TableRow key={`${start}-${kind}`} className={kind === '最高' ? 'bg-orange-50' : kind === '最低' ? 'bg-slate-100' : 'bg-slate-50/70'}>
-                      <TableCell className="whitespace-nowrap border-r text-xs font-semibold text-slate-600">{groupRows[0].class_type ?? '未分类'}汇总</TableCell>
-                      <TableCell className="border-r text-center text-xs font-semibold">{kind}</TableCell>
-                      <TableCell className="border-r" />
-                      {subjectGroups.map((g) => {
-                        if (!g.paired) {
-                          return <TableCell key={g.subject} className={cn('border-r text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.subjects[g.subject], kind))}</TableCell>
-                        }
-                        return [
-                          <TableCell key={`${g.subject}-raw`} className={cn('text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.subjects[`${g.subject}_原始`], kind))}</TableCell>,
-                          <TableCell key={`${g.subject}-graded`} className={cn('border-r text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.subjects[`${g.subject}_等级`], kind))}</TableCell>,
-                        ]
-                      })}
-                      {resolved.total_types.flatMap((totalType) => [
-                        <TableCell key={`${totalType}-avg`} className={cn('text-right tabular-nums text-sm font-semibold', kind === '最高' && 'bg-orange-400 text-white', kind === '最低' && 'bg-slate-600 text-white')}>{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.均分, kind))}</TableCell>,
-                        <TableCell key={`${totalType}-pass`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.及格率, kind))}</TableCell>,
-                        <TableCell key={`${totalType}-high`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.高分率, kind))}</TableCell>,
-                        <TableCell key={`${totalType}-low`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.低分率, kind))}</TableCell>,
-                        <TableCell key={`${totalType}-sd`}>{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.标准差, kind))}</TableCell>,
-                        <TableCell key={`${totalType}-rank`} className="border-r" />,
-                      ])}
-                    </TableRow>
-                  ))
-                })
-              })()}
             </TableBody>
           </Table>
         </div>
@@ -939,22 +948,8 @@ export function HomeroomScores() {
       })
   }, [expandedPerson, scopeQ, trendsNonce])
 
-  // 学生表排序：按主 total_type（第一个）降序，缺考排后；仅浏览排序，非正式名次
-  const sortedStudents = useMemo(() => {
-    const primaryTotal = totalCols[0] ?? null
-    const list = (students ?? []).slice()
-    list.sort((a, b) => {
-      if (primaryTotal != null) {
-        const av = a.totals?.[primaryTotal] ?? null
-        const bv = b.totals?.[primaryTotal] ?? null
-        if (av != null && bv == null) return -1
-        if (av == null && bv != null) return 1
-        if (av != null && bv != null && av !== bv) return bv - av
-      }
-      return (a.name ?? '').localeCompare(b.name ?? '', 'zh-CN')
-    })
-    return list
-  }, [students, totalCols])
+  // 行序按显示学号升序；成绩名次独立计算，无学号者按姓名拼音排在末尾。
+  const sortedStudents = useMemo(() => (students ?? []).slice().sort(compareStudentIds), [students])
 
   // 班名次（2026-10-19 明细表新列）：按各总分口径对本班有总分学生计算，
   // 同分同名次（1,2,2,4 语义）、缺考不参与不编造；仅为浏览名次。
@@ -1179,7 +1174,7 @@ export function HomeroomScores() {
                     </div>
                   ) : (
                     <div className="overflow-x-auto">
-                      <Table className="min-w-max">
+                      <Table className={cn('min-w-max', tableStyles.table)}>
                         <TableHeader>
                           <TableRow className="bg-slate-100">
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学号</TableHead>
@@ -1213,7 +1208,7 @@ export function HomeroomScores() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {sortedStudents.map((s) => {
+                          {sortedStudents.map((s, idx) => {
                             const key = String(s.person_id)
                             const expanded = expandedPerson === key
                             // 趋势数据按 person_id 守卫：切换人选的瞬间绝不闪现上一个人的数据
@@ -1223,11 +1218,12 @@ export function HomeroomScores() {
                               <Fragment key={key}>
                                 <TableRow
                                   className="cursor-pointer"
+                                  data-stripe={idx % 2 === 1}
                                   aria-expanded={expanded}
                                   onClick={() => setExpandedPerson(expanded ? null : key)}
                                 >
                                   <TableCell className="whitespace-nowrap border-r text-xs tabular-nums text-slate-500">
-                                    {s.alias ?? '—'}
+                                    {displayStudentId(s.alias) || '—'}
                                   </TableCell>
                                   <TableCell className="border-r text-center text-xs text-slate-500">
                                     {s.class_num != null ? String(s.class_num).padStart(2, '0') : '—'}

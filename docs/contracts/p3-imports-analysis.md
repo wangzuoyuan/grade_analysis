@@ -151,6 +151,8 @@
   （v2.3，2026-10-19 明细表按学校导出重制：xueji 为身份学籍代码、class_num 为行政班号、
   grade_scores 为选科等级分、percentiles 为年级百分位（0-1）、ranks 为各总分口径校名次——
   resolve_year_rank 口径，缺考 null。2026-10-20 起 shared_conflicts 字段随 Q10 退役删除）
+  前端成绩明细按显示学号自然升序（剥跨届前缀，数字段按数值），无学号者按姓名拼音排末尾；
+  同学号/同名以 person_id 稳定排序。此行序与成绩无关，班名次继续按本班有效总分独立计算。
 - `GET exams/{exam_name}/class-averages` → `{metadata, grade, subjects, total_types,
   current_class_num, rows: [{class_type, class_num, teacher_name, subjects, totals, total_ranks}]}`。
   数据只读自已确认导入的官方班级均分表。**v2.3（2026-10-19）**：`totals` 为口径→指标包
@@ -159,6 +161,9 @@
   未分类各自）同口径均分降序、同分同名次计算。某总分口径某组全为 0 时视为来源未提供，
   排名返回空，不制造并列第一。`current_class_num` 为当前班主任绑定行政班班号（前端班级
   对比页用于高亮本班；无绑定班时为 null）。
+  前端按班型逐组展示“各班成绩→平均/最高/最低汇总→下一班型”；每组汇总名称纵向合并三行，
+  统计类型横跨班级与班主任两列。班主任均分表及学生明细采用 Ant Design 官方 Blue/Gray
+  色板：白/blue-1 隔行、平均 blue-2、最高 blue-3、最低 gray-4，所有汇总指标列同一行同色。
 - `GET trends?person_id=` → `{person_id, name, years: [{academic_year_id, academic_year_name,
   subjects: {subject: [{exam_name, exam_date, score, grade_score?}]}, totals: {...}}]}`
   （E03：跨学年分段展示，不跨年直接比较九科总分；响应按学年分组即结构上防止跨年连算）
