@@ -126,7 +126,6 @@ test('名册页：新建/行内编辑/离班/追加学号齐全，且无删除�
   assert.match(aliasPanel, /readAliasConflicts/, '追加学号撞号 422 须解析冲突人列表')
   assert.match(rosterTable, /patchHomeroomStudent/, '行内编辑须走 PATCH')
   assert.match(rosterTable, /archiveHomeroomStudent/, '离班/恢复须走 archive 端点')
-  assert.match(rosterTable, /两域分数不一致待人工核对/, '冲突提示沿用 P3 语义')
   assert.match(rosterTable, /overflow-x-auto/, '名册宽表须横向滚动')
   // 红线：P4 不提供删除/合并（H 版语义重，延后 P7 裁决）；文案须正向声明「不自动合并」
   for (const [src, name] of [

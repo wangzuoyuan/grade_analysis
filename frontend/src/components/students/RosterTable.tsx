@@ -6,7 +6,7 @@
  * 数据：GET /api/v1/homeroom/students（工作台筛选映射作用域，后端解析）。
  * 操作：新建（弹窗）、行内编辑姓名（PATCH）、离班/恢复在班（archive，绝不物理删）、
  * 追加新学号（展开别名历史面板）、学生画像打印入口（/homeroom/students/{id}/report）。
- * 红线：不提供删除/合并入口（契约：P4 不提供）；缺考/冲突沿用 P3 提示语义；
+ * 红线：不提供删除/合并入口（契约：P4 不提供）；
  * 迟到回包按世代号（reqRef）丢弃。
  */
 
@@ -302,7 +302,6 @@ export function RosterTable() {
                     <TableHead className="whitespace-nowrap text-xs">姓名</TableHead>
                     <TableHead className="whitespace-nowrap text-xs">学号</TableHead>
                     <TableHead className="whitespace-nowrap text-xs">状态</TableHead>
-                    <TableHead className="whitespace-nowrap text-xs">冲突提示</TableHead>
                     <TableHead className="w-56 whitespace-nowrap text-right text-xs print:hidden">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -346,18 +345,6 @@ export function RosterTable() {
                               <Badge variant="secondary" className="text-xs">
                                 {statusLabel(s.status)}
                               </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="whitespace-nowrap">
-                            {s.shared_conflict ? (
-                              <span
-                                className="inline-flex items-center whitespace-nowrap rounded-md border border-warning-300 bg-warning-50 px-2 py-0.5 text-xs text-warning-700"
-                                title={`教学域记录分数：${s.shared_conflict.teaching_score == null ? '缺考' : `${String(s.shared_conflict.teaching_score)} 分`}，两域分数不一致待人工核对`}
-                              >
-                                两域分数不一致待人工核对
-                              </span>
-                            ) : (
-                              <span className="text-xs text-slate-300">—</span>
                             )}
                           </TableCell>
                           <TableCell className="text-right print:hidden">

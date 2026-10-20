@@ -4,7 +4,7 @@
  * 事实源：docs/contracts/p1-api.md §1/§3、docs/contracts/p3-imports-analysis.md §1/§2、
  * docs/contracts/p4-students.md §1-§4。
  * 导出清单与类型不得自行偏离契约；修改须先由集成者修订契约再同步本文件。
- * v2 增量：§1.2.1 学生配对、§1.2.2 share-scope、§1.4.1 shared_conflict（均为追加，不改既有导出）。
+ * v2 增量：§1.2.1 学生配对、§1.2.2 share-scope（均为追加，不改既有导出）。
  * P3 增量：§1 导入（multipart preview + confirm/revise，替换 P1 骨架语义）、§1.4 考试清单、
  * §2 两域分析端点；P1 骨架的 importsPreview/importsConfirm（恒空清单）无人使用，按 P3 契约删除。
  * P4 增量：§1 学年管理、§2 名册/换届/打印、§3 教学班成员、§4 档案（全部 JSON，无 multipart）。
@@ -333,23 +333,6 @@ export interface ResponseMetadata {
   data_revision: number | string
 }
 
-/** 关联投影出来的任教学科最近一场成绩（仅“已确认关联且在有效期”的学生携带）。 */
-export interface SharedSubjectScore {
-  subject: string
-  /** 缺考为 null，不得转 0。 */
-  score: number | null
-  exam_name: string
-  source_domain: 'teaching'
-}
-
-/**
- * 跨域冲突提示（契约 §1.4.1）：两域同场次事实值不一致时由本域行携带；
- * teaching_score 可为 null（对方域缺考）。绝不静默采用对方值。
- */
-export interface LinkSharedConflict {
-  teaching_score: number | null
-}
-
 export interface WorkspaceStudent {
   person_id: PersonId
   name: string | null
@@ -357,9 +340,6 @@ export interface WorkspaceStudent {
   alias: string | null
   status: string | null
   linked_teaching_class_id?: number | null
-  shared_subject_score?: SharedSubjectScore | null
-  /** 两域分数不一致时由后端可选携带（契约 §1.4.1）。 */
-  shared_conflict?: LinkSharedConflict | null
 }
 
 export interface StudentsQuery {
@@ -384,8 +364,6 @@ export interface ProfileExam {
   /** 后端画像条目携带的等级分（E03）；旧来源无等级分时为 null。 */
   grade_score?: number | null
   source_domain: SourceDomain
-  /** 两域分数不一致时可选携带（契约 §1.4.1）。 */
-  shared_conflict?: LinkSharedConflict | null
 }
 
 export interface ProfileSubject {
@@ -424,8 +402,6 @@ export interface ScoreRow {
   score: number | null
   total_type: string | null
   source_domain: SourceDomain
-  /** 两域分数不一致时由 homeroom 行可选携带（契约 §1.4.1）。 */
-  shared_conflict?: LinkSharedConflict | null
 }
 
 export interface ScoresResponse {
@@ -644,15 +620,6 @@ export interface HomeroomRankBandsResponse {
   grade_bands: HomeroomRankBandItem[]
 }
 
-/**
- * 学生行的任教学科冲突集合（契约 §2.1 students.shared_conflicts）：
- * 键为学科名，值为对方（教学域）记录分。后端也可能返回数组（条目带 subject），
- * 页面统一经 normalizeSharedConflicts 归一为 Map 使用。
- */
-export type SharedConflictsValue =
-  | Record<string, LinkSharedConflict>
-  | Array<LinkSharedConflict & { subject?: string }>
-
 /** 班主任学生行（契约 §2.1）；scores/totals 值缺考为 null，绝不转 0。
  *  2026-10-19 扩展：grade_scores 选科等级分、percentiles 百分位（学科+总分）、
  *  ranks 各总分口径校名次、xueji 学籍代码、class_num 行政班号。 */
@@ -667,7 +634,6 @@ export interface HomeroomStudentRow {
   percentiles?: Record<string, number | null>
   totals: Record<string, number | null>
   ranks?: Record<string, number | null>
-  shared_conflicts?: SharedConflictsValue | null
 }
 
 /** GET /api/v1/homeroom/analysis/exams/{exam_name}/students 的响应。 */
@@ -828,7 +794,6 @@ export interface TeachingStatsResponse {
 
 /** 教学学生行（契约 §2.2）；rank 为本班内名次，score 缺考为 null。 */
 export interface TeachingStudentRow {
-  shared_conflict?: { fields?: Record<string, {own: number | null; other: number | null}> } | null
   person_id: PersonId
   name: string | null
   class_label: string | null
@@ -1169,32 +1134,6 @@ export function readImportIdentityCandidates(err: unknown): ImportIdentityCandid
     })
   }
   return list.length > 0 ? list : null
-}
-
-/**
- * 把学生行的 shared_conflicts（契约 §2.1）归一为「学科 → 冲突」映射。
- * 兼容映射与数组两种形状（后端实现未冻结到字段级，此处宽容收窄）。
- */
-export function normalizeSharedConflicts(value: unknown): Map<string, LinkSharedConflict> {
-  const map = new Map<string, LinkSharedConflict>()
-  if (typeof value !== 'object' || value === null) return map
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      if (typeof item !== 'object' || item === null) continue
-      const o = item as Record<string, unknown>
-      if (typeof o.subject !== 'string') continue
-      if (typeof o.teaching_score !== 'number' && o.teaching_score !== null) continue
-      map.set(o.subject, { teaching_score: o.teaching_score })
-    }
-    return map
-  }
-  for (const [subject, item] of Object.entries(value)) {
-    if (typeof item !== 'object' || item === null) continue
-    const score: unknown = (item as Record<string, unknown>).teaching_score
-    if (typeof score !== 'number' && score !== null) continue
-    map.set(subject, { teaching_score: score })
-  }
-  return map
 }
 
 /** GET /api/v1/shared/exams（契约 p3 §1.4：该域该学年当前班级范围已导入考试，日期降序） */
@@ -1654,7 +1593,6 @@ export interface StudentReportExam {
   score: number | null
   grade_score?: number | null
   source_domain: 'homeroom' | 'teaching'
-  shared_conflict?: { teaching_score?: number } | null
 }
 
 /** 打印视图单科历场成绩。 */
@@ -2957,79 +2895,6 @@ export function closeChatSession(sessionId: number): Promise<ChatCloseResponse> 
 
 /* ------------------------------------------------------------------ */
 /* Q10 跨域冲突规范值确认（契约 docs/contracts/p3-imports-analysis.md §1.6） */
-/* ------------------------------------------------------------------ */
-
-/** 单条当前冲突（H 侧视角；缺考为 null，展示层绝不转 0）。 */
-export interface ScoreConflictItem {
-  exam_key?: string | null
-  person_id: PersonId
-  name: string | null
-  subject: string
-  exam_name: string
-  exam_date: string | null
-  homeroom_score: number | null
-  teaching_score: number | null
-}
-
-/** GET /api/v1/shared/links/{link_id}/score-conflicts 的响应。 */
-export interface ScoreConflictsResponse {
-  conflicts: ScoreConflictItem[]
-}
-
-/** 规范值来源侧（契约 §1.6 v2.3）：必属两域之一。 */
-export type CanonicalSide = 'homeroom' | 'teaching'
-
-/**
- * 单条规范值确认（契约 §1.6 v2.3）：按"来源侧"选择——规范值 = 该侧
- * 当前值（可为 null=缺考：核实后缺考是合法规范结果，不得强制改成实分）；
- * 同一冲突一次只选一侧，本阶段不做人工改分。
- */
-export interface CanonicalResolution {
-  exam_key?: string | null
-  person_id: PersonId
-  subject: string
-  exam_name: string
-  canonical_side: CanonicalSide
-  /** 缺省 canonical_confirm:<日期>；审计由 source/data_revision 与回执承载。 */
-  basis?: string
-}
-
-/** POST /api/v1/shared/links/{link_id}/canonical-scores 的响应回执。 */
-export interface CanonicalResult {
-  resolved: number
-  skipped: number
-  facts: Array<{
-    person_id: PersonId
-    subject: string
-    exam_name: string
-    score: number | null
-    data_revision: number
-  }>
-}
-
-/** GET /api/v1/shared/links/{link_id}/score-conflicts（link 非 active → 409）。 */
-export function listScoreConflicts(linkId: number): Promise<ScoreConflictsResponse> {
-  return request<ScoreConflictsResponse>(
-    `${API_V1_BASE}/shared/links/${encodeURIComponent(String(linkId))}/score-conflicts`,
-  )
-}
-
-/**
- * POST /api/v1/shared/links/{link_id}/canonical-scores：单事务写两域
- * （score = 所选侧现值，含 null=缺考 + data_revision+1 + source 追加
- * canonical 标记）；任一条不对应真实冲突 → 422 整批零写入；
- * 已一致的重复提交 → skipped。
- */
-export function confirmCanonicalScores(
-  linkId: number,
-  resolutions: CanonicalResolution[],
-): Promise<CanonicalResult> {
-  return request<CanonicalResult>(
-    `${API_V1_BASE}/shared/links/${encodeURIComponent(String(linkId))}/canonical-scores`,
-    { method: 'POST', body: JSON.stringify({ resolutions }) },
-  )
-}
-
 /**
  * 会话历史消息条目（契约 §0.1 Q03：服务端 ChatMessage 持久化，刷新恢复以
  * 服务端为准；role 限用户/助手两态，工具事件不在对外投影内）。

@@ -556,28 +556,6 @@ class LinkShareScopeResponse(BaseModel):
 # ────────────────────────────── 学生 ──────────────────────────────
 
 
-class SharedSubjectScore(BaseModel):
-    """关联班学生在班主任视图看到的任教学科投影成绩。"""
-
-    subject: str
-    score: Optional[float] = None
-    exam_name: str
-    source_domain: str = "teaching"
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [
-                {
-                    "subject": "物理",
-                    "score": 88.0,
-                    "exam_name": "2025期中",
-                    "source_domain": "teaching",
-                }
-            ]
-        }
-    )
-
-
 class StudentEntry(BaseModel):
     person_id: int
     name: Optional[str] = None
@@ -585,10 +563,6 @@ class StudentEntry(BaseModel):
     alias: Optional[str] = None
     status: Optional[str] = None
     linked_teaching_class_id: Optional[int] = None
-    shared_subject_score: Optional[SharedSubjectScore] = None
-    # §1.4.1 冲突提示：最近一场共享学科与 H 域同场事实值不同时，
-    # 不设 shared_subject_score，改报 {"teaching_score": <对方值>}
-    shared_conflict: Optional[dict] = None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -600,12 +574,6 @@ class StudentEntry(BaseModel):
                     "alias": "9900601",
                     "status": "active",
                     "linked_teaching_class_id": 1,
-                    "shared_subject_score": {
-                        "subject": "物理",
-                        "score": 88.0,
-                        "exam_name": "2025期中",
-                        "source_domain": "teaching",
-                    },
                 },
                 {"person_id": 3, "name": "丙", "seat_no": 3, "alias": "9900603", "status": "active"},
             ]
@@ -643,12 +611,6 @@ class StudentsResponse(BaseModel):
                             "alias": "9900601",
                             "status": "active",
                             "linked_teaching_class_id": 1,
-                            "shared_subject_score": {
-                                "subject": "物理",
-                                "score": 88.0,
-                                "exam_name": "2025期中",
-                                "source_domain": "teaching",
-                            },
                         },
                         {"person_id": 3, "name": "丙", "seat_no": 3, "alias": "9900603", "status": "active"},
                     ],
@@ -665,8 +627,6 @@ class ProfileExam(BaseModel):
     # P3 §1.3：等级分/赋分（缺考与 score 同为 null）
     grade_score: Optional[float] = None
     source_domain: str
-    # §1.4.1 冲突提示（仅 homeroom 画像的 H 域条目携带，语义同 ScoreRow）
-    shared_conflict: Optional[dict] = None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -818,9 +778,6 @@ class ScoreRow(BaseModel):
     grade_score: Optional[float] = None
     total_type: Optional[str] = None
     source_domain: str
-    # §1.4.1 冲突提示：两域同 (人, 学科, 考试) 值不同时，本域行保留并附
-    # {"teaching_score": <对方值>}；绝不静默采用对方值。teaching 侧行不携带。
-    shared_conflict: Optional[dict] = None
 
     model_config = ConfigDict(
         json_schema_extra={

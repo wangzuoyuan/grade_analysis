@@ -377,14 +377,14 @@ def test_homeroom_students_projection_and_isolation(client, seed):
     assert jia["seat_no"] == 1
     assert jia["linked_teaching_class_id"] == seed.t6_id
     # 2026-10 两域成绩不互通：跨域投影与冲突标记一律不再产生——
-    # 同场同学科分值差（90 vs 91）既不设 shared_subject_score 也不报
-    # shared_conflict，H 名册只读本域事实
-    assert jia["shared_subject_score"] is None
-    assert jia["shared_conflict"] is None
-    assert by_pid[seed.yi_h]["shared_conflict"] is None
+    # Q10 冲突/规范值链路退役后，名册行不再携带 shared_subject_score /
+    # shared_conflict 字段，H 名册只读本域事实
+    assert "shared_subject_score" not in jia
+    assert "shared_conflict" not in jia
+    assert "shared_conflict" not in by_pid[seed.yi_h]
     bing = by_pid[seed.bing_h]
-    assert bing["shared_subject_score"] is None
-    assert bing["shared_conflict"] is None
+    assert "shared_subject_score" not in bing
+    assert "shared_conflict" not in bing
     assert bing["linked_teaching_class_id"] is None
 
     # 丁戊己（教学域身份）绝不出现
@@ -451,17 +451,17 @@ def test_homeroom_scores_replace_semantics_and_isolation(client, seed):
     assert sum(1 for r in rows if r.get("subject") == "物理") == 3
 
     # 2026-10 两域成绩不互通：/scores 只读本域事实，甲乙与 teaching 域
-    # 同场分值差（90/91、84/85）不再附 shared_conflict，也不出现任何
-    # teaching 来源行
+    # 同场分值差（90/91、84/85）不再附 shared_conflict（字段已随 Q10 退役
+    # 移除），也不出现任何 teaching 来源行
     physics = {r["person_id"]: r for r in rows if r.get("subject") == "物理"}
     assert physics[seed.jia_h]["score"] == 90.0
     assert physics[seed.jia_h]["source_domain"] == "homeroom"
-    assert physics[seed.jia_h]["shared_conflict"] is None
+    assert "shared_conflict" not in physics[seed.jia_h]
     assert physics[seed.yi_h]["score"] == 84.0
-    assert physics[seed.yi_h]["shared_conflict"] is None
+    assert "shared_conflict" not in physics[seed.yi_h]
     assert physics[seed.bing_h]["score"] == 68.0
     assert physics[seed.bing_h]["source_domain"] == "homeroom"
-    assert physics[seed.bing_h]["shared_conflict"] is None
+    assert "shared_conflict" not in physics[seed.bing_h]
 
     persons = {r["person_id"] for r in rows}
     assert persons == set(seed.h_person_ids)
@@ -512,10 +512,10 @@ def test_homeroom_profile_includes_teaching_projection(client, seed):
     physics = subjects["物理"]["exams"]
     assert len(physics) == 1
     # 2026-10 两域成绩不互通：画像只读本域事实，同场分值差（90 vs 91）
-    # 不再附 shared_conflict 提示
+    # 不再附 shared_conflict 提示（字段已随 Q10 退役移除）
     assert physics[0]["score"] == 90.0
     assert physics[0]["source_domain"] == "homeroom"
-    assert physics[0]["shared_conflict"] is None
+    assert "shared_conflict" not in physics[0]
     assert subjects["语文"]["exams"][0]["source_domain"] == "homeroom"
 
     totals = {g["total_type"]: g for g in body["totals"]}
@@ -778,8 +778,8 @@ def test_links_reconfirm_reactivates_cancelled_link(client, seed):
         params={"academic_year_id": seed.ay_id, "class_id": seed.h6_id},
     )
     jia = next(s for s in hr.json()["students"] if s["person_id"] == seed.jia_h)
-    assert jia["shared_subject_score"] is None
-    assert jia["shared_conflict"] is None
+    assert "shared_subject_score" not in jia
+    assert "shared_conflict" not in jia
 
 
 # ────────────────────────────── 导入骨架 ──────────────────────────────

@@ -101,9 +101,6 @@ class HomeroomAnalysisStudent(BaseModel):
     percentiles: Dict[str, Optional[float]] = Field(default_factory=dict)
     totals: Dict[str, Optional[float]] = Field(default_factory=dict)
     ranks: Dict[str, Optional[int]] = Field(default_factory=dict)
-    # linked 学生任教学科两域同场值不同时的待人工核对提示：
-    # {"teaching_score": <对方值>}；绝不静默采用对方值（§1.4.1 R5）
-    shared_conflicts: Optional[dict] = None
 
 
 class HomeroomExamStudentsResponse(BaseModel):
@@ -314,7 +311,6 @@ class TeachingExamStatsResponse(BaseModel):
 
 
 class TeachingAnalysisStudent(BaseModel):
-    shared_conflict: Optional[dict] = None
     """教学班学生行：无 total_type/其他学科键（键本身缺席）。
     source_domain 标注行来源（teaching 本域 / homeroom 反向投影）。"""
 

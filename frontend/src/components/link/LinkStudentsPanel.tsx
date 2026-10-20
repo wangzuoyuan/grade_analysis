@@ -5,7 +5,6 @@
  *
  * 数据源：previewLink 的 roster_diff（homeroom_only / teaching_only 为候选列，
  * both 即已确认配对）+ listLinkStudents 的既有配对（撤销需 linked_id）；
- * 冲突标注读 /homeroom/students 的 WorkspaceStudent.shared_conflict（契约 §1.4.1）。
  *
  * 纪律：绝不按同名/同号自动配对或预选，两侧必须逐人显式点选后提交；
  * 同名列出时以别名（alias）与编号辅助人工判断。未提交选择经
@@ -17,12 +16,10 @@ import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, Unlink } from 'lucide-
 import {
   createLinkStudents,
   deleteLinkStudent,
-  fetchStudents,
   listLinkStudents,
   previewLink,
   type LinkPairEntry,
   type LinkPreview,
-  type LinkSharedConflict,
   type LinkSummary,
   type StudentBrief,
 } from '@/lib/api-v1'
@@ -136,7 +133,6 @@ export function LinkStudentsPanel({ link, onPairsChanged }: LinkStudentsPanelPro
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<LinkPreview | null>(null)
   const [pairs, setPairs] = useState<LinkPairEntry[]>([])
-  const [conflictByPerson, setConflictByPerson] = useState<Map<string, LinkSharedConflict>>(new Map())
   const [selectedHomeroom, setSelectedHomeroom] = useState<string | null>(null)
   const [selectedTeaching, setSelectedTeaching] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
@@ -171,7 +167,7 @@ export function LinkStudentsPanel({ link, onPairsChanged }: LinkStudentsPanelPro
     setLoading(true)
     setError(null)
     try {
-      const [diff, pairList, homeroomStudents] = await Promise.all([
+      const [diff, pairList] = await Promise.all([
         previewLink({
           admin_class_id: link.admin_class_id,
           teaching_class_id: link.teaching_class_id,
@@ -179,24 +175,14 @@ export function LinkStudentsPanel({ link, onPairsChanged }: LinkStudentsPanelPro
           subject: link.subject,
         }),
         listLinkStudents(link.id),
-        fetchStudents('homeroom', {
-          academic_year_id: link.academic_year_id,
-          class_id: link.admin_class_id,
-        }),
       ])
       if (req !== reqRef.current) return
       setPreview(diff)
       setPairs(pairList.pairs ?? [])
-      const conflicts = new Map<string, LinkSharedConflict>()
-      for (const stu of homeroomStudents.students ?? []) {
-        if (stu.shared_conflict != null) conflicts.set(String(stu.person_id), stu.shared_conflict)
-      }
-      setConflictByPerson(conflicts)
     } catch (err) {
       if (req !== reqRef.current) return
       setPreview(null)
       setPairs([])
-      setConflictByPerson(new Map())
       setError(apiErrorMessage(err))
     } finally {
       if (req === reqRef.current) setLoading(false)
@@ -380,13 +366,11 @@ export function LinkStudentsPanel({ link, onPairsChanged }: LinkStudentsPanelPro
                       <TableHead>班主任侧</TableHead>
                       <TableHead>教学侧</TableHead>
                       <TableHead>确认依据</TableHead>
-                      <TableHead>冲突提示</TableHead>
                       <TableHead className="w-24 text-right print:hidden">操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {pairs.map((p) => {
-                      const conflict = conflictByPerson.get(String(p.homeroom_person_id)) ?? null
                       return (
                         <TableRow key={String(p.linked_id)}>
                           <TableCell className="whitespace-nowrap text-sm">
@@ -402,18 +386,6 @@ export function LinkStudentsPanel({ link, onPairsChanged }: LinkStudentsPanelPro
                             </code>
                           </TableCell>
                           <TableCell className="text-xs text-slate-500">{p.confirm_basis ?? '—'}</TableCell>
-                          <TableCell>
-                            {conflict ? (
-                              <span
-                                className="inline-flex items-center whitespace-nowrap rounded-md border border-warning-300 bg-warning-50 px-2 py-0.5 text-xs text-warning-700"
-                                title={`教学域记录分数：${conflict.teaching_score == null ? '缺考' : String(conflict.teaching_score)}`}
-                              >
-                                两域分数不一致待人工核对
-                              </span>
-                            ) : (
-                              <span className="text-xs text-slate-400">—</span>
-                            )}
-                          </TableCell>
                           <TableCell className="text-right print:hidden">
                             <Button
                               type="button"

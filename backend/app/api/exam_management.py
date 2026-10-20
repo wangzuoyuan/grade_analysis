@@ -54,7 +54,7 @@ class MetricFillConfirm(BaseModel):
 
 def _metric_fill_plan(db, ctx, fact_id):
     entry = next((e for e in q.readable_facts(db, ctx)
-                  if e.fact.id == fact_id and not e.projected and e.source_domain == ctx.mode), None)
+                  if e.fact.id == fact_id and e.source_domain == ctx.mode), None)
     if entry is None or entry.conflict_fact is None:
         raise ResourceOutOfScope('没有可确认补齐的关联来源')
     own, other = entry.fact, entry.conflict_fact
@@ -272,23 +272,18 @@ def _catalog(db, ctx):
     for quality in db.query(TeachingClassQuality).filter(TeachingClassQuality.exam_id.in_(platform)).order_by(TeachingClassQuality.id):
         e = platform[quality.exam_id]
         group(e, e.grade)['quality'].append(quality)
+    # 两域隔离后 readable_facts 仅本域行；此处只消费同域重复来源注记
+    #（考试管理「字段差异」展示与指标补齐入口），无跨域投影行。
     readable = q.readable_facts(db, ctx)
-    names = q.names_for(db, [e.person_id for e in readable])
-    for entry in readable:
+    conflict_entries = [e for e in readable if e.conflict]
+    names = q.names_for(db, [e.person_id for e in conflict_entries])
+    for entry in conflict_entries:
         cls = classes.get(entry.class_ref_id)
         g = group(entry.fact, cls.grade if cls else None, 'linked')
         g['sources'].add(entry.source_domain)
-        if entry.conflict:
-            if entry.conflict_fact is not None:
-                g['sources'].add(entry.conflict_fact.data_domain)
-            g['conflicts'].append(dict(person_id=entry.person_id, name=names.get(entry.person_id), fact_id=entry.fact.id if not entry.projected else None, fields=entry.conflict.get('fields', {})))
-        if entry.source_domain == ctx.mode:
-            continue
-        g['projected_ids'].add(entry.person_id)
-        if cls:
-            g['class_labels'].add(cls.label)
-        if entry.fact.exam_date:
-            g['dates'].add(entry.fact.exam_date.isoformat())
+        if entry.conflict_fact is not None:
+            g['sources'].add(entry.conflict_fact.data_domain)
+        g['conflicts'].append(dict(person_id=entry.person_id, name=names.get(entry.person_id), fact_id=entry.fact.id, fields=entry.conflict.get('fields', {})))
     return groups
 
 

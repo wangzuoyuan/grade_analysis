@@ -84,7 +84,6 @@ def create_api_router() -> APIRouter:
     from app.api import chat as chat_module
     from app.api import homework as homework_module
     from app.api import imports as imports_module
-    from app.api import canonical as canonical_module
     from app.api import scores, shared, students, students_mgmt
     from app.diagnosis import router as diagnosis_router_module
     from app.diagnosis import changes_router  # P1-B3 变化分解
@@ -100,7 +99,6 @@ def create_api_router() -> APIRouter:
     router.include_router(students.router)
     router.include_router(scores.router)
     router.include_router(imports_module.router)
-    router.include_router(canonical_module.router)
     router.include_router(analysis_module.router)
     router.include_router(teaching_platform.router)
     router.include_router(exam_management.router)

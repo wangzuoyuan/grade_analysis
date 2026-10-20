@@ -61,16 +61,10 @@ def test_month_precision_is_displayed_but_still_blocked_by_share_gate(client, v1
     )
     assert other.status_code == 200, other.text
     assert MONTH_EXAM not in {row["exam_name"] for row in other.json()["exams"]}
-    from app.db import workspace_models as wm
-    from app.db.models import SessionLocal
-
-    db = SessionLocal()
-    try:
-        link = db.get(wm.HomeroomTeachingLink, v1_seed.link_id)
-        stored_fact = db.get(wm.ScoreFact, fact.id)
-        assert q.gate_fact(link, stored_fact) is False
-    finally:
-        db.close()
+    # 2026-10 两域成绩不互通（Q10 退役）：成绩投影门 gate_fact 已随
+    # 冲突/规范值链路整体移除——readable_facts 只读本域，月精度事实
+    # 自然不可能进入 teaching 侧清单（上方 API 断言已覆盖）。
+    assert not hasattr(q, "gate_fact")
 
 
 def test_month_precision_reaches_profile_and_trends(client, v1_seed):

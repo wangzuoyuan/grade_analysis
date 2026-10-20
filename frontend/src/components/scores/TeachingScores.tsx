@@ -673,7 +673,7 @@ export function TeachingScores() {
                   </CardTitle>
                   <CardDescription>
                     各教学班与当前范围合并列的「本段 / 累计 / 累计比例」，底部为人数、最值、均分与标准差；
-                    数据由本域学生明细实时计算（含班主任域投影行），缺考不计入任何段与计量。
+                    数据由本域学生明细实时计算，缺考不计入任何段与计量。
                   </CardDescription>
                   <div className="flex flex-wrap items-center gap-2 pt-1 print:hidden">
                     <label className="flex items-center gap-1.5 text-xs text-slate-500">
@@ -731,7 +731,7 @@ export function TeachingScores() {
                 <CardHeader>
                   <CardTitle>学生成绩表</CardTitle>
                   <CardDescription>
-                    按教学班分组展示，名次在各班内按同分同名次计算；「班主任域投影」行来自行政班导入的任教学科事实（反向投影参与名次计算）。
+                    按教学班分组展示，名次在各班内按同分同名次计算（两域隔离后仅教学域事实）。
                     点击姓名查看个人档案与历次成绩趋势。
                   </CardDescription>
                 </CardHeader>
@@ -774,7 +774,6 @@ export function TeachingScores() {
                                   <TableHead className="text-right text-xs">成绩</TableHead>
                                   <TableHead className="text-right text-xs">等级分</TableHead>
                                   <TableHead className="text-right text-xs">名次（班内）</TableHead>
-                                  <TableHead className="text-xs">来源</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -804,14 +803,6 @@ export function TeachingScores() {
                                       {g.ranks.get(s.person_id) == null
                                         ? '—'
                                         : String(g.ranks.get(s.person_id))}
-                                    </TableCell>
-                                    <TableCell>
-                                      {s.shared_conflict?.fields && <details className="mb-1 text-xs text-amber-700"><summary>来源字段待核对</summary>{Object.entries(s.shared_conflict.fields).map(([field, value]) => <p key={field}>{({score:'原始分',grade_score:'等级分',grade_percentile:'年级百分位'} as Record<string,string>)[field] ?? field}：本域 {value.own ?? '—'} / 关联 {value.other ?? '—'}</p>)}</details>}
-                                      {s.source_domain === 'homeroom' ? (
-                                        <Badge variant="outline">班主任域投影</Badge>
-                                      ) : (
-                                        <Badge variant="secondary">教学域</Badge>
-                                      )}
                                     </TableCell>
                                   </TableRow>
                                 ))}

@@ -112,10 +112,12 @@
   教学模式"全部所教班"缺省一致；仅 §1.1 导入 preview/confirm 在多教学班时要求显式选择）。
 - **v2.1（F09）统一可读事实口径**：`/shared/exams`、`/api/v1/scores`、`{mode}/students` 列表/画像、
   §2 全部分析端点必须基于**同一**可读事实查询。各端点不得自建第二套投影/过滤逻辑。
-  **v2.3（2026-10-19 用户裁决）两域成绩不互通**：该统一口径的「对侧投影」分支整体降为不启用——
-  readable_facts 只读本域事实+去重，跨域冲突标记不再产生；`/shared/exams` 与各域考试目录只列
-  本域事件（按事件直查的考试存在性仍放宽为任一域存在 → 200 空态）。名册/作业共享与
-  HomeroomTeachingLink 不受影响。
+  **v2.3（2026-10-19 用户裁决）两域成绩不互通**：该统一口径的「对侧投影」分支整体退役——
+  readable_facts 只读本域事实+去重，跨域冲突标记不再产生（同 (人,学科,考试) 键的同域重复
+  来源注记保留，仅供考试管理「字段差异」展示与指标补齐 metric-fill 消费）；`/shared/exams`
+  与各域考试目录只列本域事件（按事件直查的考试存在性仍放宽为任一域存在 → 200 空态）。
+  名册/作业共享与 HomeroomTeachingLink 不受影响。**2026-10-20 Q10 清理**：§1.6 冲突/
+  规范值端点与各响应 shared_conflict/shared_conflicts/shared_subject_score 字段已删除。
 
 ### 1.4.1 考试维度成员口径（v2.1，F08；v2.2 修订 G07）
 
@@ -128,27 +130,14 @@
 - 上述两类响应 metadata 均注明 `membership_basis: "exam" | "current"`。教师访问历史班仍受
   绑定/任课作用域校验（同既有规则）。
 
-### 1.6 跨域冲突规范值确认（v2.2，Q10——R5 收口）
+### 1.6 跨域冲突规范值确认（已退役，2026-10-20 删除）
 
-- `GET /api/v1/shared/links/{link_id}/score-conflicts` → `{conflicts: [{person_id, name,
-  subject, exam_name, exam_date, homeroom_score, teaching_score}]}`：当前 link 下按
-  §1.4.1 规则仍处冲突状态的事实清单（两域均有值且不同；H 侧视角）。
-- `POST /api/v1/shared/links/{link_id}/canonical-scores`
-  请求 `{resolutions: [{person_id, subject, exam_name, canonical_side: 'homeroom'|'teaching', basis?}]}`：
-  - **v2.3（V04）：按"来源侧"选择**，规范值 = 该侧当前值（**可为 NULL=缺考**——核实后缺考
-    是合法规范结果，不得强制改成实分）；canonical_side 必属两域之一；同一冲突一次只选一侧；
-    basis 缺省 `canonical_confirm:<日期>`；
-  - 校验：link active；每条 resolution 对应当前真实冲突（人/科/考试匹配且两域值不同）；
-  - 写入（单事务）：**两域** ScoreFact 的 score 均更新为所选侧现值（含 NULL——两域同置
-    缺考，后续读取不计有效分/排名，§2.3 缺考红线不变），`data_revision+1`，source 追加标记
-    `canonical:<原来源域>`；两域值相等后 §1.4.1 冲突自然消失（各侧保留本域行，读取一致）；
-  - 幂等：已不构成冲突的重复提交 → skipped；审计：SourceMap 之外以
-    `migration_run` 形态不适用——写入 audit 记入 assignment 之外由 score_fact 的
-    source/data_revision 与响应回执承载。
-  - 响应：`{resolved: n, skipped: n, facts: [{person_id, subject, exam_name, score,
-    data_revision}]}`（score 可为 null）。
-- 前端：homeroom 成绩页冲突格（shared_conflict）提供"确认规范值"入口——弹窗列两域值与
-  来源，**任一侧均可选（含缺考侧，标注"确认为缺考"）**；确认后冲突标记消失、两工作台读值一致。
+> **状态**：v2.3 两域成绩不互通裁决后，`GET /shared/links/{link_id}/score-conflicts` 与
+> `POST /shared/links/{link_id}/canonical-scores` 两端点恒空/不可达；2026-10-20 Q10 清理
+> 随「冲突清单」按钮与弹窗一并删除（前端入口、后端端点、`score_conflict_pairs` 判定与
+> 前端规范值交互全部移除）。两域分数不一致属预期（各自上传、各自显示本域值），不再有
+> 跨域冲突语义。同域重复来源的字段差异提示改由考试管理（exam-events 契约）承载。
+
 
 ## 2. 分析端点（读 ScoreFact；作用域解析/metadata/空态沿用 §1.3/§1.4 既有规则）
 
@@ -158,10 +147,10 @@
   missing_count, score_basis}], totals: [{total_type, avg, max, min, valid_count}], cohort_size}`
 - `GET exams/{exam_name}/students` → `{metadata, students: [{person_id, name, alias, xueji?, class_num?,
   scores: {subject: score|null}, grade_scores?: {subject: grade_score|null}, percentiles?: {subject_or_total:
-  pct|null}, totals: {total_type: score|null}, ranks?: {total_type: school_rank|int}, shared_conflicts?}]}`
+  pct|null}, totals: {total_type: score|null}, ranks?: {total_type: school_rank|int}]}`
   （v2.3，2026-10-19 明细表按学校导出重制：xueji 为身份学籍代码、class_num 为行政班号、
   grade_scores 为选科等级分、percentiles 为年级百分位（0-1）、ranks 为各总分口径校名次——
-  resolve_year_rank 口径，缺考 null。2026-10 两域成绩不互通后 shared_conflicts 不再产生，字段保留兼容）
+  resolve_year_rank 口径，缺考 null。2026-10-20 起 shared_conflicts 字段随 Q10 退役删除）
 - `GET exams/{exam_name}/class-averages` → `{metadata, grade, subjects, total_types,
   current_class_num, rows: [{class_type, class_num, teacher_name, subjects, totals, total_ranks}]}`。
   数据只读自已确认导入的官方班级均分表。**v2.3（2026-10-19）**：`totals` 为口径→指标包

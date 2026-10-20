@@ -2,19 +2,15 @@
 
 读取 ScoreFact 做班内统计；作用域解析/metadata/空态沿用 P1 既有规则：
 - 统一可读事实口径（v2.1/F09）：全部端点经 _queries.readable_facts 取数
-  （本域事实 + 经 §1.4.1 五条件门的对侧投影行 + 冲突注记），不得自建
-  第二套投影/过滤逻辑。
+  （两域隔离后仅本域事实），不得自建第二套投影/过滤逻辑。
 - 考试维度成员口径（v2.1/F08）：exams/{exam_name}/stats|students、bands、
   class-compare 按考试发生时名册（members_at）解析成员；metadata 注明
   membership_basis="exam"。教师可访问历史班的校验仍由 ctx（绑定/任课）
   完成；dashboard/看板/预警类沿用查询时点（membership_basis="current"）。
-- homeroom：resolve_workspace_context(绑定班)；全科与总分本域已有，
-  linked 学生任教学科经统一口径进入统计/学生表——仅本域无同场事实时
-  投影（T-only 科目进 subjects），两域同场值不同保留本域值并附
-  shared_conflicts，绝不投影对方值。
+- homeroom：resolve_workspace_context(绑定班)；全科与总分本域已有
+  （两域隔离后不再并入任教学科投影）。
 - teaching：build_teaching_params（teaching_class_id 缺省=全部所教班并集）；
-  成员事实 = teaching 域该班行 + 经 §1.4.1 投影门的 H 域反向投影行
-  （两者都算分母/名次，投影行标 source_domain）。
+  成员事实 = teaching 域该班行。
 - teaching score-bands（2026-10-18）：官方《分数段分析》表同构的本班
   口径——当前范围每教学班一列 + 合并列，左闭右开 10 分段（5/20 可选）
   的本段/累计/累计比例 + 人数/最值/均分/σ；不做年级/官方口径。
@@ -238,14 +234,12 @@ def _teaching_member_rows(
     member_ids: Optional[Sequence[int]] = None,
 ) -> List[Tuple[int, Optional[float], Optional[float], str, Optional[str]]]:
     """教学班成员事实（stats/students/class-compare 共用口径）：
-    teaching 域指定班行 + 经 §1.4.1 投影门的 H 域反向投影行，统一走
-    readable_facts（F09）。member_ids 缺省查询时点成员；考试维度端点
-    传考试时点成员（F08）。
+    teaching 域指定班行，统一走 readable_facts（F09；两域隔离后仅本域
+    事实）。member_ids 缺省查询时点成员；考试维度端点传考试时点成员
+    （F08）。
 
     返回 [(person_id, score, grade_score, source_domain, class_label)]，
-    person_id 为 teaching 域身份；T 域已有同场事实（值同或值异均然）
-    时保留 T 行、不投影、不附字段（teaching 侧不携带 shared_conflict）。
-    空成员 → 空列表（合法空态）。"""
+    person_id 为 teaching 域身份。空成员 → 空列表（合法空态）。"""
     if member_ids is None:
         member_ids = ctx.member_person_ids
     labels = _class_labels(db, class_ids)
@@ -592,7 +586,6 @@ def homeroom_exam_students(
     grade_scores_by_person: Dict[int, Dict[str, Optional[float]]] = {}
     percentiles_by_person: Dict[int, Dict[str, Optional[float]]] = {}
     ranks_by_person: Dict[int, Dict[str, Optional[int]]] = {}
-    conflicts_by_person: Dict[int, dict] = {}
     for e in entries:
         if e.fact.total_type is None:
             by_person.setdefault(e.person_id, {})[e.fact.subject] = e.fact.score
@@ -607,8 +600,6 @@ def homeroom_exam_students(
             rank = defs.resolve_year_rank(e.fact.xueji_rank, e.fact.grade_rank)
             if rank is not None:
                 ranks_by_person.setdefault(e.person_id, {})[e.fact.total_type] = rank
-        if e.conflict is not None:
-            conflicts_by_person[e.person_id] = e.conflict
 
     alias_map = q.aliases_for(db, member_ids, "homeroom", ctx.academic_year_id)
     name_map = q.names_for(db, member_ids)
@@ -649,8 +640,6 @@ def homeroom_exam_students(
                 for total_type in total_keys
             },
         )
-        if person_id in conflicts_by_person:
-            entry.shared_conflicts = conflicts_by_person[person_id]
         students.append(entry)
 
     return HomeroomExamStudentsResponse(
@@ -1426,7 +1415,6 @@ def teaching_exam_students(
         )
     member_ids = _exam_member_ids(db, ctx, exam_name)
     rows = _teaching_member_rows(db, ctx, class_ids, subject, exam_name, member_ids)
-    conflicts = {e.person_id: e.conflict for e in q.readable_facts(db, ctx, exam_name, member_ids=member_ids)}
     ranks = _rank_map([(pid, score) for pid, score, _, _, _ in rows])
     name_map = q.names_for(db, [pid for pid, _, _, _, _ in rows])
     students = [
@@ -1438,7 +1426,6 @@ def teaching_exam_students(
             grade_score=grade_score,
             rank=ranks[pid],
             source_domain=source_domain,
-            shared_conflict=conflicts.get(pid),
         )
         for pid, score, grade_score, source_domain, class_label in rows
     ]

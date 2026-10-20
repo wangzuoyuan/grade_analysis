@@ -22,7 +22,6 @@ test('api-v1 导出 P3 导入/考试/分析封装与类型（契约 §1/§2）',
     'importsPreviewMultipart',
     'importsConfirmP3',
     'readImportConflicts',
-    'normalizeSharedConflicts',
     'listExams',
     'fetchHomeroomStats',
     'fetchHomeroomClassAverages',
@@ -123,13 +122,6 @@ test('缺考一律显示「—」，展示层绝不转 0（契约 §2.3）', () 
   }
 })
 
-test('shared_conflict 格子警示并注明教学域分数待人工核对（契约 §2.1）', () => {
-  assert.match(homeroomScores, /shared_conflicts/, '学生表必须消费 shared_conflicts')
-  assert.match(homeroomScores, /normalizeSharedConflicts/, '冲突形状须先归一化再使用')
-  assert.match(homeroomScores, /两域分数不一致待人工核对/, '冲突格须有人工核对提示')
-  assert.match(homeroomScores, /teaching_score/, '提示文案须含教学域分数（缺考需注明）')
-})
-
 test('趋势按学年分段展示，不跨年连算（E03）', () => {
   assert.match(homeroomScores, /fetchHomeroomTrends/, '行展开须调用趋势端点')
   assert.match(homeroomScores, /academic_year_name/, '趋势必须按学年名分节')
@@ -188,7 +180,6 @@ test('small_sample 与 estimated 标注存在（E04）', () => {
   assert.match(teachingScores, /c\.source === 'estimated'/, '对比条必须识别 estimated 来源')
   assert.match(teachingScores, /估算/, '对比卡须有「估算」角标')
   assert.match(teachingScores, /非年级或官方口径/, '须声明不冒充官方口径')
-  assert.match(teachingScores, /班主任域投影/, '反向投影行须标班主任域来源')
 })
 
 test('上传页工作台感知 + revise 修订重试 + token 作废（契约 §1）', () => {

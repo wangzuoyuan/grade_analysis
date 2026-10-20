@@ -212,10 +212,11 @@ def test_homeroom_students_conflict_flagged(client, p3_seed, v1_seed):
     # H 域本域值保留
     assert by_id[s.jia_h_id]["scores"]["物理"] == 90.0
     # 2026-10 两域成绩不互通：全班（linked 与否）一律无跨域冲突标记
-    assert by_id[s.jia_h_id]["shared_conflicts"] is None
+    #（shared_conflicts 字段已随 Q10 冲突/规范值链路退役移除）
+    assert "shared_conflicts" not in by_id[s.jia_h_id]
     assert by_id[s.yi_h_id]["scores"]["物理"] == 84.0
-    assert by_id[s.yi_h_id]["shared_conflicts"] is None
-    assert by_id[s.bing_h_id]["shared_conflicts"] is None
+    assert "shared_conflicts" not in by_id[s.yi_h_id]
+    assert "shared_conflicts" not in by_id[s.bing_h_id]
     # 全科 + 总分齐全（E1 样本四科 + 主三门）
     assert by_id[s.jia_h_id]["totals"]["主三门"] == 275.0
     assert set(by_id[s.jia_h_id]["scores"]) == {"语文", "数学", "英语", "物理"}

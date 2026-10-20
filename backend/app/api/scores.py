@@ -1,14 +1,10 @@
 """/api/v1 成绩查询（契约 §1.4 + §1.4.1；v2.1/F09 统一可读事实口径）。
 
-- 两种模式都经 _queries.readable_facts 取数：本域事实 + 经 §1.4.1 五
-  条件门的对侧投影行 + 冲突规则，不自建第二套投影逻辑。
-- homeroom 模式：本班全科+总分（source_domain="homeroom"）；active link
-  下经统一投影门的 teaching 域任教学科事实按冲突规则入响应：H 域无该场
-  → 投影 T 行（source_domain="teaching"，person_id 用 H 域身份）；两域
-  均有且值不同 → 保留 H 行并附 shared_conflict，绝不静默取 T 值（R5）。
+- 两种模式都经 _queries.readable_facts 取数：两域隔离（2026-10 用户
+  裁决）后仅本域事实，不自建第二套投影逻辑。
+- homeroom 模式：本班全科+总分（source_domain="homeroom"）。
 - teaching 模式：仅任教学科；行结构无 total_type 键（用独立模型），
-  绝无其他学科/总分，绝无 H 域学生。linked 学生 H 域同学科事实经同一
-  投影门反向投影（T 域已有同场则不投影、不附字段）。
+  绝无其他学科/总分，绝无 H 域学生。
 - 无关教学班（如 T8）的行在任何 homeroom 响应中不可见。
 """
 
@@ -79,8 +75,6 @@ def query_scores(
                 total_type=e.fact.total_type,
                 source_domain=e.source_domain,
             )
-            if e.conflict is not None:
-                row.shared_conflict = e.conflict
             rows.append(row)
         all_ids = sorted({r.person_id for r in rows})
         name_map = q.names_for(db, all_ids)

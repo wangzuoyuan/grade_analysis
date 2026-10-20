@@ -86,11 +86,10 @@ v1 其余条款未列出者继续有效。变更须经集成者修订本文件�
 ### 1.3 学生（域隔离读 + 关联投影）
 
 - `GET /api/v1/homeroom/students?academic_year_id=&class_id=`
-  `{metadata, students: [{person_id, name, seat_no, alias, status, linked_teaching_class_id?, shared_subject_score?}]}`
-  `shared_subject_score` 仅出现在"已确认关联且在有效期"的学生上（当前任教学科、来自 teaching 域投影，`{subject, score, exam_name, source_domain: "teaching"}` 或多场则最近一场）。
-  **v2.1（F03）**：名册行的姓名/座号投影用查询时点；但任何共享分数字段（`shared_subject_score`、
-  `shared_conflict`）必须逐 fact 通过 §1.4.1 五条件门（**含按考试时点的双侧成员交集**），
-  不得以查询时点成员校验替代。入班日晚于考试日的成绩不得出现在名册响应中。
+  `{metadata, students: [{person_id, name, seat_no, alias, status, linked_teaching_class_id?}]}`
+  **v2.3（两域成绩不互通）**：`shared_subject_score`/`shared_conflict` 共享分数字段已随
+  跨域成绩投影退役整体移除（2026-10-20 Q10 清理）；名册行只读本域数据。
+  **v2.1（F03）**：名册行的姓名/座号投影用查询时点。
   **排序（v2.2）**：按学号自然升序——用户口径「座号就是学号」：有效学号 = `alias` 优先、
   座号值兜底，先剥跨届前缀（`G{g}::`/`g{g}-`）再按数字段数值比较（999999 < 1234567）；
   无学号者排最后按姓名拼音（pypinyin，姓氏首字母优先）；person_id 终兜底。
@@ -104,18 +103,19 @@ v1 其余条款未列出者继续有效。变更须经集成者修订本文件�
 ### 1.4 成绩查询
 
 - `GET /api/v1/scores?mode=&academic_year_id=&exam_name=`
-  `{metadata, rows: [{person_id, name, subject, score, total_type, source_domain, shared_conflict?}]}`
-  - homeroom 模式：本班全科+总分（source_domain:"homeroom"）；active link 下关联交集学生的任教学科事实按 §1.4.1 规则投影（source_domain:"teaching"）；与 teaching 域值冲突的 H 行附 `shared_conflict: {teaching_score}`。
+  `{metadata, rows: [{person_id, name, subject, score, total_type, source_domain}]}`
+  - homeroom 模式：本班全科+总分（source_domain:"homeroom"）。
   - teaching 模式：仅任教学科；不含 total_type 行、不含其他学科。
-  - 无关教学班（如 T8）的行在任何 homeroom 响应中不可见。
+  - 两域隔离（v2.3）后无跨域投影行、无 shared_conflict 字段；无关教学班（如 T8）的行在任何 homeroom 响应中不可见。
 
 #### 1.4.1 跨域成绩投影规则（v2 明确——R2/R3/R5；**2026-10-19 用户裁决：整体降为不启用**）
 
-> **v2.3 状态注（2026-10-19）**：用户裁决「班主任工作台和教学工作台的成绩信息不能互通，
-> 两边分别上传」。readable_facts 及全部成绩读取端点不再执行本节投影（两个方向都停用），
-> 跨域冲突标记不再产生；HomeroomTeachingLink 与名册/作业共享不受影响。本节规则保留
-> 作为历史契约与 gated_* 辅助函数的语义说明（Q10 冲突收口端点仍以本节 gate 为判定，
-> 现 link 无 current_subject_score 授权即恒空）。
+> **v2.3 状态注（2026-10-19 用户裁决；2026-10-20 落实清理）**：用户裁决「班主任工作台
+> 和教学工作台的成绩信息不能互通，两边分别上传」。readable_facts 及全部成绩读取端点不再
+> 执行本节投影（两个方向都停用），跨域冲突标记不再产生；HomeroomTeachingLink 与名册/作业
+> 共享不受影响。2026-10-20 起本节投影门与 Q10 冲突/规范值链路（gated_* 辅助、gate_fact、
+> score-conflicts/canonical-scores 端点、响应 shared_conflict 字段）已整体退役删除——
+> 本节仅保留作历史契约说明，不再是有效行为。
 
 设 homeroom 响应要投影 teaching 域的任教学科事实（或 teaching 响应要投影 homeroom 域同学科事实），
 必须先经**统一投影入口**逐条（逐 fact）满足全部条件，缺一不可：

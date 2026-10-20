@@ -1,20 +1,17 @@
-"""/api/v1 学生端点：域隔离读 + 受控关联投影（契约 §1.3 + §1.4.1）。
+"""/api/v1 学生端点：域隔离读 + 受控名册投影（契约 §1.3 + §1.4.1）。
 
-- homeroom students：本班 enrollment 成员（姓名/座号按查询时点）；共享
-  分数字段（shared_subject_score/shared_conflict）经统一可读事实口径逐
-  fact 过五条件门（v2.1/F03：成员交集按考试时点验证——入班日晚于考试
-  日的成绩绝不出现）。最近一场通过门的 T 事实与 H 域同学科同场事实
-  不冲突时设 shared_subject_score，冲突（值不同，含一方缺考）时改报
-  shared_conflict（R5，绝不静默取 teaching 值）。
+- homeroom students：本班 enrollment 成员（姓名/座号按查询时点）；已
+  配对成员附 linked_teaching_class_id。两域成绩隔离（2026-10 用户裁决）
+  后不再提供 shared_subject_score/shared_conflict 共享分数字段。
 - teaching students：本教学班成员；roster 已授权且查询时点双侧成员
   有效时，关联成员的 name/seat_no 从 H 名册投影（R2/R3）。
 - 画像：homeroom 全科+总分，事实只取目标人（R1）；teaching 仅任教学科、
-  无 totals；跨域投影经统一可读事实口径（readable_facts，F09）+
-  冲突规则（§1.4.1）；越界 person → 404 resource_out_of_scope。
+  无 totals；两域隔离后均只读本域事实（readable_facts，F09）；越界
+  person → 404 resource_out_of_scope。
 """
 
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -26,7 +23,6 @@ from app.api.schemas import (
     PersonInfo,
     ProfileExam,
     ScopeInfo,
-    SharedSubjectScore,
     StudentEntry,
     StudentProfileResponse,
     StudentsResponse,
@@ -66,59 +62,6 @@ def _metadata(
     )
 
 
-def _shared_scores_for_roster(
-    db, ctx: WorkspaceContext, roster_ids: List[int]
-) -> Dict[int, Tuple[Optional[SharedSubjectScore], Optional[dict]]]:
-    """全班交集成员的任教学科共享（契约 §1.3 v2.1/F03 + §1.4.1）。
-
-    所有共享分数字段经统一可读事实口径（readable_facts）逐 fact 过
-    五条件门：成员交集按【考试时点 fact.exam_date】验证——入班日/入班
-    有效期不覆盖考试日的事实绝不出现（名册行的姓名/座号仍按查询时点）。
-    每人取最近一场通过门的 T 事实：与本域同场事实值不同（readable_facts
-    已标 conflict）→ 不设 shared_subject_score，改报 shared_conflict；
-    本域无该场或值相同（投影行）→ shared_subject_score 取该场（R5，
-    绝不静默取 teaching 值）。
-    返回 {h_id: (shared_subject_score | None, shared_conflict | None)}。"""
-    roster_set = set(roster_ids)
-    projected_by_h: Dict[int, list] = {}
-    conflict_by_h: Dict[int, list] = {}
-    for entry in q.readable_facts(db, ctx):
-        if entry.person_id not in roster_set:
-            continue
-        if entry.projected:
-            if entry.source_domain == "teaching":
-                projected_by_h.setdefault(entry.person_id, []).append(entry.fact)
-        elif entry.conflict_fact is not None:
-            conflict_by_h.setdefault(entry.person_id, []).append(entry.conflict_fact)
-
-    result: Dict[int, Tuple[Optional[SharedSubjectScore], Optional[dict]]] = {}
-    for h_id in set(projected_by_h) | set(conflict_by_h):
-        # (fact, is_conflict)：取最近一场（latest_fact 口径同名册共享）
-        candidates = [(f, True) for f in conflict_by_h.get(h_id, [])]
-        candidates += [(f, False) for f in projected_by_h.get(h_id, [])]
-        latest, is_conflict = max(
-            candidates,
-            key=lambda pair: (
-                pair[0].exam_date is not None,
-                pair[0].exam_date or date.min,
-                pair[0].id,
-            ),
-        )
-        if is_conflict:
-            # 值不同（含一方缺考）：保留本域值，仅提示冲突分数
-            result[h_id] = (None, {"teaching_score": latest.score})
-        else:
-            result[h_id] = (
-                SharedSubjectScore(
-                    subject=latest.subject,
-                    score=latest.score,  # 缺考保持 null，绝不转 0
-                    exam_name=latest.exam_name,
-                    source_domain="teaching",
-                ),
-                None,
-            )
-    return result
-
 
 # ────────────────────────────── 列表 ──────────────────────────────
 
@@ -147,7 +90,6 @@ def homeroom_students(
     roster = q.homeroom_roster(
         db, ctx.class_ids[0], ctx.as_of, ctx.academic_year_id
     )
-    shared_by_h = {}
     linked_map = {}
     link = None
     if ctx.link_id is not None:
@@ -155,9 +97,6 @@ def homeroom_students(
 
         link = db.get(HomeroomTeachingLink, ctx.link_id)
         linked_map = q.linked_map_for_link(db, link.id)
-        shared_by_h = _shared_scores_for_roster(
-            db, ctx, [item["person_id"] for item in roster]
-        )
 
     students = []
     for item in roster:
@@ -170,11 +109,6 @@ def homeroom_students(
         )
         if link is not None and item["person_id"] in linked_map:
             entry.linked_teaching_class_id = link.teaching_class_id
-            shared, conflict = shared_by_h.get(item["person_id"], (None, None))
-            if shared is not None:
-                entry.shared_subject_score = shared
-            if conflict is not None:
-                entry.shared_conflict = conflict
         students.append(entry)
 
     return StudentsResponse(
@@ -282,39 +216,19 @@ def homeroom_student_profile(
         )
 
     names = q.names_for(db, [person_id])
-    # R1：画像事实只取目标人（统一可读事实口径 F09：本域事实 + 经门
-    # 投影行 + 冲突注记；成员限定目标人，绝不混入他人成绩）
+    # R1：画像事实只取目标人（统一可读事实口径 F09：仅本域事实；
+    # 成员限定目标人，绝不混入他人成绩）
     entries = q.readable_facts(db, ctx, member_ids=[person_id])
 
-    subject_facts = [
-        e.fact for e in entries if e.fact.total_type is None and not e.projected
-    ]
+    subject_facts = [e.fact for e in entries if e.fact.total_type is None]
     total_facts = [e.fact for e in entries if e.fact.total_type is not None]
-    # 关联学科投影（§1.4.1，R5）：通过门的 T fact 绝不替换 H 条目——
-    # H 域无该场 → 投影行（source_domain=teaching）；值不同 → 保留 H
-    # 条目并附 shared_conflict；值相同 → H 条目已是规范值，不重复添加。
-    conflicts: Dict[Tuple[str, str], float] = {
-        (e.fact.subject, q.fact_key(db, e.fact)): e.conflict.get("teaching_score")
-        for e in entries
-        if e.conflict is not None
-    }
-    teaching_facts: List = [e.fact for e in entries if e.projected]
 
     grouped: dict = {}
     for fact in sorted(
         subject_facts,
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
-        entry = _exam_entry(fact, "homeroom", db)
-        conflict_key = (fact.subject, q.fact_key(db, fact))
-        if conflict_key in conflicts:
-            entry.shared_conflict = {"teaching_score": conflicts[conflict_key]}
-        grouped.setdefault(fact.subject, []).append(entry)
-    for t_fact in sorted(
-        teaching_facts,
-        key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
-    ):
-        grouped.setdefault(t_fact.subject, []).append(_exam_entry(t_fact, "teaching", db))
+        grouped.setdefault(fact.subject, []).append(_exam_entry(fact, "homeroom", db))
 
     subjects = [SubjectGroup(subject=subject, exams=exams) for subject, exams in grouped.items()]
     totals_grouped: dict = {}
@@ -357,19 +271,9 @@ def teaching_student_profile(
         )
 
     names = q.names_for(db, [person_id])
-    # 统一可读事实口径（F09）：T 本域事实 + linked 学生 H 域同学科事实
-    # 经同一投影门反向投影；T 域已有同场事实（值同或值异均然）保留 T
-    # 条目、不投影、不附字段——teaching 侧不携带 shared_conflict。
+    # 统一可读事实口径（F09）：两域隔离后仅 T 本域事实。
     entries = q.readable_facts(db, ctx, member_ids=[person_id])
-    facts = [e.fact for e in entries if not e.projected]
-    projected_facts: List = [e.fact for e in entries if e.projected]
-
-    grouped = _group_exams(facts, "teaching", db)
-    for h_fact in sorted(
-        projected_facts,
-        key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
-    ):
-        grouped.setdefault(h_fact.subject, []).append(_exam_entry(h_fact, "homeroom", db))
+    grouped = _group_exams([e.fact for e in entries], "teaching", db)
     subjects = [SubjectGroup(subject=s, exams=e) for s, e in grouped.items()]
     return TeachingStudentProfileResponse(
         metadata=_metadata(ctx, teaching_class_id=class_ids[0] if teaching_class_id is not None else None),

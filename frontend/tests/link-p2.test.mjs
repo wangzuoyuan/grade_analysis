@@ -26,7 +26,6 @@ test('api-v1 导出学生配对与共享范围封装及 shared_conflict 类型�
     'LinkStudentsResult',
     'LinkShareScopeRequest',
     'LinkShareScope',
-    'LinkSharedConflict',
   ]) {
     assert.match(apiV1, new RegExp(`export interface ${iface}\\b`), `应导出类型 ${iface}`)
   }
@@ -36,11 +35,10 @@ test('api-v1 导出学生配对与共享范围封装及 shared_conflict 类型�
     '学生配对端点应挂在 /shared/links/{link_id}/students',
   )
   assert.match(apiV1, /\/share-scope/, '共享范围端点应挂在 /shared/links/{link_id}/share-scope')
-  const conflictCount = (apiV1.match(/shared_conflict\?: LinkSharedConflict \| null/g) ?? []).length
-  assert.ok(
-    conflictCount >= 3,
-    `ScoreRow/ProfileExam/WorkspaceStudent 三个类型都应带可选 shared_conflict，实际 ${String(conflictCount)} 处`,
-  )
+  // 2026-10 两域成绩不互通（Q10 冲突/规范值链路退役）：响应不再携带
+  // shared_conflict / shared_subject_score，类型亦随之移除。
+  assert.doesNotMatch(apiV1, /shared_conflict/, 'shared_conflict 类型/字段应全部移除')
+  assert.doesNotMatch(apiV1, /LinkSharedConflict/, 'LinkSharedConflict 类型应移除')
 })
 
 test('学生配对面板只显式建对，绝不按同名/同号自动配对或预选', () => {
@@ -56,7 +54,6 @@ test('学生配对面板只显式建对，绝不按同名/同号自动配对或�
   assert.match(studentsPanel, /不会自动配对/, '界面必须声明同名同号不自动配对')
   assert.match(studentsPanel, /配对后两工作台共享该生的任教学科数据/, '确认文案须说明共享后果')
   assert.match(studentsPanel, /deleteLinkStudent\(link\.id, /, '既有配对必须可撤销')
-  assert.match(studentsPanel, /两域分数不一致待人工核对/, '冲突行必须有人工核对标注')
 })
 
 test('共享范围面板覆盖三类共享与历史授权，收紧需确认且立即生效', () => {

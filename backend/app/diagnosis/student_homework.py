@@ -136,10 +136,6 @@ def _catalog(db, ctx, subject):
         cls = classes.get(entry.class_ref_id)
         class_grade = cls.grade if cls is not None else None
         exam = platform.get(f.teaching_exam_id)
-        if exam is None and f.exam_event_id is None and entry.projected:
-            candidates = [e for e in platform.values() if e.exam_name == f.exam_name
-                          and e.exam_date == f.exam_date and class_grade in (None, e.grade)]
-            exam = candidates[0] if len(candidates) == 1 else None
         event = db.get(WorkspaceExamEvent, roots[f.exam_event_id]) if f.exam_event_id else None
         exam_grade = event.grade if event and event.grade is not None else exam.grade if exam else class_grade
         conflict = (exam is not None or event is not None) and class_grade is not None and exam_grade != class_grade

@@ -1,21 +1,17 @@
-"""/api/v1 共享查询助手：作用域参数组装、名册、成绩事实、跨域投影门。
+"""/api/v1 共享查询助手：作用域参数组装、名册、成绩事实、跨域共享门。
 
-投影规则（docs/contracts/p1-api.md §1.2.2/§1.3/§1.4.1）：
-- 跨域成绩投影必须先经统一投影门（share_categories_of / gate_fact /
-  eligible_linked_pairs / gated_*_facts_for_*）：current_subject_score 已
-  授权、考试日期已知且不早于历史授权下限、双侧成员在考试时点均有效
-  （v2.1/F03：名册响应的共享分数字段同样按考试时点验证，仅姓名/座号
-  投影用查询时点）。替换式投影（删本域行取对方值）一律禁止。
-- homeroom 响应先取本班 enrollment 成员；通过门的 teaching 域事实与
-  H 域同 (人, 学科, 考试) 事实冲突时各自保留本域值，homeroom 侧行由
-  调用方附 shared_conflict 提示；H 域无该场事实才投影 T 行。
-- teaching 响应仅任教学科；linked 学生 H 域同学科事实反向投影同理
-  （T 域已有同场则不投影、不附字段）。
-- 名册共享（name/seat 投影）须 roster 已授权且查询时点双侧成员有效。
+共享规则（docs/contracts/p1-api.md §1.2.2/§1.3/§1.4.1）：
+- 2026-10 用户裁决：两工作台成绩信息不互通（各自上传、互不投影），
+  成绩跨域投影门与冲突/规范值链路（Q10）已整体退役；share_categories
+  仅剩 roster / current_subject_homework 两类授权继续生效。
+- 名册共享（name/seat 投影）须 roster 已授权且查询时点双侧成员有效；
+  作业共享（current_subject_homework）须作业日期不早于历史授权下限
+  （share_history_floor）且作业时点双侧成员交集（eligible_linked_pairs）。
 - 无 link 的教学班数据绝不进入 homeroom 响应；缺考 score 保持 null。
 - 统一可读事实口径（v2.1/F09，readable_facts / readable_exam_summaries）：
-  本域事实 + 经五条件门的对侧投影行 + 冲突注记，供 /scores、学生列表/
-  画像、分析端点与 /shared/exams 共用；各端点不得自建第二套投影逻辑。
+  仅本域事实（同键重复行经 _deduplicate_entries 去重），供 /scores、
+  学生列表/画像、分析端点与 /shared/exams 共用；各端点不得自建第二套
+  投影逻辑。
 - 考试维度成员口径（v2.1/F08，members_at）：考试维度端点按考试发生时
   名册解析成员，且不按当前 status 过滤（v2.2/G07：status 是当下状态，
   考后离班不得改写历史考试人群）；dashboard/看板/预警类沿用查询时点
@@ -378,7 +374,7 @@ def linked_map_for_link(db: Session, link_id: int) -> Dict[int, LinkedStudent]:
     return {ls.homeroom_identity_id: ls for ls in linked_students_for_link(db, link_id)}
 
 
-# ────────────────────────────── 跨域投影门（契约 §1.4.1，R2/R3/R5） ──────────────────────────────
+# ────────────────────────────── 跨域共享门（契约 §1.4.1，R2/R3） ──────────────────────────────
 
 
 def share_categories_of(link: HomeroomTeachingLink) -> set:
@@ -398,21 +394,6 @@ def share_history_floor(link: HomeroomTeachingLink) -> date:
     if link.share_history_from is not None:
         return link.share_history_from
     return link.valid_from
-
-
-def gate_fact(link: HomeroomTeachingLink, fact: ScoreFact) -> bool:
-    """成绩投影的 fact 级门（§1.4.1 条件 2/3）：current_subject_score 已
-    授权；exam_date 已知（未知日期不得默认放开）且不早于历史授权下限。
-    条件 1（link active + 查询时点有效期）由 ctx.link_id 解析隐含；
-    条件 4（双侧成员交集）由 eligible_linked_pairs 隐含；
-    条件 5（事实落在对方班级）由取数的 class_ref_id 过滤隐含。"""
-    if "current_subject_score" not in share_categories_of(link):
-        return False
-    # P8/ADR-017：旧库 YYYY-MM 不能被迁移器伪造成某日。整月成员交集
-    # 若无经摘要绑定的人工决策无法证明，故月精度事实默认不跨域投影。
-    if fact.exam_date is None or getattr(fact, "exam_date_precision", "day") != "day":
-        return False
-    return fact.exam_date >= share_history_floor(link)
 
 
 def eligible_linked_pairs(
@@ -484,118 +465,6 @@ def eligible_linked_pairs(
         for p in pairs
         if p.homeroom_identity_id in valid_h and p.teaching_identity_id in valid_t
     }
-
-
-def _pairs_valid_at(
-    db: Session, link: HomeroomTeachingLink, cache: Dict[date, Dict[int, int]], at: date
-) -> Dict[int, int]:
-    """按日期去重缓存的 eligible_linked_pairs（同场考试的成员校验只查一次）。
-
-    调用方均为 fact 投影的考试时点交集（at = fact.exam_date），因此固定
-    require_active_status=False——考后 transferred/graduated 不得把该生
-    从历史考试的共享投影中剔除（v2.2/G07）。"""
-    if at not in cache:
-        cache[at] = eligible_linked_pairs(
-            db, link, at, require_active_status=False
-        )
-    return cache[at]
-
-
-def gated_teaching_facts_for_homeroom(
-    db: Session,
-    ctx: WorkspaceContext,
-    link: HomeroomTeachingLink,
-    exam_name: Optional[str] = None,
-    h_ids: Optional[Sequence[int]] = None,
-) -> List[Tuple[ScoreFact, int]]:
-    """homeroom 响应的 teaching 域成绩投影（/scores、画像、学生列表共用）。
-
-    返回 [(teaching_fact, homeroom_identity_id)]，仅含通过 §1.4.1 全部
-    条件门的 fact。成员交集时点恒为 fact.exam_date（考试时点；v2.1/F03
-    后名册响应的共享分数字段亦然，不再提供查询时点旁路）。h_ids 限定
-    投影目标（单生画像）。冲突裁决（是否真正入响应）由调用方按 §1.4.1
-    执行。"""
-    pairs = linked_students_for_link(db, link.id)
-    if h_ids is not None:
-        allowed = set(h_ids)
-        pairs = [p for p in pairs if p.homeroom_identity_id in allowed]
-    if not pairs:
-        return []
-    t_to_pair = {p.teaching_identity_id: p for p in pairs}
-    facts = teaching_facts(
-        db,
-        ctx,
-        [link.teaching_class_id],
-        link.subject,
-        list(t_to_pair),
-        exam_name,
-    )
-    if not facts:
-        return []
-    cache: Dict[date, Dict[int, int]] = {}
-    result: List[Tuple[ScoreFact, int]] = []
-    for fact in facts:
-        if not gate_fact(link, fact):
-            continue
-        pair = t_to_pair.get(fact.identity_id)
-        if pair is None:
-            continue
-        if _pairs_valid_at(db, link, cache, fact.exam_date).get(
-            pair.homeroom_identity_id
-        ) != pair.teaching_identity_id:
-            continue
-        result.append((fact, pair.homeroom_identity_id))
-    return result
-
-
-def gated_homeroom_facts_for_teaching(
-    db: Session,
-    ctx: WorkspaceContext,
-    link: HomeroomTeachingLink,
-    exam_name: Optional[str] = None,
-    t_ids: Optional[Sequence[int]] = None,
-) -> List[Tuple[ScoreFact, int]]:
-    """teaching 响应的反向投影（R5）：linked 学生在 H 域 link 行政班的
-    link.subject 事实（total_type 恒 NULL——教学侧绝无总分行）。
-
-    门与正向投影对称：current_subject_score 授权 + 历史日期门 + 考试时点
-    双侧成员交集。返回 [(homeroom_fact, teaching_identity_id)]。"""
-    pairs = linked_students_for_link(db, link.id)
-    if t_ids is not None:
-        allowed = set(t_ids)
-        pairs = [p for p in pairs if p.teaching_identity_id in allowed]
-    if not pairs:
-        return []
-    facts = (
-        _fact_query(
-            db,
-            "homeroom",
-            ctx,
-            [p.homeroom_identity_id for p in pairs],
-            [link.admin_class_id],
-            subject=link.subject,
-            exam_name=exam_name,
-        )
-        .filter(ScoreFact.total_type.is_(None))
-        .all()
-    )
-    if not facts:
-        return []
-    h_to_pair = {p.homeroom_identity_id: p for p in pairs}
-    cache: Dict[date, Dict[int, int]] = {}
-    result: List[Tuple[ScoreFact, int]] = []
-    for fact in facts:
-        if not gate_fact(link, fact):
-            continue
-        pair = h_to_pair.get(fact.identity_id)
-        if pair is None:
-            continue
-        if _pairs_valid_at(db, link, cache, fact.exam_date).get(
-            pair.homeroom_identity_id
-        ) != pair.teaching_identity_id:
-            continue
-        result.append((fact, pair.teaching_identity_id))
-    return result
 
 
 # ────────────────────────────── 身份 / 名册 ──────────────────────────────
@@ -948,41 +817,39 @@ def exam_date_for(db: Session, ctx: WorkspaceContext, exam_name: str) -> Optiona
 
 @dataclass
 class ReadableFact:
-    """统一可读事实行（F09）：本域事实或经五条件门的对侧投影行。
+    """统一可读事实行（F09）：本域事实行（两域隔离后不再有对侧投影行）。
 
     - fact：底层 ScoreFact（score/exam_date/data_revision 的来源）；
-    - person_id：响应所在域的身份 ID（投影行已映射为本域身份）；
+    - person_id：本域身份 ID；
     - source_domain：事实来源域（"homeroom" | "teaching"）；
-    - class_ref_id：该行归属的班级引用——本域行 = fact.class_ref_id；
-      teaching 侧投影行 = 提供投影的 link 教学班 id（H 事实的
-      class_ref_id 是行政班，不能混用）；
-    - projected：True = 跨域投影行（本域无同 (人, 学科, 考试) 事实）；
-    - conflict：本域行与对方同场值不同时的提示 {"teaching_score": 对方值}
-      （仅 homeroom 侧本域行携带；冲突保留本域值，绝不投影对方值）；
-    - conflict_fact：触发冲突的对方域事实行（便于调用方取最近一场
-      冲突来源、data_revision 等；无冲突时为 None）。"""
+    - class_ref_id：该行归属的班级引用 = fact.class_ref_id；
+    - conflict / conflict_fact：同 (人, 学科, 考试) 键在本域出现多条且
+      字段值不同时的重复来源注记（考试管理「字段差异」展示与指标补齐
+      metric-fill 消费；两域隔离后不再有跨域冲突语义）。"""
 
     fact: ScoreFact
     person_id: int
     source_domain: str
     class_ref_id: Optional[int] = None
-    projected: bool = False
     conflict: Optional[dict] = None
     conflict_fact: Optional[ScoreFact] = None
 
 
 def _deduplicate_entries(db, entries, selector=None, roots=None):
+    """同 (人, 学科, 总分口径, 考试) 键去重：保留 id 最大（最新写入）的
+    一行；被丢弃的旧行与保留行字段值不同 → 在保留行上附重复来源注记
+    （conflict={"fields": …, "duplicate_source": True}）。"""
     grouped = {}
-    for entry in sorted(entries, key=lambda e: (e.projected, -e.fact.id)):
+    for entry in sorted(entries, key=lambda e: -e.fact.id):
         key = (entry.person_id, entry.fact.subject, entry.fact.total_type, fact_key(db, entry.fact, roots))
-        if key in grouped:
-            first = grouped[key]
-            fields = field_conflicts(first.fact, entry.fact)
-            if fields:
-                first.conflict = {**(first.conflict or {}), "fields": fields, "duplicate_source": True}
-                first.conflict_fact = entry.fact
-        else:
+        first = grouped.get(key)
+        if first is None:
             grouped[key] = entry
+            continue
+        fields = field_conflicts(first.fact, entry.fact)
+        if fields:
+            first.conflict = {**(first.conflict or {}), "fields": fields, "duplicate_source": True}
+            first.conflict_fact = entry.fact
     result = list(grouped.values())
     if selector and not selector.startswith(("event:", "legacy:")) and len({fact_key(db, e.fact, roots) for e in result if e.fact.exam_event_id}) > 1:
         raise InvalidScopeParam("同名考试对应多场记录，请按日期和考试标识选择")
@@ -998,9 +865,9 @@ def readable_facts(
     teaching_exam_id: Optional[int] = None,
 ) -> List[ReadableFact]:
     """当前范围允许读取的成绩事实（契约 p3 §1.4 v2.1/F09 统一口径）：
-    本域事实（域/学年/班级/成员过滤）+ 经 §1.4.1 五条件门的对侧投影行
-    + 冲突注记。/scores、学生列表/画像、分析端点共用本入口；投影门
-    （含考试时点成员交集）复用 gated_*_facts_for_*，不另建第二套逻辑。
+    仅本域事实（域/学年/班级/成员过滤；两域隔离后无对侧投影与冲突
+    注记）。/scores、学生列表/画像、分析端点共用本入口，不另建第二套
+    逻辑。
 
     member_ids 缺省 = ctx.member_person_ids（查询时点成员）；考试维度
     端点传 members_at(db, ctx.mode, ctx.class_ids, exam_date) 的考试时点
@@ -1021,8 +888,7 @@ def readable_facts(
 
     roots = canonical_map(db, ctx.academic_year_id)
     # 2026-10 用户裁决：两工作台成绩信息不互通（各自上传、互不投影）。
-    # readable_facts 只读本域事实；关联（link）仅继续服务名册/作业共享，
-    # 不再把对侧域成绩投影进成绩读取（F09 投影门在此降为「不启用」）。
+    # readable_facts 只读本域事实；关联（link）仅继续服务名册/作业共享。
     if ctx.mode == "homeroom":
         own = _fact_query(
             db, "homeroom", ctx, ids, scope_class_ids, exam_name=exam_name
@@ -1054,11 +920,10 @@ def readable_facts(
 
 def readable_exam_summaries(db: Session, ctx: WorkspaceContext) -> List[dict]:
     """统一可读事实口径的考试清单（F09，/shared/exams 接线入口）：
-    readable_facts 全量聚合 exam_name/exam_date/row_count/subjects。月精度旧数据
-    用经校验的 source_exam_date（YYYY-MM）展示和排序，但不把它提升为完整日期，
-    因而不会绕过 gate_fact 的考试时点共享门。
-    本域行与通过门的投影行都计入；冲突事实各自保留本域行、不放大
-    row_count。subjects 只统计学科行（total_type 行不计入，契约 §1.4）。
+    readable_facts 全量聚合 exam_name/exam_date/row_count/subjects（两域
+    隔离后仅本域行）。月精度旧数据用经校验的 source_exam_date（YYYY-MM）
+    展示和排序，但不把它提升为完整日期。
+    subjects 只统计学科行（total_type 行不计入，契约 §1.4）。
     排序：有日期按日期降序，无日期按名称排后。返回 dict 与
     SharedExamEntry 字段一致，集成者可直接 SharedExamEntry(**item)。"""
     roots = canonical_map(db, ctx.academic_year_id)
@@ -1098,80 +963,3 @@ def readable_exam_summaries(db: Session, ctx: WorkspaceContext) -> List[dict]:
     ]
 
 
-# ────────────────────── 跨域冲突配对（v2.2/Q10，契约 p3 §1.6） ──────────────────────
-
-
-def score_conflict_pairs(
-    db: Session, link: HomeroomTeachingLink
-) -> List[Tuple[ScoreFact, ScoreFact]]:
-    """当前 link 下两域事实仍处冲突状态的配对清单（Q10/R5 收口专用，
-    GET score-conflicts 与 POST canonical-scores 共用同一判定）。
-
-    门与读接口完全同一套（不得自建第二套口径）：teaching 侧事实必须通过
-    gate_fact（current_subject_score 授权 + 考试日期已知且不早于历史授权
-    下限）与 eligible_linked_pairs 的考试时点双侧成员交集
-    （require_active_status=False，v2.2/G07）——被任一门挡住的事实不算
-    冲突；H 侧事实按读接口语义是本域原生行（本班数据恒可见，readable_facts
-    的冲突注记正是挂在 H 行上）。两域同 (人, link.subject, exam_name)
-    事实均定位到且 score 不同（含一方缺考 NULL）→ 返回一条
-    (homeroom_fact, teaching_fact)。总分行（total_type）与非 link.subject
-    事实绝不参与（教学域无总分行，总分口径不跨域比较）。"""
-    pairs = linked_students_for_link(db, link.id)
-    if not pairs:
-        return []
-    h_to_pair = {p.homeroom_identity_id: p for p in pairs}
-    t_ids = [p.teaching_identity_id for p in pairs]
-
-    def link_facts(
-        data_domain: str, identity_ids: Sequence[int], class_ref_id: int
-    ) -> List[ScoreFact]:
-        # 与读接口 _fact_query 的过滤口径一致（域/学年/班级/成员），仅把
-        # ctx 换成 link 的静态范围（本助手不依赖工作台上下文）
-        if not identity_ids:
-            return []
-        return (
-            db.query(ScoreFact)
-            .filter(
-                ScoreFact.data_domain == data_domain,
-                ScoreFact.academic_year_id == link.academic_year_id,
-                ScoreFact.identity_id.in_(list(identity_ids)),
-                ScoreFact.class_ref_id == class_ref_id,
-                ScoreFact.subject == link.subject,
-                ScoreFact.total_type.is_(None),
-            )
-            .all()
-        )
-
-    h_facts = link_facts("homeroom", list(h_to_pair), link.admin_class_id)
-    if not h_facts:
-        return []
-    t_by_key = {
-        (f.identity_id, fact_key(db, f)): f
-        for f in link_facts("teaching", t_ids, link.teaching_class_id)
-    }
-    if not t_by_key:
-        return []
-
-    cache: Dict[date, Dict[int, int]] = {}
-    result: List[Tuple[ScoreFact, ScoreFact]] = []
-    for h_fact in h_facts:
-        pair = h_to_pair.get(h_fact.identity_id)
-        if pair is None:  # h_ids 即来自 pairs，理论不可达；防御性保持
-            continue
-        t_fact = t_by_key.get((pair.teaching_identity_id, fact_key(db, h_fact)))
-        if t_fact is None:
-            continue  # 单侧事实：按门投影为对方行，不是冲突
-        if not gate_fact(link, t_fact):
-            continue
-        if (
-            _pairs_valid_at(db, link, cache, t_fact.exam_date).get(
-                pair.homeroom_identity_id
-            )
-            != pair.teaching_identity_id
-        ):
-            continue
-        if h_fact.score == t_fact.score:
-            continue  # 值已一致：即确认后的目标状态，不再是冲突
-        result.append((h_fact, t_fact))
-    result.sort(key=lambda ht: (ht[0].identity_id, ht[0].exam_name))
-    return result

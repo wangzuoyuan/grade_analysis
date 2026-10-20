@@ -433,7 +433,7 @@ def test_report_profile_roster_and_notes_summary(client, v1_seed):
     physics = next(s for s in body["subjects"] if s["subject"] == "物理")
     exam = physics["exams"][0]
     assert exam["source_domain"] == "homeroom"
-    assert exam["shared_conflict"] is None
+    assert "shared_conflict" not in exam
     chinese = next(s for s in body["subjects"] if s["subject"] == "语文")
     assert chinese["exams"][0]["score"] == 88.0
     totals = next(t for t in body["totals"] if t["total_type"] == "主三门")

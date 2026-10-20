@@ -5,14 +5,13 @@
  *
  * 数据全部来自 /api/v1：shared/exams（考试清单）、homeroom/analysis/*（stats/students/bands/trends）。
  * 计量红线（契约 §2.3）：缺考（score NULL）一律显示「—」不转 0；名次不在本页展示，
- * 表格按总分降序仅为浏览排序；shared_conflict 格子警示并注明教学域分数待人工核对；
- * 趋势按学年分段展示，不跨年连线；迟到回包按资源分离的序号丢弃（F11：任一资源重拉
+ * 表格按总分降序仅为浏览排序；趋势按学年分段展示，不跨年连线；迟到回包按资源分离的序号丢弃（F11：任一资源重拉
  * 绝不使其他资源的合法回包失效），bands 在总分具备年级名次时计算，
  * 无名次口径的 409 呈现「不可计算」提示卡（F10）。
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, BarChart3, CheckCircle2, ChevronDown, ClipboardList, Download, FileSpreadsheet, ListChecks, Search, TrendingUp, Users } from 'lucide-react'
+import { AlertCircle, BarChart3, CheckCircle2, ChevronDown, ClipboardList, Download, FileSpreadsheet, Search, TrendingUp, Users } from 'lucide-react'
 import {
   Bar,
   BarChart,
@@ -29,7 +28,6 @@ import { useSearchParams } from 'next/navigation'
 
 import {
   ApiV1Error,
-  confirmCanonicalScores,
   fetchHomeroomBands,
   fetchHomeroomClassAverages,
   fetchHomeroomFocus,
@@ -42,11 +40,6 @@ import {
   fetchHomeroomStudents,
   fetchHomeroomTrends,
   listExams,
-  listLinks,
-  listScoreConflicts,
-  normalizeSharedConflicts,
-  type CanonicalResolution,
-  type CanonicalSide,
   type ExamSummary,
   type HomeroomBandsResponse,
   type HomeroomClassAverageRow,
@@ -60,9 +53,7 @@ import {
   type HomeroomStatsResponse,
   type HomeroomStudentRow,
   type HomeroomTrendsResponse,
-  type LinkSharedConflict,
   type PersonId,
-  type ScoreConflictItem,
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
 import { useWorkspace } from '@/lib/workspace'
@@ -75,14 +66,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
 import {
   Select,
   SelectContent,
@@ -219,52 +202,6 @@ function TrendChart({
             </button>
           )
         })}
-      </div>
-    </div>
-  )
-}
-
-/** 规范值确认单选行（契约 §1.6 v2.3）：按域选择、每域一个单选——任一
- * 侧均可选（缺考侧标注「确认为缺考」：null 是现行业务状态，核实缺考是
- * 合法规范结果），本阶段不做人工改分。 */
-function ConflictChoiceRow({
-  item,
-  value,
-  onSelect,
-}: {
-  item: ScoreConflictItem
-  value: CanonicalSide | undefined
-  onSelect: (side: CanonicalSide) => void
-}) {
-  const key = JSON.stringify([String(item.person_id), item.subject, item.exam_key ?? item.exam_name])
-  const options: Array<{ domain: CanonicalSide; label: string; score: number | null }> = [
-    { domain: 'homeroom', label: '班主任域', score: item.homeroom_score },
-    { domain: 'teaching', label: '教学域', score: item.teaching_score },
-  ]
-  return (
-    <div className="rounded-lg border border-slate-100 bg-white px-3 py-2">
-      <p className="text-xs font-medium text-slate-700">
-        {item.name ?? `学生 ${String(item.person_id)}`} · {item.subject} · {item.exam_name}
-        {item.exam_date ? <span className="ml-2 font-normal text-slate-400">{item.exam_date.slice(0, 10)}</span> : null}
-      </p>
-      <div className="mt-1.5 flex flex-wrap gap-x-5 gap-y-1">
-        {options.map((o) => (
-          <label
-            key={o.domain}
-            className="flex cursor-pointer items-center gap-1.5 text-sm text-slate-600"
-          >
-            <input
-              type="radio"
-              name={key}
-              checked={value === o.domain}
-              onChange={() => onSelect(o.domain)}
-            />
-            <span>
-              {o.label}{' '}
-              {o.score == null ? '缺考 —（确认为缺考）' : `${formatScore(o.score)} 分`}
-            </span>
-          </label>
-        ))}
       </div>
     </div>
   )
@@ -693,9 +630,6 @@ export function HomeroomScores() {
   const { filter, generation, switching, scope } = useWorkspace()
   const searchParams = useSearchParams()
   const requestedExam = searchParams.get('exam')
-  // Q10：active 关联 id（homeroom 模式由后端 scope 解析；无关联时确认入口隐藏）
-  const linkId = scope?.link_id ?? null
-
   // 考试清单
   const [exams, setExams] = useState<ExamSummary[] | null>(null)
   const [examsError, setExamsError] = useState<string | null>(null)
@@ -761,41 +695,12 @@ export function HomeroomScores() {
   const frequencyReqRef = useRef(0)
   const rangeReqRef = useRef(0)
   const trendsReqRef = useRef(0)
-  const conflictsReqRef = useRef(0)
-
-  // Q10：确认成功后 +1，触发 stats/students 重拉（冲突标记随之消失）
-  const [dataNonce, setDataNonce] = useState(0)
 
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
 
   // 相关性卡走作业域作用域（homeworkScopeQuery，不带 term_id），考试跟随页面顶部选择
   const hwScopeQ = useMemo(() => homeworkScopeQuery(filter), [filter])
   const scopeSubject = scope?.subject ?? null
-
-  // Q10：关联学科（冲突只可能出现在 link.subject 上）。后端学生表
-  // shared_conflicts 为逐人 flat 形状 {"teaching_score": X}（契约测试冻结，
-  // 无学科键），归一化失败时用 link.subject 反推冲突学科格。
-  const [linkSubject, setLinkSubject] = useState<string | null>(null)
-  useEffect(() => {
-    if (linkId == null) {
-      setLinkSubject(null)
-      return
-    }
-    let stale = false
-    listLinks(scopeQ.academic_year_id)
-      .then((r) => {
-        if (!stale) {
-          const found = (r.links ?? []).find((l) => l.id === linkId)
-          setLinkSubject(found?.subject ?? null)
-        }
-      })
-      .catch(() => {
-        if (!stale) setLinkSubject(null)
-      })
-    return () => {
-      stale = true
-    }
-  }, [linkId, scopeQ.academic_year_id])
 
   // 考试清单：跟随工作台筛选/世代变化整体重置（仅考试列表自身状态；
   // stats/students/bands/trends 由各自 effect 的 scopeQ/考试依赖负责重置，互不作废）
@@ -850,7 +755,7 @@ export function HomeroomScores() {
         setClassAverages(null)
         setDataError(apiErrorMessage(err))
       })
-  }, [selectedExam, scopeQ, dataNonce])
+  }, [selectedExam, scopeQ])
 
   // 列头顺序以 stats.subjects 为准（任务书 §/homeroom/scores）
   const subjectCols = useMemo(() => (stats?.subjects ?? []).map((s) => s.subject), [stats])
@@ -938,7 +843,7 @@ export function HomeroomScores() {
         setFocus(null)
         setFocusError(apiErrorMessage(err))
       })
-  }, [selectedExam, scopeQ, dataNonce])
+  }, [selectedExam, scopeQ])
 
   useEffect(() => {
     const req = ++metricsReqRef.current
@@ -981,7 +886,7 @@ export function HomeroomScores() {
         if (req !== distributionReqRef.current) return
         setRankDistributionError(apiErrorMessage(err))
       })
-  }, [selectedExam, scopeQ, dataNonce])
+  }, [selectedExam, scopeQ])
 
   useEffect(() => {
     if (frequencyMetric == null || frequencyExamNames.length === 0) return
@@ -1051,114 +956,6 @@ export function HomeroomScores() {
     return list
   }, [students, totalCols])
 
-  // 冲突归一：person_id →（学科 → 教学域记录分）。
-  // 后端 /analysis/students 的 shared_conflicts 为逐人 flat 形状
-  // {"teaching_score": X}（无学科键，契约测试已冻结该形状），归一化读不到
-  // 学科时按 link.subject 反推冲突学科格（冲突只可能出现在任教学科上）。
-  const conflictByPerson = useMemo(() => {
-    const m = new Map<string, Map<string, LinkSharedConflict>>()
-    for (const s of students ?? []) {
-      const map = normalizeSharedConflicts(s.shared_conflicts)
-      const raw: unknown = s.shared_conflicts
-      if (map.size === 0 && linkSubject != null && raw != null && typeof raw === 'object' && !Array.isArray(raw)) {
-        const teaching = (raw as Record<string, unknown>).teaching_score
-        if (typeof teaching === 'number' || teaching === null) {
-          map.set(linkSubject, { teaching_score: teaching })
-        }
-      }
-      m.set(String(s.person_id), map)
-    }
-    return m
-  }, [students, linkSubject])
-
-  // ─────────── Q10 规范值确认（契约 p3 §1.6） ───────────
-  const [conflictOpen, setConflictOpen] = useState(false)
-  const [conflictTarget, setConflictTarget] = useState<{
-    personId: PersonId
-    personName: string
-    subject: string
-    examName: string
-  } | null>(null)
-  const [conflictList, setConflictList] = useState<ScoreConflictItem[] | null>(null)
-  const [conflictLoading, setConflictLoading] = useState(false)
-  const [conflictError, setConflictError] = useState<string | null>(null)
-  // 选择集：conflictKey → 选定来源侧（v2.3：按域选择，缺考侧同样可选）
-  const [choices, setChoices] = useState<Record<string, CanonicalSide>>({})
-  const [submitting, setSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState<string | null>(null)
-
-  const conflictKey = useCallback(
-    (c: Pick<ScoreConflictItem, 'person_id' | 'subject' | 'exam_name' | 'exam_key'>) =>
-      JSON.stringify([String(c.person_id), c.subject, c.exam_key ?? c.exam_name]),
-    [],
-  )
-
-  /** 打开确认弹窗：single = 某生某科某场的冲突格入口；batch = 工具栏全量清单。 */
-  const openConflicts = useCallback(
-    (
-      target: { personId: PersonId; personName: string; subject: string; examName: string } | null,
-    ) => {
-      if (linkId == null) return
-      setConflictOpen(true)
-      setConflictTarget(target)
-      setConflictList(null)
-      setConflictError(null)
-      setChoices({})
-      setSubmitError(null)
-      const req = ++conflictsReqRef.current
-      setConflictLoading(true)
-      listScoreConflicts(linkId)
-        .then((r) => {
-          if (req !== conflictsReqRef.current) return
-          setConflictList(r.conflicts ?? [])
-        })
-        .catch((err: unknown) => {
-          if (req !== conflictsReqRef.current) return
-          setConflictList([])
-          setConflictError(apiErrorMessage(err))
-        })
-        .finally(() => {
-          if (req === conflictsReqRef.current) setConflictLoading(false)
-        })
-    },
-    [linkId],
-  )
-
-  // 弹窗内实际可确认的条目：single 模式按（人, 科, 场）收窄
-  const visibleConflicts = useMemo(() => {
-    const all = conflictList ?? []
-    if (conflictTarget == null) return all
-    const matched = all.filter(
-      (c) =>
-        String(c.person_id) === String(conflictTarget.personId) &&
-        c.subject === conflictTarget.subject,
-    )
-    const inExam = matched.filter((c) => c.exam_name === conflictTarget.examName)
-    return inExam.length > 0 ? inExam : matched
-  }, [conflictList, conflictTarget])
-
-  const submitConfirm = useCallback(async () => {
-    if (linkId == null) return
-    const resolutions: CanonicalResolution[] = Object.entries(choices).map(([key, side]) => {
-      const [pid, subject, examKey] = JSON.parse(key) as string[]
-      const selected = conflictList?.find(c => String(c.person_id) === pid && c.subject === subject && (c.exam_key ?? c.exam_name) === examKey)
-      return { person_id: Number(pid), subject, exam_name: selected?.exam_name ?? examKey, exam_key: selected?.exam_key, canonical_side: side }
-    })
-    if (resolutions.length === 0) return
-    setSubmitting(true)
-    setSubmitError(null)
-    try {
-      await confirmCanonicalScores(linkId, resolutions)
-      setConflictOpen(false)
-      // 成功后重拉 stats/students：两域已一致，冲突标记随之消失
-      setDataNonce((n) => n + 1)
-    } catch (err: unknown) {
-      setSubmitError(apiErrorMessage(err))
-    } finally {
-      setSubmitting(false)
-    }
-  }, [choices, linkId, conflictList])
-
   // 班名次（2026-10-19 明细表新列）：按各总分口径对本班有总分学生计算，
   // 同分同名次（1,2,2,4 语义）、缺考不参与不编造；仅为浏览名次。
   const rankTotalCols = useMemo<string[]>(
@@ -1224,17 +1021,6 @@ export function HomeroomScores() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {linkId != null ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => openConflicts(null)}
-              disabled={loadingExams}
-            >
-              <ListChecks className="h-4 w-4" />
-              冲突清单
-            </Button>
-          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -1430,7 +1216,6 @@ export function HomeroomScores() {
                           {sortedStudents.map((s) => {
                             const key = String(s.person_id)
                             const expanded = expandedPerson === key
-                            const conflicts = conflictByPerson.get(key) ?? null
                             // 趋势数据按 person_id 守卫：切换人选的瞬间绝不闪现上一个人的数据
                             const trendsForPerson =
                               trends != null && String(trends.person_id) === key ? trends : null
@@ -1456,42 +1241,15 @@ export function HomeroomScores() {
                                   {subjectColumnGroups(subjectCols).flatMap((g) => {
                                     if (!g.paired) {
                                       const v = s.scores?.[g.subject] ?? null
-                                      const conflict = conflicts?.get(g.subject) ?? null
                                       return [
                                         <TableCell
                                           key={g.subject}
                                           className={cn(
                                             'whitespace-nowrap border-r text-right tabular-nums text-sm',
-                                            conflict
-                                              ? 'cursor-pointer bg-warning-50 text-warning-700'
-                                              : v == null
-                                                ? 'text-slate-300'
-                                                : 'text-slate-900',
+                                            v == null ? 'text-slate-300' : 'text-slate-900',
                                           )}
-                                          title={
-                                            conflict
-                                              ? `两域分数不一致待人工核对（教学域 ${
-                                                  conflict.teaching_score == null ? '缺考' : `${String(conflict.teaching_score)} 分`
-                                                }）；点击确认规范值`
-                                              : undefined
-                                          }
-                                          onClick={
-                                            conflict
-                                              ? (e) => {
-                                                  // 格子级入口：不触发行展开
-                                                  e.stopPropagation()
-                                                  openConflicts({
-                                                    personId: s.person_id,
-                                                    personName: s.name ?? '（未命名）',
-                                                    subject: g.subject,
-                                                    examName: selectedExam ?? '',
-                                                  })
-                                                }
-                                              : undefined
-                                          }
                                         >
                                           {v == null ? '—' : formatScore(v)}
-                                          {conflict ? <span className="ml-1 text-[10px]">※</span> : null}
                                         </TableCell>,
                                       ]
                                     }
@@ -1983,100 +1741,6 @@ export function HomeroomScores() {
       {/* 契约 p5 §7 相关性散点卡（r 不可计算态）；挂两域成绩分析页底部，考试跟随顶部选择 */}
       <CorrelationCard mode="homeroom" scopeQ={hwScopeQ} scopeSubject={scopeSubject} generation={generation} preferredExamName={selectedExam} />
 
-      {/* Q10 规范值确认弹窗：列两域值与来源，选其一提交（契约 p3 §1.6） */}
-      <Dialog open={conflictOpen} onOpenChange={setConflictOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {conflictTarget
-                ? `确认规范值 · ${conflictTarget.personName} ${conflictTarget.subject}`
-                : '跨域冲突清单'}
-            </DialogTitle>
-            <DialogDescription>
-              两域分数不一致时各自保留本域值；确认规范值后两工作台读值一致、冲突标记消失。
-              任一侧均可选（缺考侧即确认为缺考），不能手工改分。
-            </DialogDescription>
-          </DialogHeader>
-
-          {conflictError ? (
-            <p className="rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-500">{conflictError}</p>
-          ) : conflictLoading || conflictList == null ? (
-            <div className="space-y-2">
-              <Skeleton className="h-12 w-full" />
-              <Skeleton className="h-12 w-full" />
-            </div>
-          ) : visibleConflicts.length === 0 ? (
-            <p className="py-4 text-center text-sm text-slate-500">
-              当前关联暂无跨域冲突（两域值已一致或共享未授权）。
-            </p>
-          ) : (
-            <div className="max-h-[50vh] space-y-2 overflow-y-auto">
-              {visibleConflicts.map((c) => {
-                const key = conflictKey(c)
-                return (
-                  <ConflictChoiceRow
-                    key={key}
-                    item={c}
-                    value={choices[key]}
-                    onSelect={(side) =>
-                      setChoices((prev) => ({ ...prev, [key]: side }))
-                    }
-                  />
-                )
-              })}
-            </div>
-          )}
-
-          {!conflictLoading && visibleConflicts.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
-              <span>快捷全选：</span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={submitting}
-                onClick={() =>
-                  setChoices(
-                    Object.fromEntries(
-                      visibleConflicts.map((c) => [conflictKey(c), 'homeroom' as CanonicalSide]),
-                    ),
-                  )
-                }
-              >
-                全选班主任域值
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={submitting}
-                onClick={() =>
-                  setChoices(
-                    Object.fromEntries(
-                      visibleConflicts.map((c) => [conflictKey(c), 'teaching' as CanonicalSide]),
-                    ),
-                  )
-                }
-              >
-                全选教学域值
-              </Button>
-            </div>
-          ) : null}
-
-          {submitError ? (
-            <p className="rounded-md bg-danger-50 px-3 py-2 text-sm text-danger-500">{submitError}</p>
-          ) : null}
-
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setConflictOpen(false)} disabled={submitting}>
-              取消
-            </Button>
-            <Button type="button" onClick={submitConfirm} disabled={submitting || Object.keys(choices).length === 0}>
-              {submitting ? '提交中…' : `确认所选（${String(Object.keys(choices).length)}）`}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

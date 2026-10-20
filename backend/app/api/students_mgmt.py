@@ -2833,23 +2833,12 @@ def student_report(
     subject_facts = [f for f in facts if f.total_type is None]
     total_facts = [f for f in facts if f.total_type is not None]
 
-    # 2026-10 用户裁决：两域成绩不互通，画像/打印不再并入 teaching 投影行。
-    conflicts: Dict = {}
-    teaching_extra: List = []
-
+    # 2026-10 用户裁决：两域成绩不互通，画像/打印只读本域事实。
     grouped: dict = {}
     for fact in sorted(
         subject_facts, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
-        entry = _exam_entry(fact, "homeroom", db)
-        conflict_key = (fact.subject, q.fact_key(db, fact))
-        if conflict_key in conflicts:
-            entry.shared_conflict = {"teaching_score": conflicts[conflict_key]}
-        grouped.setdefault(fact.subject, []).append(entry)
-    for t_fact in sorted(
-        teaching_extra, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
-    ):
-        grouped.setdefault(t_fact.subject, []).append(_exam_entry(t_fact, "teaching", db))
+        grouped.setdefault(fact.subject, []).append(_exam_entry(fact, "homeroom", db))
     subjects = [
         SubjectGroup(subject=subject, exams=exams)
         for subject, exams in sorted(grouped.items())
