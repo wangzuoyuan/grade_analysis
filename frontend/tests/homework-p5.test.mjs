@@ -286,3 +286,13 @@ test('Sidebar 导航：作业入口按工作台互斥，设置和缺交预警留
   assert.match(topbar, /aria-label="学期设置"/, '窄屏图标入口须有清晰的无障碍名称')
   assert.match(topbar, /<Settings className="h-5 w-5" \/>/, '顶栏须显示设置图标')
 })
+
+test('交名单与「已交：名单」反向口径：列出的=已交、其余=缺交（契约 v1.1）', () => {
+  // 交名单模式提示不得再宣称「不推断缺交」（旧文案与例外登记读取口径矛盾）
+  assert.doesNotMatch(entryPanel, /不推断缺交/)
+  assert.match(entryPanel, /其余应交学生自动记为缺交/, 'names 模式提示须写明其余记缺交')
+  // 智能文本反向行语法与跨栈 kind
+  assert.match(entryPanel, /SUBMITTED_LINE/, '教学解析器须接入反向行正则')
+  assert.match(entryPanel, /已交：名单/, '帮助文案须示范「已交：名单」写法')
+  assert.match(apiV1, /'submitted_only'/, '前端类型须含 submitted_only')
+})

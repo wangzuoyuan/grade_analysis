@@ -2,6 +2,8 @@
 
 - H01：full（全交台账）+ 个人例外；detailed 两种行顺序结果一致；请求内
   同人两行矛盾 → 422；姓名歧义 422 列候选、学号消歧优先。
+- H01：submitted_only（已交台账）列出的=已交、其余=缺交（可带状态行）；
+  names（交名单）同口径重指向。
 - H02：confirm 重试同 token 幂等不增；同日同科同种类两份各自独立
   （existing_batches 提示、revoked 不算）；预警 recent_missing 按日期排序。
 """
@@ -280,6 +282,96 @@ def test_h02_warnings_recent_missing_sorted_by_date(client, v1_seed):
     assert dates == sorted(dates, reverse=True)
     assert dates[:2] == ["2025-10-01", "2025-09-30"]
     assert jia["missing_count"] == 3
+
+
+def test_h01_submitted_only_ledger(client, v1_seed):
+    """submitted_only（已交台账）：列出的记已交，其余应交成员自动记缺交。"""
+    resp = _preview(
+        client,
+        v1_seed,
+        assigned_date="2025-09-12",
+        homework_type="试卷",
+        input={
+            "kind": "submitted_only",
+            "exceptions": [
+                {"name_or_alias": "秦甲", "status": "submitted"},
+                {"name_or_alias": "秦乙", "status": "submitted"},
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    subs = _subs_by_id(resp.json())
+    assert subs[v1_seed.jia_h_id] == ("submitted", None)
+    assert subs[v1_seed.yi_h_id] == ("submitted", None)
+    assert subs[v1_seed.bing_h_id] == ("missing", None)
+
+    counts = _confirm(client, resp.json()["token"]).json()
+    assert (counts["submitted"], counts["missing"], counts["excused"]) == (2, 1, 0)
+
+
+def test_h01_submitted_only_with_status_tokens(client, v1_seed):
+    """submitted_only 名单可带状态：请假的标 excused，不落缺交也不算已交。"""
+    resp = _preview(
+        client,
+        v1_seed,
+        assigned_date="2025-09-13",
+        input={
+            "kind": "submitted_only",
+            "exceptions": [
+                {"name_or_alias": "秦甲", "status": "submitted"},
+                {"name_or_alias": "秦乙", "status": "excused"},
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    subs = _subs_by_id(resp.json())
+    assert subs[v1_seed.jia_h_id] == ("submitted", None)
+    assert subs[v1_seed.yi_h_id] == ("excused", None)
+    assert subs[v1_seed.bing_h_id] == ("missing", None)
+
+    counts = _confirm(client, resp.json()["token"]).json()
+    assert (counts["submitted"], counts["missing"], counts["excused"]) == (1, 1, 1)
+
+
+def test_h01_submitted_only_empty_and_conflict_rejected(client, v1_seed):
+    """submitted_only 空 exceptions → 422；同人两行矛盾 → 422。"""
+    empty = _preview(
+        client, v1_seed, assigned_date="2025-09-14",
+        input={"kind": "submitted_only", "exceptions": []},
+    )
+    assert empty.status_code == 422
+    assert empty.json()["error"] == "invalid_scope_param"
+
+    conflict = _preview(
+        client, v1_seed, assigned_date="2025-09-14", homework_type="订正",
+        input={
+            "kind": "submitted_only",
+            "exceptions": [
+                {"name_or_alias": "秦甲", "status": "submitted"},
+                {"name_or_alias": "秦甲", "status": "excused"},
+            ],
+        },
+    )
+    assert conflict.status_code == 422
+
+
+def test_h01_names_kind_rest_marks_missing(client, v1_seed):
+    """names（交名单）重指向：列出的=已交，其余=缺交（2026-10-20 口径修正）。"""
+    resp = _preview(
+        client,
+        v1_seed,
+        assigned_date="2025-09-15",
+        homework_type="默写",
+        input={"kind": "names", "names": ["秦甲", "秦乙"]},
+    )
+    assert resp.status_code == 200, resp.text
+    subs = _subs_by_id(resp.json())
+    assert subs[v1_seed.jia_h_id] == ("submitted", None)
+    assert subs[v1_seed.yi_h_id] == ("submitted", None)
+    assert subs[v1_seed.bing_h_id] == ("missing", None)
+
+    counts = _confirm(client, resp.json()["token"]).json()
+    assert (counts["submitted"], counts["missing"], counts["excused"]) == (2, 1, 0)
 
 
 def test_h01_name_ambiguity_and_alias_disambiguation(client, v1_seed, db_session):

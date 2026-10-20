@@ -21,8 +21,12 @@ export const STATUS_OF_ACTION: Array<{ pattern: RegExp; status: HomeworkStatus }
   { pattern: /(?:请假|免交)/, status: 'excused' },
   { pattern: /(?:已交|交了|完成)/, status: 'submitted' },
 ]
-/** 「全交」短语。 */
-export const FULL_PHRASE = /^(?:全交|全员已交|全部已交|全齐|齐了|交齐|都交|都交齐)$/
+/** 「全交」短语（整行「已交」= 全员已交，同全交）。 */
+export const FULL_PHRASE = /^(?:全交|全员已交|全部已交|全齐|齐了|交齐|都交|都交齐|已交)$/
+/** 反向标记词（已交台账）：「已交：名单」行——列出的记已交、其余记缺交。 */
+export const SUBMITTED_LINE = /^(?:已交名单|已交|交名单)[\s：:,，、]*(.*)$/
+/** 左尾缀反向标记：「数学 已交：名单」的冒号左侧（要求标记前有学科/作业名）。 */
+export const SUBMITTED_LEFT_SUFFIX = /^(.+?)[\s]*(?:已交名单|已交|交名单)[\s]*$/
 /** 列表分隔：顿号/逗号/分号（学生优先行的学科项里空格可能是状态的一部分，不切）。 */
 export const TOKEN_SPLIT = /[、，,；;]+/
 /** 纯姓名名单分隔：额外允许空格（「迟到：刘雨琪 王五」）。 */

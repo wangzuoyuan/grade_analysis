@@ -373,3 +373,37 @@ test('考勤胶囊与出勤登记卡片区分请假：有人请假不再误标�
   // 5. 卡片点击行为不变：出勤卡片点击仍统一 missing 筛选（此前有意设计）
   assert.match(table, /onClick=\{\(\) => onSelectSubject\(a\.assignment_id, 'missing'\)\}/, '透视卡片点击仍统一直达缺交筛选，不随请假态改变')
 })
+
+test('反向行「已交：名单」：列出的记已交、其余记缺交（已交台账口径）', () => {
+  const parse = loadSmartParser()
+  // 纯反向行 → names kind（列出的=已交；服务端其余应交成员=缺交）
+  const inv = parse('已交：张三，李四')
+  assert.equal(inv.error, null)
+  assert.equal(inv.input.kind, 'names')
+  assert.deepEqual([...inv.input.names], ['张三', '李四'])
+
+  // 反向行 + 状态行混合：不再报「混合」错误，请假的人不落缺交也不算已交
+  const mixed = parse('已交：张三，李四\n王五：请假')
+  assert.equal(mixed.error, null)
+  assert.equal(mixed.input.kind, 'submitted_only')
+  const map = Object.fromEntries(mixed.input.exceptions.map((r) => [r.name_or_alias, r.status]))
+  assert.equal(map['张三'], 'submitted')
+  assert.equal(map['李四'], 'submitted')
+  assert.equal(map['王五'], 'excused')
+
+  // 反向行内联状态 token：已交：张三，王五 请假
+  const inline = parse('已交：张三，王五 请假')
+  assert.equal(inline.error, null)
+  const inlineMap = Object.fromEntries(inline.input.exceptions.map((r) => [r.name_or_alias, r.status]))
+  assert.equal(inlineMap['张三'], 'submitted')
+  assert.equal(inlineMap['王五'], 'excused')
+
+  // 整行「已交」= 全交（与 FULL_PHRASE 同义）
+  const all = parse('已交')
+  assert.equal(all.input.kind, 'full')
+
+  // 纯裸姓名（无反向标记）仍走 names kind——行为不变，语义由服务端统一
+  const names = parse('张三\n李四')
+  assert.equal(names.input.kind, 'names')
+  assert.deepEqual([...names.input.names], ['张三', '李四'])
+})

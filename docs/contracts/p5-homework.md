@@ -1,4 +1,4 @@
-# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1，2026-09-11）
+# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.1，2026-10-20 新增 submitted_only 反向台账并重指向 names 口径）
 
 依 `docs/planning/03-architecture.md` §4、`05-acceptance.md`（H01–H06）、
 ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-api.md v2 §2.1（R10 已落地，
@@ -11,7 +11,8 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - 应交分母 = assignment.expected_members_json（确认时快照），不是当天班级人数；快照按规则
   扣除 excused 后为有效分母。旧迁移批次按原班级与事件日有效成员恢复名单。
 - 状态：submitted/missing/excused。采用例外登记：名单中没有缺交或请假记录的人默认已交；
-  旧 unknown 仅作存储兼容，业务读取归一为 submitted，不再向老师展示。
+  旧 unknown 仅作存储兼容，业务读取归一为 submitted，不再向老师展示。反向录入
+  （submitted_only/names）在 preview 内把应打名单展开为显式缺交行后覆盖，读取口径不变。
 - 连续缺交按收交事件（assignment.assigned_date）排序：submitted 打断连续，excused 跳过。
 - 双向共享：assignment 归属一域（data_domain + class_ref_id）；对侧经 **active link + 期满 +
   LinkedStudent 交集 + share_categories 含 current_subject_homework** 才可读/写同一事实（读走
@@ -35,15 +36,19 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 ### 1.1 `POST /api/v1/homework/preview`（JSON）
 
 - 请求：`{mode, class_id(homeroom)|teaching_class_id(teaching), academic_year_id?, subject, homework_type,
-  assigned_date, due_date?, input: {kind: full|names|detailed, names?: [str], rows?: [{name_or_alias,
+  assigned_date, due_date?, input: {kind: full|names|detailed|submitted_only, names?: [str], rows?: [{name_or_alias,
   status: submitted|missing|excused, evaluation?}], all_submitted?: bool, exceptions?: [{name_or_alias,
   status, evaluation?}]}}`
 - 解析（零写入，token 化）：
   - `full`（全交台账）：展开当期应交成员快照为 submitted，再应用 exceptions（明确个人例外）；
     **先解析全批次再应用例外，行顺序不影响结果**（H01）。
-  - `names`：仅列出的学生为 submitted（其余不写行——不推断缺交）。
+  - `names`（交名单）：仅列出的学生为 submitted，**其余应交成员展开为 missing 行**
+    （v1.1，2026-10-20：原"其余不写行"在例外登记读取下等于全班已交，与提示文案矛盾，已修正）。
+  - `submitted_only`（已交台账，v1.1）：full 的镜像——展开应交成员快照为 missing，再应用
+    exceptions 覆盖（裸姓名行 status=submitted；请假等状态行照常）。适用于只记谁交了的场景。
   - `detailed`：逐人行。姓名歧义（同班同名）→ 422 列候选；学号优先消歧。
-  - 未列为缺交或请假的应交成员默认已交；不提供 unknown 录入。
+  - 未列为缺交或请假的应交成员默认已交（full/detailed 语义；submitted_only/names 是
+    反向展开，落库后全员有显式行）；不提供 unknown 录入。
   - 同日同科同种类已有批次：preview 返回 `existing_batches: [{assignment_id, batch_token, revision}]`
     提示"编辑既有批次或新建"；**不自动叠加**（H02）。
 - 响应：`{token, expires_at, assignment: {subject, homework_type, assigned_date, expected_members:
@@ -125,8 +130,9 @@ H06（学期自动/手工/重复编辑 4xx）→ §5 测试。
 
 ## 7. 前端（P5-FE 波次）
 
-- `/homeroom/homework` 与 `/teaching/homework`：录入（智能输入框 + 全交/名单/明细三模式 + 例外）、
-  批次列表（rate/无法计算标注）、撤销冲突展示。
+- `/homeroom/homework` 与 `/teaching/homework`：录入（智能输入框 + 全交/交名单/明细三模式 + 例外；
+  智能输入支持「已交：名单」/「学科 已交：名单」反向行——列出的记已交、其余记缺交，
+  交名单模式同口径）、批次列表（rate/无法计算标注）、撤销冲突展示。
 - 预警时间轴页（events 口径标注）；逐人作业与成绩分析挂载于两域成绩分析页底部
   （作业跟进页不挂载；旧班级相关接口保留兼容，新页面遵循 [逐人契约](student-homework-analysis.md)）。
 - 学期设置卡（自动/手工切换、重复编辑错误提示）。

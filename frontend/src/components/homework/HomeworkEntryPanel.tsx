@@ -7,8 +7,9 @@
  * - 教学工作台 subject 固定任教学科（只读，来自工作台作用域）；班主任工作台可自由输入学科；
  * - 作业种类仅教学工作台采集；班主任工作台 UI 不出现该概念，录入固定代填
  *   HOMEROOM_HOMEWORK_TYPE（后端契约仍要求非空，幂等查重不受影响）；
- * - 三模式（full=全交+例外 / names=名单 / detailed=逐行明细）切换即清空对应输入行，
- *   不同模式的行结构不同，混带必出错；
+ * - 三模式（full=全交+例外 / names=交名单：列出的=已交、其余=缺交 / detailed=逐行明细）
+ *   切换即清空对应输入行，不同模式的行结构不同，混带必出错；智能文本支持反向行
+ *   「已交：名单」（班主任版「学科 已交：名单」）→ submitted_only 已交台账；
  * - preview 零写入；响应里的 existing_batches（同日同科同种类既有批次）必须醒目提示
  *   「编辑既有或新建」，绝不静默叠加（H02）；
  * - confirm 409（token 单次消费/成员漂移/范围变化）→ 中文提示 + 重新预览，
@@ -63,6 +64,7 @@ import {
   QUALITY_WORDS as SMART_QUALITY,
   STATUS_OF_ACTION as SMART_STATUS,
   FULL_PHRASE,
+  SUBMITTED_LINE,
   pureEvaluation,
 } from './homework-vocab'
 import { HOMEWORK_STATUS_OPTIONS, HOMEROOM_HOMEWORK_TYPE, homeworkStatusLabel } from './shared'
@@ -179,7 +181,8 @@ interface SmartInputResult {
 
 /**
  * 将旧页面的“直接输入内容”语义转成 v1 的单批次结构。
- * 支持：「校本作业：全交」、「迟到：张三、李四」、「张三 缺交」、「李四：请假」以及纯姓名已交名单。
+ * 支持：「校本作业：全交」、「迟到：张三、李四」、「张三 缺交」、「李四：请假」、
+ * 纯姓名已交名单，以及反向行「已交：张三，李四」（列出的记已交、其余记缺交）。
  */
 export function parseSmartHomeworkText(text: string): SmartInputResult {
   const rawLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -191,6 +194,24 @@ export function parseSmartHomeworkText(text: string): SmartInputResult {
     for (const line of rawLines) {
       if (FULL_PHRASE.test(line)) {
         expanded.push('全交')
+        continue
+      }
+      // 反向行（已交台账）：整行以「已交：/已交 」打头——名单里的裸姓名记已交、
+      // 带状态的 token 按状态（如「王五 请假」），其余应交学生记缺交。
+      const invMatch = line.match(SUBMITTED_LINE)
+      if (invMatch) {
+        const rest = invMatch[1].trim()
+        if (rest === '') {
+          expanded.push('全交')
+        } else {
+          for (const token of rest.split(/[、，,；;]+/).map((s) => s.trim()).filter(Boolean)) {
+            if (isSmartAction(token)) {
+              expanded.push(token)
+            } else {
+              expanded.push(...token.split(/\s+/).filter(Boolean))
+            }
+          }
+        }
         continue
       }
       const parts = line.split(/[:：]/, 2)
@@ -364,9 +385,22 @@ export function parseSmartHomeworkText(text: string): SmartInputResult {
     return { homeworkType, input: { kind: 'full', exceptions: rows }, error: null }
   }
   if (rows.length > 0 && names.length > 0) {
-    return { homeworkType, input: null, error: '请不要混合“纯姓名名单”和“姓名+状态”，或补齐每人状态' }
+    // 混合名单与状态 = 已交台账（submitted_only）：名单内=已交、状态行按各自
+    // 状态、其余应交学生=缺交（原「混合报错」路径，2026-10-20 起为合法语义）。
+    return {
+      homeworkType,
+      input: {
+        kind: 'submitted_only',
+        exceptions: [
+          ...names.map((n) => ({ name_or_alias: n, status: 'submitted' as const })),
+          ...rows,
+        ],
+      },
+      error: null,
+    }
   }
   if (rows.length > 0) return { homeworkType, input: { kind: 'detailed', rows }, error: null }
+  // 纯名单：names kind——列出的=已交、其余=缺交（服务端同口径展开）
   return { homeworkType, input: { kind: 'names', names }, error: null }
 }
 
@@ -437,7 +471,7 @@ function StatusSelect({
 
 const KIND_OPTIONS: Array<{ value: HomeworkInputKind; label: string; hint: string }> = [
   { value: 'full', label: '全交台账', hint: '默认全员已交，只补记缺交或请假例外' },
-  { value: 'names', label: '交名单', hint: '只列出的学生记为已交；其余不写行、不推断缺交' },
+  { value: 'names', label: '交名单', hint: '只列出的学生记为已交；其余应交学生自动记为缺交' },
   { value: 'detailed', label: '逐行明细', hint: '逐人录入已交、缺交、请假与评价' },
 ]
 
@@ -769,15 +803,15 @@ export function HomeworkEntryPanel({
               }}
               placeholder={
                 teaching
-                  ? '校本作业：全交\n张三 缺交 忘带\n李四：请假'
-                  : '物理：秦三，秦二\n数学：全交\n秦一：语文作文，数学\n迟到：刘雨琪\n请假：王五'
+                  ? '校本作业：全交\n张三 缺交 忘带\n李四：请假\n已交：王五，赵六'
+                  : '物理：秦三，秦二\n数学：全交\n英语 已交：秦一，秦四\n秦二：语文作文，数学\n迟到：刘雨琪'
               }
               className="w-full resize-y rounded-lg border border-brand-200 bg-white px-3 py-3 text-sm leading-6 shadow-inner focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
             />
             <p className="text-[11px] text-slate-500">
               {teaching
-                ? '也可每行只写一个姓名/学号，表示这些人已交；未列出的人不会被推断为缺交。'
-                : '支持按学科记（学科：名单）、按学生记（姓名：学科1，学科2），以及纯考勤记（迟到：姓名、请假：姓名）。考勤自动单列，不按学科计入缺交。'}
+                ? '也可每行只写一个姓名/学号，或写「已交：名单」——列出的记已交，未列出的人自动记为缺交。'
+                : '支持按学科记（学科：名单）、按学生记（姓名：学科1，学科2），以及纯考勤记（迟到：姓名、请假：姓名）。某科只交了少数人时写「学科 已交：名单」，列出的记已交、其余记缺交。考勤自动单列，不按学科计入缺交。'}
             </p>
           </div>
 
@@ -934,7 +968,7 @@ export function HomeworkEntryPanel({
                 className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
               <p className="text-[10px] text-slate-400">
-                仅名单内的人记为已交；名单外不写行、不推断缺交（无记录 ≠ 已交）。
+                仅名单内的人记为已交；其余应交学生自动记为缺交。适合只交了少数人的场景。
               </p>
             </div>
           ) : null}

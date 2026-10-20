@@ -498,3 +498,50 @@ test('交互修复：学科行与考勤行的空格分隔姓名可识别，单�
   assert.match(table, /resetExpansion/, '展开状态必须统一通过 resetExpansion 清理')
   assert.doesNotMatch(table, /preferredAssignmentId/, 'toggleDayGroup 的死参数必须移除')
 })
+
+test('反向行（已交台账）：「学科 已交：名单」列出的记已交、其余记缺交，可混状态 token', () => {
+  const split = loadSplitter()('数学 已交：秦三，秦二，王五 请假\n物理：秦六，秦七')
+  assert.equal(split.error, null)
+  assert.equal(split.plainLines.length, 0, '反向行应被学科分支处理，不落 plainLines')
+  const bySubject = Object.fromEntries(split.subjectGroups.map((g) => [g.subject, g.input]))
+  assert.equal(bySubject['数学'].kind, 'submitted_only')
+  assert.equal(
+    JSON.stringify(bySubject['数学'].exceptions.map((r) => [r.name_or_alias, r.status])),
+    JSON.stringify([['秦三', 'submitted'], ['秦二', 'submitted'], ['王五', 'excused']]),
+    '裸姓名=已交、状态 token 按状态',
+  )
+  // 同段普通学科行不受影响：裸姓名仍=缺交例外（既有口径守护）
+  assert.equal(bySubject['物理'].kind, 'detailed')
+  assert.ok(bySubject['物理'].rows.every((r) => r.status === 'missing'))
+})
+
+test('反向行右侧打头形式：「学科：已交 名单」同语义；「学科：已交」单独出现=全交', () => {
+  const split = loadSplitter()('英语：已交 秦三 秦二\n化学：已交')
+  assert.equal(split.error, null)
+  const bySubject = Object.fromEntries(split.subjectGroups.map((g) => [g.subject, g.input]))
+  assert.equal(bySubject['英语'].kind, 'submitted_only')
+  assert.equal(
+    JSON.stringify(bySubject['英语'].exceptions.map((r) => [r.name_or_alias, r.status])),
+    JSON.stringify([['秦三', 'submitted'], ['秦二', 'submitted']]),
+  )
+  assert.equal(bySubject['化学'].kind, 'full', '「化学：已交」= 全员已交')
+  assert.equal(JSON.stringify(bySubject['化学'].exceptions), '[]')
+})
+
+test('反向行待定学科：「听力第四周 已交：名单」保留作业名，学科由默认学科补', () => {
+  const split = loadSplitter()('听力第四周 已交：秦三，秦二')
+  assert.equal(split.error, null)
+  assert.equal(split.unmarkedGroups.length, 1)
+  const g = split.unmarkedGroups[0]
+  assert.equal(g.homeworkType, '听力第四周')
+  assert.equal(g.input.kind, 'submitted_only')
+  assert.ok(g.input.exceptions.every((r) => r.status === 'submitted'))
+})
+
+test('无学科前缀的反向行走 plainLines（由默认学科兜底），不自建假学科', () => {
+  const split = loadSplitter()('已交：秦三，秦二')
+  assert.equal(split.error, null)
+  assert.equal(split.subjectGroups.length, 0)
+  assert.equal(split.unmarkedGroups.length, 0, '「已交」是状态词，不得当作业名建待定组')
+  assert.deepEqual([...split.plainLines], ['已交：秦三，秦二'])
+})

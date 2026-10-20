@@ -2103,8 +2103,9 @@ export function deleteNote(
 /** 交作业状态：默认已交，只登记缺交或请假例外。 */
 export type HomeworkStatus = 'submitted' | 'missing' | 'excused'
 
-/** 录入模式（契约 §1.1）：full=全交台账+例外 / names=名单 / detailed=逐行明细。 */
-export type HomeworkInputKind = 'full' | 'names' | 'detailed'
+/** 录入模式（契约 §1.1）：full=全交台账+例外 / names=交名单（列出的=已交，其余=缺交）/
+ * detailed=逐行明细 / submitted_only=已交台账（full 的镜像：全员缺交底账+列出行覆盖）。 */
+export type HomeworkInputKind = 'full' | 'names' | 'detailed' | 'submitted_only'
 
 /** 作业端点共用作用域参数（mode 由函数首参显式携带——后端缺 mode 直接 422，绝不退化全年级）。 */
 export interface HomeworkScopeQuery {

@@ -11,6 +11,9 @@
  * - 「学科：名单」里的裸姓名 = 该科缺交例外（班主任只记谁没交，默认已交，
  *   沿用老班主任版按作业种类录入的例外口径）；带状态的 token 按状态登记。
  * - 「学科：全交」= 该科无缺交（full 台账）。
+ * - 反向行（已交台账）：「学科 已交：名单」或「学科：已交 名单」——列出的
+ *   裸姓名记已交、其余应交学生自动记缺交（kind=submitted_only）；名单内
+ *   可混状态 token（如「王五 请假」→请假）。「学科：已交」单独出现=全交。
  * - 冒号左侧不含学科词、也非纯种类前缀的行（如「听力第四周：张三」）不建假学科
  *   批次（防呆）：归入 unmarkedGroups 待定学科组，学科由面板默认学科补齐。
  * - 没有「学科：」前缀的行不走本模块的缺交默认，交回上层沿用既有
@@ -29,6 +32,8 @@ import {
   NAME_SPLIT,
   QUALITY_WORDS,
   STATUS_OF_ACTION,
+  SUBMITTED_LEFT_SUFFIX,
+  SUBMITTED_LINE,
   TOKEN_SPLIT,
   lineHasAction,
 } from './homework-vocab'
@@ -123,8 +128,9 @@ function nameResidue(text: string): string {
     .trim()
 }
 
-/** 单个 token（姓名 或 姓名+状态/出勤/评价）→ 逐人行（学科行右侧名单使用）。 */
-function tokenToRow(token: string): HomeworkRowInput | null {
+/** 单个 token（姓名 或 姓名+状态/出勤/评价）→ 逐人行（学科行右侧名单使用）。
+ * submittedBase=true 时为反向行（已交：名单）：裸姓名=已交而非缺交例外。 */
+function tokenToRow(token: string, submittedBase = false): HomeworkRowInput | null {
   const text = token.trim()
   if (!text || FULL_PHRASE.test(text)) return null
   const attendanceMatch = text.match(ATTENDANCE_WORDS)
@@ -155,8 +161,11 @@ function tokenToRow(token: string): HomeworkRowInput | null {
     if (!name) return null
     return { name_or_alias: name, status: 'submitted', evaluation: text.slice(qualityMatch.index ?? 0).replace(/[（）()]/g, '').trim() }
   }
-  // 学科行内的裸姓名 = 缺交例外（班主任只记谁没交）
-  return { name_or_alias: text.replace(/[（）()]/g, '').trim(), status: 'missing' }
+  // 学科行内的裸姓名：默认缺交例外（班主任只记谁没交）；反向行（已交：名单）里=已交
+  return {
+    name_or_alias: text.replace(/[（）()]/g, '').trim(),
+    status: submittedBase ? 'submitted' : 'missing',
+  }
 }
 
 /**
@@ -259,6 +268,8 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
     subject: string
     homeworkType: string | null
     full: boolean
+    /** 反向行（已交：名单）：列出的=已交、其余=缺交（submitted_only 台账）。 */
+    submittedBase: boolean
     rows: HomeworkRowInput[]
   }
 
@@ -269,7 +280,7 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
   const grouped = new Map<string, SubjectBucket>()
   const plainLines: string[] = []
   // 待定学科组：按作业名归并（同作业名多行合并为一组），学科由面板默认学科补
-  const unmarkedBuckets = new Map<string, { homeworkType: string; line: string; full: boolean; rows: HomeworkRowInput[] }>()
+  const unmarkedBuckets = new Map<string, { homeworkType: string; line: string; full: boolean; submittedBase: boolean; rows: HomeworkRowInput[] }>()
   const globalStudentExceptions: Array<{ name: string; status: HomeworkRowInput['status']; attendance?: string | null; evaluation?: string | null }> = []
   const attendanceRows: HomeworkRowInput[] = []
 
@@ -375,6 +386,7 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
               subject: parsed.subject,
               homeworkType: parsed.homeworkType ?? null,
               full: false,
+              submittedBase: false,
               rows: [],
             }
             // 同学生同批次去重覆盖
@@ -404,33 +416,52 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
         // 判定 2：学科在前（学科：姓名 姓名... 或 学科：全交）
         // 左侧含已知学科词（如「数学订正」「化学练习册」）即按学科行处理（剥离学科名后
         // 残留作为 homeworkType）；TYPE_KEYWORD 只拦「无学科的纯种类前缀」（如「练习册：张三」）。
-        const leftHasSubject = matchCanonicalSubject(left) !== null
+        // 反向行（已交台账）先检：「数学 已交：名单」（左尾缀标记）或「数学：已交 名单」
+        // （右侧打头标记）——列出的裸姓名记已交、其余应交学生记缺交。
+        let effectiveLeft = left
+        let submittedBase = false
+        const leftMarker = left.match(SUBMITTED_LEFT_SUFFIX)
+        if (leftMarker) {
+          effectiveLeft = leftMarker[1].trim()
+          submittedBase = true
+        }
+        let effectiveRight = right
+        if (!submittedBase && right !== '') {
+          const rightMarker = right.match(SUBMITTED_LINE)
+          if (rightMarker) {
+            effectiveRight = rightMarker[1].trim()
+            submittedBase = true
+          }
+        }
+        const leftHasSubject = matchCanonicalSubject(effectiveLeft) !== null
         const leftLooksSubject =
-          left !== '' &&
-          left.length <= 15 &&
-          !lineHasAction(left) &&
-          (leftHasSubject || !TYPE_KEYWORD.test(left))
+          effectiveLeft !== '' &&
+          effectiveLeft.length <= 15 &&
+          !lineHasAction(effectiveLeft) &&
+          (leftHasSubject || !TYPE_KEYWORD.test(effectiveLeft))
 
-        if (leftLooksSubject && (right === '' || rightIsFull || nameResidue(right) !== '')) {
-          const canonical = matchCanonicalSubject(left)
+        if (leftLooksSubject && (effectiveRight === '' || rightIsFull || nameResidue(effectiveRight) !== '')) {
+          const canonical = matchCanonicalSubject(effectiveLeft)
           if (canonical === null) {
             // 防呆（真实事故）：「听力第四周：张三」这类左侧不含学科词的行，绝不把 left
             // 整个当成学科自建假学科批次（污染按学科归并的预警/画像/相关性）。改为待定
             // 学科组：作业名保留（清理方式与学科分支的 residue 一致），右侧名单语义与
-            // 学科分支完全一致（全交/裸姓名=缺交/带状态 token），学科由面板默认学科补。
-            const unmarkedType = left.replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim() || left
+            // 学科分支完全一致（全交/反向/裸姓名=缺交/带状态 token），学科由面板默认学科补。
+            const unmarkedType = effectiveLeft.replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim() || left
             const bucket = unmarkedBuckets.get(unmarkedType) ?? {
               homeworkType: unmarkedType,
               line,
               full: false,
+              submittedBase: false,
               rows: [],
             }
-            if (rightIsFull) {
+            bucket.submittedBase = bucket.submittedBase || submittedBase
+            if (rightIsFull || (submittedBase && effectiveRight === '')) {
               bucket.full = true
-            } else if (right !== '') {
-              for (const token of rightTokens) {
+            } else if (effectiveRight !== '') {
+              for (const token of effectiveRight.split(TOKEN_SPLIT).map((s) => s.trim()).filter(Boolean)) {
                 for (const name of expandNameToken(token)) {
-                  const row = tokenToRow(name)
+                  const row = tokenToRow(name, submittedBase)
                   if (row) bucket.rows.push(row)
                 }
               }
@@ -440,21 +471,23 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
             // 若包含标准学科词，规范为标准名（如"语文作文"归入"语文"）
             const finalSubject = canonical
             let homeworkType: string | null = null
-            const residue = left.replace(canonical, '').replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim()
+            const residue = effectiveLeft.replace(canonical, '').replace(/^[:：\s-]+|[:：\s-]+$/g, '').trim()
             if (residue) homeworkType = residue
             const key = makeGroupKey(finalSubject, homeworkType)
             const bucket = grouped.get(key) ?? {
               subject: finalSubject,
               homeworkType,
               full: false,
+              submittedBase: false,
               rows: [],
             }
-            if (rightIsFull) {
+            bucket.submittedBase = bucket.submittedBase || submittedBase
+            if (rightIsFull || (submittedBase && effectiveRight === '')) {
               bucket.full = true
-            } else if (right !== '') {
-              for (const token of rightTokens) {
+            } else if (effectiveRight !== '') {
+              for (const token of effectiveRight.split(TOKEN_SPLIT).map((s) => s.trim()).filter(Boolean)) {
                 for (const name of expandNameToken(token)) {
-                  const row = tokenToRow(name)
+                  const row = tokenToRow(name, submittedBase)
                   if (row) bucket.rows.push(row)
                 }
               }
@@ -486,7 +519,7 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
 
   // 考勤独立单列：归入「考勤」独立批次，全员全勤已到，例外行登记迟到/请假
   if (attendanceRows.length > 0) {
-    const bucket = grouped.get('考勤') ?? { subject: '考勤', homeworkType: null, full: true, rows: [] }
+    const bucket = grouped.get('考勤') ?? { subject: '考勤', homeworkType: null, full: true, submittedBase: false, rows: [] }
     for (const row of attendanceRows) {
       const existingIdx = bucket.rows.findIndex((r) => r.name_or_alias === row.name_or_alias)
       if (existingIdx >= 0) {
@@ -524,6 +557,13 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
         homeworkType: bucket.homeworkType,
         input: { kind: 'full', exceptions: bucket.rows },
       })
+    } else if (bucket.submittedBase && bucket.rows.length > 0) {
+      // 已交台账（反向）：列出的=已交、其余=缺交（服务端展开，行顺序不影响结果）
+      subjectGroups.push({
+        subject: bucket.subject,
+        homeworkType: bucket.homeworkType,
+        input: { kind: 'submitted_only', exceptions: bucket.rows },
+      })
     } else if (bucket.rows.length > 0) {
       subjectGroups.push({
         subject: bucket.subject,
@@ -541,6 +581,12 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
         homeworkType: bucket.homeworkType,
         line: bucket.line,
         input: { kind: 'full', exceptions: bucket.rows },
+      })
+    } else if (bucket.submittedBase && bucket.rows.length > 0) {
+      unmarkedGroups.push({
+        homeworkType: bucket.homeworkType,
+        line: bucket.line,
+        input: { kind: 'submitted_only', exceptions: bucket.rows },
       })
     } else if (bucket.rows.length > 0) {
       unmarkedGroups.push({

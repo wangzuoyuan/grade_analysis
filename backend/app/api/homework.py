@@ -109,7 +109,7 @@ router = APIRouter(tags=["homework"])
 # 数据库仍兼容历史 unknown；所有业务读取会把它归一为 submitted。
 _VALID_STATUSES = ("submitted", "missing", "excused", "unknown")
 _PUBLIC_STATUSES = ("submitted", "missing", "excused")
-_VALID_INPUT_KINDS = ("full", "names", "detailed")
+_VALID_INPUT_KINDS = ("full", "names", "detailed", "submitted_only")
 _ATTENDANCE_WORDS = ("没来", "迟到", "早退", "旷课", "缺课", "缺席")
 _FORGOT_WORDS = ("忘带", "没带", "未带")
 _NEGATIVE_EVALUATIONS = (
@@ -914,7 +914,7 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
     spec = req.input
     if spec.kind not in _VALID_INPUT_KINDS:
         raise InvalidScopeParam(
-            "input.kind must be full/names/detailed", details={"kind": spec.kind}
+            "input.kind must be full/names/detailed/submitted_only", details={"kind": spec.kind}
         )
 
     if req.mode == "homeroom":
@@ -948,6 +948,22 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
             item = _resolve_roster_ref(roster, exc.person_id, exc.name_or_alias)
             exception_rows.append((item["person_id"], status, evaluation))
         merged.update(_merge_resolved_rows(exception_rows))
+    elif spec.kind == "submitted_only":
+        # 已交台账（反向）：快照全员 missing；列出的行覆盖（裸姓名=已交，
+        # 可带状态如请假/忘带）。与 full 互为镜像——适用于只记谁交了的场景。
+        if not spec.exceptions:
+            raise InvalidScopeParam(
+                "input.exceptions must not be empty for kind=submitted_only",
+                details={"param": "input.exceptions"},
+            )
+        merged = {item["person_id"]: ("missing", None) for item in roster}
+        override_rows: List[Tuple[int, str, Optional[str]]] = []
+        for exc in spec.exceptions or []:
+            status = _validate_status(exc.status)
+            status, evaluation = _normalized_row_semantics(status, exc.evaluation, exc.attendance)
+            item = _resolve_roster_ref(roster, exc.person_id, exc.name_or_alias)
+            override_rows.append((item["person_id"], status, evaluation))
+        merged.update(_merge_resolved_rows(override_rows))
     elif spec.kind == "names":
         names = [n.strip() for n in (spec.names or []) if n and n.strip()]
         if not names:
@@ -955,10 +971,13 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
                 "input.names must not be empty for kind=names",
                 details={"param": "input.names"},
             )
+        # 交名单：列出的学生记已交，其余应交成员记缺交（与 submitted_only
+        # 同口径；历史行为"其余不写行→默认已交"已于 2026-10-20 修正）
+        merged = {item["person_id"]: ("missing", None) for item in roster}
         for name in names:
             item = _resolve_roster_ref(roster, None, name)
             resolved.append((item["person_id"], "submitted", None))
-        merged = _merge_resolved_rows(resolved)
+        merged.update(_merge_resolved_rows(resolved))
     else:  # detailed
         if not spec.rows:
             raise InvalidScopeParam(
