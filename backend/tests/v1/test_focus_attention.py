@@ -30,6 +30,11 @@ def test_focus_restores_all_legacy_dimensions(client, v1_seed, db_session):
     totals[v1_seed.bing_h_id].xueji_rank = 50
     totals[v1_seed.bing_h_id].grade_percentile = 0.10
 
+    # 2026-10-20：排名分布类图表只统计学校明细表学籍=1（闵中学籍）学生，
+    # 本用例走 bands/rank-distribution 断言，三人按闵中学籍设定
+    for ident_id in (v1_seed.jia_h_id, v1_seed.yi_h_id, v1_seed.bing_h_id):
+        db_session.get(wm.WsStudentIdentity, ident_id).xueji = 1
+
     jia_physics = (
         db_session.query(wm.ScoreFact)
         .filter(
@@ -153,6 +158,9 @@ def test_legacy_exam_detail_rank_sections(client, v1_seed, db_session):
     totals[v1_seed.jia_h_id].xueji_rank = 90
     totals[v1_seed.yi_h_id].xueji_rank = 130
     totals[v1_seed.bing_h_id].xueji_rank = 520
+    # 2026-10-20：排名分布图表只计学籍=1（闵中学籍）学生，三人按此设定
+    for ident_id in (v1_seed.jia_h_id, v1_seed.yi_h_id, v1_seed.bing_h_id):
+        db_session.get(wm.WsStudentIdentity, ident_id).xueji = 1
     for fact, percentile, grade_score in (
         (v1_seed.jia_h_id, 0.15, 70),
         (v1_seed.yi_h_id, 0.45, 61),

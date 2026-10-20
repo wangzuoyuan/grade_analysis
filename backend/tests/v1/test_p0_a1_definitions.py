@@ -234,6 +234,9 @@ def test_rank_range_total_metric_uses_real_rank_only(client, v1_seed, db_session
     totals[v1_seed.yi_h_id].grade_percentile = 0.95  # 高百分位、无名次
     totals[v1_seed.yi_h_id].grade_rank = None
     totals[v1_seed.bing_h_id].grade_rank = 8
+    # 2026-10-20：总分排名区间只计学校明细表学籍=1（闵中学籍）学生
+    for ident_id in (v1_seed.jia_h_id, v1_seed.bing_h_id):
+        db_session.get(wm.WsStudentIdentity, ident_id).xueji = 1
     db_session.commit()
 
     response = client.get(

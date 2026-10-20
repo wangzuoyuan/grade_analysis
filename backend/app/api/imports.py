@@ -1307,7 +1307,8 @@ def _apply_import_confirm(req, db, batch, snapshot):
             students_created += 1
 
         # 历史学年命中：为本学年补登 alias（幂等：本学年已有则跳过）；
-        # 顺带回填「学籍」展示代码（仅在身份尚无值时，不覆盖既有登记）
+        # 「学籍」展示代码按 2026-10-20 用户裁决以本次文件为准覆盖更新
+        # （学籍可变，如由闵中转入外省市类；明细表未带值则不动既有登记）
         for f in files:
             for stu in f.get("students") or []:
                 alias = stu["alias"]
@@ -1316,7 +1317,7 @@ def _apply_import_confirm(req, db, batch, snapshot):
                     continue
                 if stu.get("xueji") is not None:
                     ident = db.get(WsStudentIdentity, ident_id)
-                    if ident is not None and ident.xueji is None:
+                    if ident is not None and ident.xueji != stu["xueji"]:
                         ident.xueji = stu["xueji"]
                 exists = (
                     db.query(WsStudentAlias)

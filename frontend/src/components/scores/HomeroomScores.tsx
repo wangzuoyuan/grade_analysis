@@ -30,6 +30,7 @@ import { useSearchParams } from 'next/navigation'
 import {
   ApiV1Error,
   confirmCanonicalScores,
+  fetchHomeroomBands,
   fetchHomeroomClassAverages,
   fetchHomeroomFocus,
   fetchHomeroomRankBands,
@@ -47,6 +48,7 @@ import {
   type CanonicalResolution,
   type CanonicalSide,
   type ExamSummary,
+  type HomeroomBandsResponse,
   type HomeroomClassAverageRow,
   type HomeroomClassAveragesResponse,
   type HomeroomFocusResponse,
@@ -712,6 +714,15 @@ export function HomeroomScores() {
   const [rankBandsMetric, setRankBandsMetric] = useState<string | null>(null)
   const [rankBandsNonce, setRankBandsNonce] = useState(0)
 
+  // 段位分布（2026-10-20 恢复：按明细表名次现算三段阈值；仅总分口径、
+  // 仅统计学校明细表学籍=1（闵中学籍）学生——后端同一口径过滤）
+  const [bandMetric, setBandMetric] = useState<string>('__total__')
+  const [duanweiBands, setDuanweiBands] = useState<HomeroomBandsResponse | null>(null)
+  const [duanweiError, setDuanweiError] = useState<string | null>(null)
+  // F10/F11：无名次口径（或学籍=1 人口无名次）后端 409，区别于网络/瞬时错误展示
+  const [duanweiUnavailable, setDuanweiUnavailable] = useState(false)
+  const [duanweiNonce, setDuanweiNonce] = useState(0)
+
   // 旧班主任重点关注：临界段、薄弱段、严重偏科
   const [focus, setFocus] = useState<HomeroomFocusResponse | null>(null)
   const [focusError, setFocusError] = useState<string | null>(null)
@@ -743,6 +754,7 @@ export function HomeroomScores() {
   const examsReqRef = useRef(0)
   const dataReqRef = useRef(0)
   const bandsReqRef = useRef(0)
+  const duanweiReqRef = useRef(0)
   const focusReqRef = useRef(0)
   const distributionReqRef = useRef(0)
   const metricsReqRef = useRef(0)
@@ -869,6 +881,44 @@ export function HomeroomScores() {
         setRankBandsError(apiErrorMessage(err))
       })
   }, [selectedExam, scopeQ, rankBandsMetric, rankBandsNonce])
+
+  // 段位分布指标选项：仅各总分口径（单科行无名次，后端恒 409 不再提供）
+  const duanweiOptions = useMemo(
+    () => (stats?.totals ?? []).map((t) => ({ value: `__total__${t.total_type}`, label: `总分（${t.total_type}）` })),
+    [stats],
+  )
+  const activeDuanwei =
+    duanweiOptions.find((o) => o.value === bandMetric)?.value ?? duanweiOptions[0]?.value ?? null
+
+  // 段位分布（F10）：考试或口径变化即重拉（独立序号 duanweiReqRef）
+  useEffect(() => {
+    if (selectedExam == null || activeDuanwei == null) {
+      setDuanweiBands(null)
+      setDuanweiError(null)
+      setDuanweiUnavailable(false)
+      return
+    }
+    const req = ++duanweiReqRef.current
+    setDuanweiBands(null)
+    setDuanweiError(null)
+    setDuanweiUnavailable(false)
+    fetchHomeroomBands({
+      exam_name: selectedExam,
+      metric: 'total',
+      subject: activeDuanwei.slice('__total__'.length),
+      ...scopeQ,
+    })
+      .then((b) => {
+        if (req !== duanweiReqRef.current) return
+        setDuanweiBands(b)
+      })
+      .catch((err: unknown) => {
+        if (req !== duanweiReqRef.current) return
+        setDuanweiBands(null)
+        setDuanweiUnavailable(err instanceof ApiV1Error && err.status === 409)
+        setDuanweiError(apiErrorMessage(err))
+      })
+  }, [selectedExam, activeDuanwei, scopeQ, duanweiNonce])
 
   useEffect(() => {
     if (selectedExam == null) {
@@ -1136,6 +1186,11 @@ export function HomeroomScores() {
     return out
   }, [students, rankTotalCols])
 
+  const duanweiMaxCount = useMemo(
+    () => Math.max(...(duanweiBands?.bands ?? []).map((b) => b.count), 1),
+    [duanweiBands],
+  )
+
   const distributionChartData = useMemo(
     () =>
       (rankDistribution?.bins ?? []).map((bin) => ({
@@ -1257,7 +1312,7 @@ export function HomeroomScores() {
                       : rankDistribution.grade === 1
                         ? '高一展示主三门、五门、九门总分的学籍排名分布。'
                         : '高二、高三展示主三门与 3+3 总分的学籍排名分布。'}
-                    每 40 名一档，缺少真实名次的口径不生成柱子。
+                    每 40 名一档，缺少真实名次的口径不生成柱子。仅统计学校明细表学籍=1（闵中学籍）学生。
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -1298,6 +1353,7 @@ export function HomeroomScores() {
                   <TabsTrigger value="averages" className="whitespace-nowrap">班级均分表</TabsTrigger>
                   <TabsTrigger value="students" className="whitespace-nowrap">学生成绩明细表</TabsTrigger>
                   <TabsTrigger value="bands" className="whitespace-nowrap">名次段分布</TabsTrigger>
+                  <TabsTrigger value="duanwei" className="whitespace-nowrap">段位分布</TabsTrigger>
                   <TabsTrigger value="frequency" className="whitespace-nowrap">排名频次统计</TabsTrigger>
                   <TabsTrigger value="range" className="whitespace-nowrap">排名区间筛选</TabsTrigger>
                   <TabsTrigger value="focus" className="whitespace-nowrap">重点关注</TabsTrigger>
@@ -1535,7 +1591,7 @@ export function HomeroomScores() {
                     <CardHeader>
                       <CardTitle>排名频次统计</CardTitle>
                       <CardDescription>
-                        多场考试按年级百分位、精确等级分或总分名次档统计每名学生的落点次数。
+                        多场考试按年级百分位、精确等级分或总分名次档统计每名学生的落点次数。总分口径仅统计学校明细表学籍=1（闵中学籍）学生，单科口径统计全部学生。
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-5">
@@ -1630,7 +1686,9 @@ export function HomeroomScores() {
                   <Card>
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2"><Search className="h-4 w-4 text-brand-500" />排名区间筛选</CardTitle>
-                      <CardDescription>筛出当前考试指定年级名次区间的学生，并同时显示本班名次。</CardDescription>
+                      <CardDescription>
+                        筛出当前考试指定年级名次区间的学生，并同时显示本班名次。总分口径仅统计学校明细表学籍=1（闵中学籍）学生，单科口径统计全部学生。
+                      </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-5">
                       <div className="grid gap-3 sm:grid-cols-3">
@@ -1825,6 +1883,87 @@ export function HomeroomScores() {
                         </div>
                       ) : (
                         <RankBandsPanel data={rankBands} />
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="duanwei">
+                  {/* 段位分布（2026-10-20 恢复，F10 三段阈值）：按成绩明细表导入的名次现算；
+                      仅总分口径、仅统计学校明细表学籍=1（闵中学籍）学生（后端同口径过滤，
+                      学籍随最近一次明细表导入更新，历史考试图表即时联动）。 */}
+                  <Card>
+                    <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <CardTitle>段位分布</CardTitle>
+                        <CardDescription>
+                          按成绩明细表名次计算（学籍名次优先）；段位阈值沿用分析配置。仅统计学校明细表学籍=1（闵中学籍）学生，学籍随最近一次导入更新。
+                        </CardDescription>
+                      </div>
+                      {duanweiOptions.length > 0 ? (
+                        <Select value={activeDuanwei ?? undefined} onValueChange={setBandMetric}>
+                          <SelectTrigger className="h-8 w-[170px] text-xs" aria-label="段位口径">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {duanweiOptions.map((o) => (
+                              <SelectItem key={o.value} value={o.value}>
+                                {o.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : null}
+                    </CardHeader>
+                    <CardContent>
+                      {duanweiError && duanweiUnavailable ? (
+                        /* 契约 p3 §2.1 v2.1（F10）：无名次口径时 409，呈现「不可计算」
+                           提示卡而非错误分段或永久骨架 */
+                        <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-3">
+                          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />
+                          <div>
+                            <p className="text-sm font-medium text-slate-600">段位不可计算（无名次口径）</p>
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              当前口径的学籍=1（闵中学籍）学生没有名次数据；导入带排名的成绩明细表后可计算。
+                            </p>
+                          </div>
+                        </div>
+                      ) : duanweiError ? (
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm text-slate-600">{duanweiError}</p>
+                          <Button variant="outline" size="sm" onClick={() => setDuanweiNonce((n) => n + 1)}>
+                            重试
+                          </Button>
+                        </div>
+                      ) : duanweiBands == null ? (
+                        <Skeleton className="h-32 w-full" />
+                      ) : duanweiBands.bands.length === 0 ? (
+                        <p className="py-6 text-center text-sm text-slate-500">
+                          当前口径暂无段位数据（该场可能全部缺考或尚未导入）。
+                        </p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {duanweiBands.bands.map((b) => {
+                            const pct = Math.round((b.count / duanweiMaxCount) * 100)
+                            const totalPeople = duanweiBands.bands.reduce((sum, x) => sum + x.count, 0)
+                            return (
+                              <li key={b.label} className="flex items-center gap-3">
+                                <span className="w-40 shrink-0 truncate text-xs text-slate-500" title={b.label}>
+                                  {b.label}
+                                </span>
+                                <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-100">
+                                  <div
+                                    className="h-full rounded-full bg-gradient-to-r from-[#1f7fd6] to-[#35b9e9]"
+                                    style={{ width: `${String(pct)}%` }}
+                                  />
+                                </div>
+                                <span className="w-24 shrink-0 text-right text-xs tabular-nums text-slate-600">
+                                  {String(b.count)} 人{totalPeople > 0 ? ` · ${((b.count / totalPeople) * 100).toFixed(1)}%` : ''}
+                                </span>
+                              </li>
+                            )
+                          })}
+                        </ul>
                       )}
                     </CardContent>
                   </Card>

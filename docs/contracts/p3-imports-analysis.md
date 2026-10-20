@@ -43,6 +43,8 @@
     known（homeroom 模式）；任一证据缺失仍走候选。三重证据是 G06 判据的收窄扩展——
     2026-10 生产事故中此类行永远无法通过有效期判据，导致同班同名同学号的旧身份被绕开、
     导入新建第二身份（名册重名 + 旧身份全「—」）。
+    **v2.4（2026-10-20）学籍随导入更新**：明细表文件「学籍」列有值即**覆盖**身份 xueji
+    （学籍可变，以最新文件为准；文件未带值不动既有登记）。
   - 无匹配 → 新建（new_students）。
   - 成员有效期（F07）：新建成员 `valid_from = max(学年 start_date, 文件日期)`，未知文件日期时
     用学年 start_date——**绝不用"今天"冒充历史**；经确认接续的既有人：补登本学年 alias，且
@@ -177,6 +179,12 @@
   invalid_scope_param（detail=「段位阈值口径为年级名次，当前范围无名次数据，不可计算」），
   直至引入合法名次来源或显式的分数段配置（独立于名次阈值、按学科/分制定义）。
   （v2.3 注：本端点保留给 AI 工具/重点关注阈值口径；成绩分析页 UI 改用下方 rank-bands。）
+  **v2.4（2026-10-20 用户裁决）**：段位分布卡以独立 tab 恢复（按明细表名次现算），本端点
+  **只统计学校明细表学籍=1（闵中学籍）学生**（学籍存身份、随每次明细表导入按文件值覆盖
+  更新，查询按当前值过滤——历史考试图表即时联动）；无名次的学籍=1 人口仍 409。
+- `GET exams/{exam_name}/rank-distribution`（v2.4）与 `GET rank-frequency`、
+  `GET exams/{exam_name}/rank-range` 的 **total_rank 口径**同受学籍=1 过滤（频次/区间的
+  单科百分位/等级分口径保留全部学生）；班主任工作台全域生效，教学侧不动。
 - `GET exams/{exam_name}/rank-bands?total_type=`（v2.3，2026-10-19 名次段分布）→ `{metadata,
   exam_name, grade, total_type, available_total_types, current_class_num, classes:
   [{class_num, teacher_name, total, bands: [{label, lo, hi, count}]}], grade_bands}`。

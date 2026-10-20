@@ -149,6 +149,24 @@ def _exam_member_ids(db: Session, ctx: WorkspaceContext, exam_name: str) -> List
     return q.members_at(db, ctx.mode, ctx.class_ids, exam_date)
 
 
+def _xueji1_member_ids(db: Session, member_ids: List[int]) -> List[int]:
+    """排名分布类图表的总分口径人口（2026-10-20 用户裁决，班主任工作台全域）：
+    只统计学校成绩明细表学籍=1（闵中学籍）的学生。
+
+    学籍存在身份上（xueji 列，随每次明细表导入按文件值覆盖更新），因此
+    历史考试的图表在查询时按学生**当前**学籍过滤——重导明细表后全部历史
+    图表即时联动。学籍未知（NULL，尚未导入回填）与 3/4 类均不参与，
+    绝不默认视作 1；空列表是合法空态。"""
+    if not member_ids:
+        return []
+    rows = (
+        db.query(WsStudentIdentity.id)
+        .filter(WsStudentIdentity.id.in_(member_ids), WsStudentIdentity.xueji == 1)
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
 def _grade_score_of(fact) -> Optional[float]:
     """契约 §1.3 的 grade_score 列由并行波次（迁移 0004）落地；
     列未就绪时缺省 None，不编造。"""
@@ -720,6 +738,10 @@ def homeroom_rank_frequency(
                 "exam not found in homeroom domain", details={"exam_name": exam_name}
             )
         member_ids = _exam_member_ids(db, ctx, exam_name)
+        # 2026-10-20 用户裁决：总分名次口径仅统计学校明细表学籍=1（闵中学籍）
+        # 学生；单科（百分位/等级分）口径保留全部学生。
+        if meta["kind"] == "total_rank":
+            member_ids = _xueji1_member_ids(db, member_ids)
         entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
         exam_rows.append(
             HomeroomRankFrequencyExam(
@@ -814,6 +836,10 @@ def homeroom_rank_range(
         )
     meta = _rank_metric_meta(_homeroom_grade(db, ctx), metric, "range")
     member_ids = _exam_member_ids(db, ctx, exam_name)
+    # 2026-10-20 用户裁决：总分名次口径仅统计学校明细表学籍=1（闵中学籍）
+    # 学生；单科口径保留全部学生。
+    if meta["kind"] == "total_rank":
+        member_ids = _xueji1_member_ids(db, member_ids)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
     matched = []
     scores = []
@@ -885,7 +911,8 @@ def homeroom_rank_distribution(
         )
     grade = _homeroom_grade(db, ctx)
     total_types = _distribution_total_types(grade)
-    member_ids = _exam_member_ids(db, ctx, exam_name)
+    # 2026-10-20：总分口径排名分布仅统计学校明细表学籍=1（闵中学籍）学生
+    member_ids = _xueji1_member_ids(db, _exam_member_ids(db, ctx, exam_name))
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
     counts = {total_type: defaultdict(int) for total_type in total_types}
     max_rank = 0
@@ -918,7 +945,7 @@ def homeroom_rank_distribution(
             )
             for total_type in total_types
         ],
-        metric_note="按学籍/年级名次每40名一档；缺少真实名次的总分口径保留图例但不生成柱子。",
+        metric_note="按学籍/年级名次每40名一档，仅统计学校明细表学籍=1（闵中学籍）学生；缺少真实名次的总分口径保留图例但不生成柱子。",
     )
 
 
@@ -1270,6 +1297,8 @@ def homeroom_bands(
         )
 
     member_ids = _exam_member_ids(db, ctx, exam_name)
+    # 2026-10-20：段位分布仅统计学校明细表学籍=1（闵中学籍）学生
+    member_ids = _xueji1_member_ids(db, member_ids)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
     ranked = []
     for entry in entries:

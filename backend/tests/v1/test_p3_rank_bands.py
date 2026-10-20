@@ -367,9 +367,10 @@ def test_same_class_legacy_alias_auto_continues(client, v1_seed, tmp_path):
     assert len(dup) == 1
     db.close()
 
-    # 学籍代码回填到既有身份（导入文件带了 xueji=3，与直种一致）
+    # 学籍代码按本次文件值覆盖更新（2026-10-20 裁决：文件有值即写；
+    # 直种原值 3，文件第 3 列 xueji=1 → 更新为 1）
     db = _db()
-    assert db.get(wm.WsStudentIdentity, legacy_id).xueji == 3
+    assert db.get(wm.WsStudentIdentity, legacy_id).xueji == 1
     db.close()
 
     # 学生表一行、有成绩（不再出现「旧身份全—+新身份重名」）
