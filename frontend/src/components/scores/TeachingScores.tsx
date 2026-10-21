@@ -4,30 +4,26 @@
  * 教学工作台成绩分析页（契约 p3-imports-analysis.md §2.2/§3）。
  *
  * 数据全部来自 /api/v1：shared/exams（考试清单）、teaching/analysis/*（stats/students/class-compare）。
- * 计量红线（契约 §2.2/§2.3）：缺考（score NULL）一律显示「—」不转 0；rank 为本班内名次
- * （同分同名次），不可计算时缺省显示「—」；班级对比均分恒为班级样本估算（estimated），
- * 绝不冒充年级/官方口径；迟到回包按资源分离的序号丢弃（F11：清单与数据互不作废）。
+ * 计量红线（契约 §2.2/§2.3）：缺考（score NULL）一律显示「—」不转 0；rank 为当前所选管理班范围内名次
+ * （同分同名次），不可计算时缺省显示「—」；官方质量对比集中在班级对比页；迟到回包按资源分离的序号丢弃（F11：清单与数据互不作废）。
  */
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { AlertCircle, BarChart3, BookOpen, Users } from 'lucide-react'
 
 import {
-  fetchTeachingClassCompare,
   fetchTeachingScoreBands,
   fetchTeachingStats,
   fetchTeachingStudents,
   listExams,
   type ExamSummary,
-  type TeachingClassCompareResponse,
   type TeachingScoreBandsResponse,
   type TeachingStatsResponse,
   type TeachingStudentRow,
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
-import { useWorkspace, workspaceHref } from '@/lib/workspace'
+import { useWorkspace } from '@/lib/workspace'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -57,57 +53,9 @@ import { CorrelationCard } from '@/components/homework/CorrelationCard'
 import { homeworkScopeQuery } from '@/components/homework/shared'
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
+import { TeachingStudentDetails } from './TeachingStudentDetails'
 import { ClassScopePicker } from '@/components/ClassScopePicker'
 import { analysisScopeQuery, formatScore, scoreBasisLabel, sortExamsDesc } from './shared'
-
-/** 班级对比卡：各班样本均分条形 + estimated 角标（E04）。拉取失败由页面统一错误卡承接。 */
-function ClassComparePanel({ compare }: { compare: TeachingClassCompareResponse | null }) {
-  if (compare == null) {
-    return <Skeleton className="h-24 w-full" />
-  }
-  const rows = compare.classes ?? []
-  if (rows.length === 0) {
-    return <p className="py-4 text-sm text-slate-500">暂无可对比的教学班样本。</p>
-  }
-  // 满宽基准取样本均分最大值（null 不参与）；条宽仅为可视化比例，分数展示仍走 formatScore（「—」）
-  const avgs = rows.map((c) => c.subject_avg).filter((v): v is number => v != null)
-  const maxAvg = Math.max(...avgs, 1)
-  return (
-    <ul className="space-y-2">
-      {rows.map((c) => {
-        // 样本均分缺省（不可算）时不出条，宽度按 0 处理，与分数格的「—」区分
-        const width = c.subject_avg == null ? 0 : Math.round((c.subject_avg / maxAvg) * 100)
-        return (
-          <li key={c.teaching_class_id} className="flex items-center gap-3">
-            <span className="w-28 shrink-0 truncate text-xs text-slate-500" title={c.class_label}>
-              {c.class_label}
-            </span>
-            <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-100">
-              <div
-                className={cn(
-                  'h-full rounded-full',
-                  c.source === 'estimated'
-                    ? 'bg-gradient-to-r from-[#35b9e9]/70 to-[#1f7fd6]/70'
-                    : 'bg-gradient-to-r from-[#1f7fd6] to-[#35b9e9]',
-                )}
-                style={{ width: `${String(width)}%` }}
-              />
-            </div>
-            <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-600">
-              {formatScore(c.subject_avg)}
-            </span>
-            <Badge variant="secondary" className="shrink-0 text-[10px]">
-              {c.source === 'estimated' ? '估算' : c.source}
-            </Badge>
-            <span className="w-16 shrink-0 text-right text-[10px] text-slate-400">
-              {String(c.member_count)} 人
-            </span>
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
 
 /** 分数段段口标签：顶段 [90,+∞)，其余 [80,90)（左闭右开）。 */
 function bandLabel(low: number, high: number | null): string {
@@ -374,10 +322,10 @@ export function TeachingScores() {
   const [examNonce, setExamNonce] = useState(0)
   const [selectedExam, setSelectedExam] = useState<string | null>(null)
 
-  // 当前考试的单科统计 / 学生表 / 班级对比
+  // 当前考试的单科统计 / 学生明细
   const [stats, setStats] = useState<TeachingStatsResponse | null>(null)
   const [students, setStudents] = useState<TeachingStudentRow[] | null>(null)
-  const [compare, setCompare] = useState<TeachingClassCompareResponse | null>(null)
+  const [examGrade, setExamGrade] = useState<number | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
 
   // 分数段分析卡：独立请求序号（F11 同模式），段宽切换只重拉本卡
@@ -388,7 +336,7 @@ export function TeachingScores() {
   const [bandsNonce, setBandsNonce] = useState(0)
   const bandsReqRef = useRef(0)
 
-  // 请求序号按资源分离（F11）：考试清单与 stats+students+对比各自比对各自序号，
+  // 请求序号按资源分离（F11）：考试清单与 stats+students各自比对各自序号，
   // 任一资源重拉绝不使另一资源的合法回包失效（否则切考试后骨架永久加载）
   const examsReqRef = useRef(0)
   const dataReqRef = useRef(0)
@@ -400,7 +348,7 @@ export function TeachingScores() {
   const scopeSubject = scope?.subject ?? null
 
   // 考试清单：跟随工作台筛选/世代变化整体重置（仅考试列表自身状态；
-  // stats/students/对比由数据 effect 的 scopeQ/考试依赖负责重置）
+  // stats/students由数据 effect 的 scopeQ/考试依赖负责重置）
   useEffect(() => {
     const req = ++examsReqRef.current
     setExams(null)
@@ -422,38 +370,38 @@ export function TeachingScores() {
       })
   }, [scopeQ, generation, examNonce, requestedExam])
 
-  // 当前考试的 stats + 学生表 + 班级对比（并行；任一失败进统一错误态；只比对 dataReqRef）
+  // 当前考试的 stats + 学生表（并行；任一失败进统一错误态；只比对 dataReqRef）
   useEffect(() => {
-    if (selectedExam == null) return
     const req = ++dataReqRef.current
+    if (selectedExam == null) return
     setStats(null)
     setStudents(null)
-    setCompare(null)
+    setExamGrade(null)
     setDataError(null)
     Promise.all([
       fetchTeachingStats(selectedExam, scopeQ),
       fetchTeachingStudents(selectedExam, scopeQ),
-      fetchTeachingClassCompare(selectedExam, scopeQ),
     ])
-      .then(([st, sRows, cmp]) => {
+      .then(([st, sRows]) => {
         if (req !== dataReqRef.current) return
         setStats(st)
         setStudents(sRows.students ?? [])
-        setCompare(cmp)
+        setExamGrade(sRows.grade ?? null)
       })
       .catch((err: unknown) => {
         if (req !== dataReqRef.current) return
         setStats(null)
         setStudents(null)
-        setCompare(null)
+        setExamGrade(null)
         setDataError(apiErrorMessage(err))
       })
-  }, [selectedExam, scopeQ])
+    return () => { dataReqRef.current++ }
+  }, [selectedExam, scopeQ, generation])
 
-  // 分数段分析（同考试/同范围；段宽变化仅重拉本卡，不影响 stats/students/compare）
+  // 分数段分析（同考试/同范围；段宽变化仅重拉本卡，不影响 stats/students）
   useEffect(() => {
-    if (selectedExam == null) return
     const req = ++bandsReqRef.current
+    if (selectedExam == null) return
     setBands(null)
     setBandsError(null)
     fetchTeachingScoreBands(selectedExam, scopeQ, bandWidth)
@@ -466,63 +414,8 @@ export function TeachingScores() {
         setBands(null)
         setBandsError(apiErrorMessage(err))
       })
-  }, [selectedExam, scopeQ, bandWidth, bandsNonce])
-
-  // 分班展示：按教学班分组，名次在各班内按同分同名次（min-rank）计算；
-  // 分组顺序跟随班级对比卡的后端顺序，未知归属（label 缺失）排最后。
-  const classGroups = useMemo(() => {
-    const buckets = new Map<string, TeachingStudentRow[]>()
-    for (const s of students ?? []) {
-      const key = s.class_label ?? '未分班'
-      const bucket = buckets.get(key)
-      if (bucket) bucket.push(s)
-      else buckets.set(key, [s])
-    }
-    const order = (compare?.classes ?? []).map((c) => c.class_label)
-    return [...buckets.entries()]
-      .sort((a, b) => {
-        const ia = order.indexOf(a[0])
-        const ib = order.indexOf(b[0])
-        return (ia === -1 ? buckets.size : ia) - (ib === -1 ? buckets.size : ib)
-      })
-      .map(([label, rows]) => {
-        const ranks = new Map<TeachingStudentRow['person_id'], number>()
-        const scored = rows
-          .filter((r) => r.score != null)
-          .sort((x, y) => (y.score as number) - (x.score as number))
-        let prev: number | null = null
-        let rank = 0
-        scored.forEach((r, i) => {
-          if (prev == null || r.score !== prev) rank = i + 1
-          ranks.set(r.person_id, rank)
-          prev = r.score
-        })
-        const sorted = rows.slice().sort((a, b) => {
-          const ra = ranks.get(a.person_id)
-          const rb = ranks.get(b.person_id)
-          if (ra != null && rb == null) return -1
-          if (ra == null && rb != null) return 1
-          if (ra != null && rb != null && ra !== rb) return ra - rb
-          return (a.name ?? '').localeCompare(b.name ?? '', 'zh-CN')
-        })
-        const valid = rows.filter((r) => r.score != null)
-        const avg =
-          valid.length > 0
-            ? valid.reduce((sum, r) => sum + (r.score as number), 0) / valid.length
-            : null
-        const rankVals = [...ranks.values()]
-        return {
-          label,
-          sorted,
-          ranks,
-          count: rows.length,
-          missing: rows.length - valid.length,
-          avg,
-          rankMin: rankVals.length ? Math.min(...rankVals) : null,
-          rankMax: rankVals.length ? Math.max(...rankVals) : null,
-        }
-      })
-  }, [students, compare])
+    return () => { bandsReqRef.current++ }
+  }, [selectedExam, scopeQ, bandWidth, bandsNonce, generation])
 
   const loadingExams = exams == null && examsError == null
   const hasExamData = selectedExam != null
@@ -542,11 +435,11 @@ export function TeachingScores() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">成绩分析</h1>
           <p className="mt-1 text-sm text-slate-500">
-            任教学科成绩、本班名次与教学班对比{switching ? ' · 正在切换…' : ''}
+            任教学科成绩、分数段与当前范围名次{switching ? ' · 正在切换…' : ''}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* 分班查看：选中即切换全页统计/成绩表/对比/相关性的教学班范围 */}
+          {/* 分班查看：选中即切换全页统计/成绩表/相关性的教学班范围 */}
           <ClassScopePicker />
           <Button
             variant="outline"
@@ -665,7 +558,7 @@ export function TeachingScores() {
                         </div>
                       </div>
                       <p className="mt-2 text-[10px] text-slate-400">
-                        同分同名次（min-rank）；缺考不计入均分与名次分母；名次在当前范围成员内计算，学生成绩表分班展示、名次为各班内名次。
+                        同分同名次（min-rank）；缺考不计入均分与名次分母；名次在当前范围成员内计算，学生明细合并展示，名次为当前所选班级范围内名次。
                       </p>
                     </>
                   )}
@@ -734,12 +627,12 @@ export function TeachingScores() {
                 </CardContent>
               </Card>
 
-              {/* 学生表：分班展示，名次在各教学班内计算 */}
+              {/* 学生明细：当前范围合并展示，排名直接使用后端结果 */}
               <Card>
                 <CardHeader>
-                  <CardTitle>学生成绩表</CardTitle>
+                  <CardTitle>学生成绩明细</CardTitle>
                   <CardDescription>
-                    按教学班分组展示，名次在各班内按同分同名次计算（两域隔离后仅教学域事实）。
+                    仅本人管理班成员；名次按当前所选班级范围内原始分计算，同分同名次。学籍排名与年级百分比来自导入文件。
                     点击姓名查看个人档案与历次成绩趋势。
                   </CardDescription>
                 </CardHeader>
@@ -759,84 +652,14 @@ export function TeachingScores() {
                       </p>
                     </div>
                   ) : (
-                    <div className="space-y-6">
-                      {classGroups.map((g) => (
-                        <section key={g.label}>
-                          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                            <h3 className="text-sm font-semibold text-slate-900">{g.label}</h3>
-                            <p className="text-xs text-slate-500">
-                              {String(g.count)} 人 · 平均 {formatScore(g.avg)}
-                              {g.rankMin == null || g.rankMax == null
-                                ? ' · 名次 —'
-                                : g.rankMin === g.rankMax
-                                  ? ` · 第 ${String(g.rankMin)} 名`
-                                  : ` · 第 ${String(g.rankMin)} ~ ${String(g.rankMax)} 名`}
-                              {g.missing > 0 ? ` · 缺考 ${String(g.missing)}` : ''}
-                            </p>
-                          </div>
-                          <div className="overflow-x-auto">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead className="text-xs">姓名</TableHead>
-                                  <TableHead className="text-right text-xs">成绩</TableHead>
-                                  <TableHead className="text-right text-xs">等级分</TableHead>
-                                  <TableHead className="text-right text-xs">名次（班内）</TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {g.sorted.map((s) => (
-                                  <TableRow key={String(s.person_id)}>
-                                    <TableCell className="whitespace-nowrap text-sm font-medium text-slate-900">
-                                      <Link
-                                        href={workspaceHref(`/student/${encodeURIComponent(String(s.person_id))}`, 'teaching')}
-                                        className="rounded-sm text-brand-700 underline decoration-brand-200 underline-offset-4 hover:text-brand-900 hover:decoration-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                                        title="查看个人档案与成绩趋势"
-                                      >
-                                        {s.name ?? '（未命名）'}
-                                      </Link>
-                                    </TableCell>
-                                    <TableCell
-                                      className={cn(
-                                        'text-right tabular-nums text-sm',
-                                        s.score == null ? 'text-slate-300' : 'text-slate-900',
-                                      )}
-                                    >
-                                      {s.score == null ? '—' : formatScore(s.score)}
-                                    </TableCell>
-                                    <TableCell className="text-right tabular-nums text-sm text-slate-600">
-                                      {s.grade_score == null ? '—' : formatScore(s.grade_score)}
-                                    </TableCell>
-                                    <TableCell className="text-right tabular-nums text-sm text-slate-900">
-                                      {g.ranks.get(s.person_id) == null
-                                        ? '—'
-                                        : String(g.ranks.get(s.person_id))}
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        </section>
-                      ))}
+                    <div className="overflow-x-auto">
+                      <TeachingStudentDetails rows={students} grade={examGrade} />
                     </div>
                   )}
                 </CardContent>
               </Card>
 
-              {/* 班级对比：均为班级样本估算（E04），官方口径未入库前不提供 */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>教学班对比</CardTitle>
-                  <CardDescription>
-                    各班任教学科样本均分（同一考试）；数据为班级样本估算，非年级或官方口径，
-                    样本人数较少时仅供参考。
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ClassComparePanel compare={compare} />
-                </CardContent>
-              </Card>
+
             </>
           )}
         </>

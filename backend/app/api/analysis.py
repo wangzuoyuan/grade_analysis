@@ -86,6 +86,8 @@ from app.db.workspace_models import (
     WsStudentNote,
     WsStudentIdentity,
     TeachingClass,
+    TeachingExamScope,
+    WorkspaceExamEvent,
     WorkspaceClassAverage,
     WorkspaceRankBand,
 )
@@ -243,20 +245,31 @@ def _teaching_member_rows(
     if member_ids is None:
         member_ids = ctx.member_person_ids
     labels = _class_labels(db, class_ids)
-    rows: List[Tuple[int, Optional[float], Optional[float], str, Optional[str]]] = []
-    for e in q.readable_facts(
-        db, ctx, exam_name, member_ids=member_ids, class_ids=class_ids
-    ):
-        rows.append(
-            (
-                e.person_id,
-                e.fact.score,
-                _grade_score_of(e.fact),
-                e.source_domain,
-                labels.get(e.class_ref_id),
-            )
-        )
-    return rows
+    return [(e.person_id, e.fact.score, _grade_score_of(e.fact), e.source_domain,
+             labels.get(e.class_ref_id)) for e in _teaching_member_entries(
+                 db, ctx, class_ids, exam_name, member_ids)]
+
+
+def _teaching_member_entries(db, ctx, class_ids, exam_name, member_ids):
+    # 与统计/分数段相同的作用域及考试时点成员门，保留完整事实供明细透传。
+    return q.readable_facts(db, ctx, exam_name, member_ids=member_ids, class_ids=class_ids)
+
+
+def _teaching_exam_grade(db, entries, class_ids):
+    from app.api import exam_events as events
+    grades = set()
+    for event_id in {e.fact.exam_event_id for e in entries if e.fact.exam_event_id}:
+        event = db.get(WorkspaceExamEvent, events.canonical_id(db, event_id))
+        if event and event.grade in (1, 2, 3):
+            grades.add(event.grade)
+    for exam_id in {e.fact.teaching_exam_id for e in entries if e.fact.teaching_exam_id}:
+        exam = db.get(TeachingExamScope, exam_id)
+        if exam and exam.grade in (1, 2, 3):
+            grades.add(exam.grade)
+    if not grades:
+        grades = {g for (g,) in db.query(TeachingClass.grade).filter(
+            TeachingClass.id.in_(class_ids)).all() if g in (1, 2, 3)}
+    return next(iter(grades)) if len(grades) == 1 else None
 
 
 def _resolve_homeroom_ctx(db: Session, teacher_id: int, academic_year_id, class_id, term_id):
@@ -1414,29 +1427,27 @@ def teaching_exam_students(
             "exam not found in teaching domain", details={"exam_name": exam_name}
         )
     member_ids = _exam_member_ids(db, ctx, exam_name)
-    rows = _teaching_member_rows(db, ctx, class_ids, subject, exam_name, member_ids)
-    ranks = _rank_map([(pid, score) for pid, score, _, _, _ in rows])
-    name_map = q.names_for(db, [pid for pid, _, _, _, _ in rows])
+    entries = _teaching_member_entries(db, ctx, class_ids, exam_name, member_ids)
+    ranks = _rank_map([(e.person_id, e.fact.score) for e in entries])
+    name_map = q.names_for(db, [e.person_id for e in entries])
+    labels = _class_labels(db, class_ids)
+    from app.ingest.teaching_platform import GRADE_LABELS
     students = [
         TeachingAnalysisStudent(
-            person_id=pid,
-            name=name_map.get(pid),
-            class_label=class_label,
-            score=score,
-            grade_score=grade_score,
-            rank=ranks[pid],
-            source_domain=source_domain,
-        )
-        for pid, score, grade_score, source_domain, class_label in rows
+            person_id=e.person_id, name=name_map.get(e.person_id),
+            class_label=labels.get(e.class_ref_id), score=e.fact.score,
+            grade_score=_grade_score_of(e.fact), grade_label=GRADE_LABELS.get(e.fact.grade_score),
+            xueji_rank=e.fact.xueji_rank, grade_percentile=e.fact.grade_percentile,
+            rank=ranks[e.person_id], source_domain=e.source_domain,
+        ) for e in entries
     ]
     students.sort(key=lambda s: (s.rank is None, s.rank or 0, s.person_id))
     return TeachingExamStudentsResponse(
         metadata=_analysis_metadata(
-            ctx,
-            "exam",
+            ctx, "exam",
             teaching_class_id=class_ids[0] if teaching_class_id is not None else None,
         ),
-        students=students,
+        grade=_teaching_exam_grade(db, entries, class_ids), students=students,
     )
 
 

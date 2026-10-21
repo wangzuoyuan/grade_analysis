@@ -626,6 +626,8 @@ class ProfileExam(BaseModel):
     score: Optional[float] = None
     # P3 §1.3：等级分/赋分（缺考与 score 同为 null）
     grade_score: Optional[float] = None
+    # 来源保存的年级百分比（0–1）；不由班内名次或分数推算。
+    grade_percentile: Optional[float] = None
     source_domain: str
 
     model_config = ConfigDict(

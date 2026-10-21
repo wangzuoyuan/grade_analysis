@@ -6,9 +6,11 @@
  * 数据来自 /api/v1：teaching/students/{person_id}（画像）、
  * teaching/analysis/exams/{exam}/students（逐场名次/班级标签）、
  * homework/students/{person_id}（作业事件）、{mode}/students/{id}/notes（档案）。
- * v1 无年级百分位——相应列与 KPI 移除，趋势指标为等级分优先、原始分兜底；
+ * 趋势使用导入年级百分比（0% 在顶部），分数 KPI 继续保留；
  * 缺考/无名次显示「—」，不转 0；迟到回包按请求序号丢弃。
  */
+
+import { percentileTrendValue } from '@/lib/teaching-score-display'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
@@ -63,6 +65,7 @@ interface TrendPoint {
   subject: string
   score: number | null
   grade_score: number | null
+  grade_percentile: number | null
   source_domain: string
   rank: number | null
   class_label: string | null
@@ -247,6 +250,7 @@ export default function StudentPage() {
           subject: group.subject,
           score: e.score,
           grade_score: e.grade_score ?? null,
+          grade_percentile: e.grade_percentile ?? null,
           source_domain: e.source_domain,
           rank: extra?.rank ?? null,
           class_label: extra?.class_label ?? null,
@@ -328,8 +332,8 @@ export default function StudentPage() {
   const multiSubject = new Set(scoreTrend.map((p) => p.subject)).size > 1
 
   // 趋势图数据
-  const sparkData = scoreTrend.map((p) => ({ name: p.exam_name, value: metricValue(p) ?? undefined }))
-  const hasSparkData = sparkData.some((d) => d.value !== undefined)
+  const sparkData = scoreTrend.map((p) => ({ name: p.exam_name, value: percentileTrendValue(p) }))
+  const hasSparkData = sparkData.some((d) => d.value !== null)
   const metricLabel = metricLabelFor(latest)
 
   return (
@@ -463,15 +467,17 @@ export default function StudentPage() {
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={sparkData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
                   <RXAxis dataKey="name" tick={{ fontSize: 11 }} />
-                  <RYAxis tick={{ fontSize: 11 }} />
+                  <RYAxis domain={[0, 100]} reversed ticks={[0, 25, 50, 75, 100]} interval={0} tickFormatter={(v: number) => `${v}%`} tick={{ fontSize: 11 }} width={50} />
                   <RTooltip
                     contentStyle={{ fontSize: 12 }}
                     labelFormatter={(label) => String(label)}
+                    formatter={(value) => [`${String(value)}%`, '年级百分比']}
                   />
                   <Line
                     type="monotone"
                     dataKey="value"
-                    name={kpi.usesGrade ? '等级分' : '原始分'}
+                    name="年级百分比"
+                    connectNulls={false}
                     stroke="#1f7fd6"
                     strokeWidth={2}
                     dot={{ r: 3 }}
@@ -479,11 +485,11 @@ export default function StudentPage() {
                 </LineChart>
               </ResponsiveContainer>
               <p className="mt-2 text-xs text-slate-400">
-                趋势指标为等级分优先、原始分兜底（越高越好）；排名按教学班成员集合统计。
+                纵轴使用导入的年级百分比，0% 在顶部，数值越小排名越靠前；缺少百分比或缺考处断开。
               </p>
             </>
           ) : (
-            <EmptyState title="趋势图数据待补" hint="尚无当前学科考试记录" />
+            <EmptyState title="趋势图数据待补" hint="当前考试记录缺少年级百分比，请在成绩导入时上传该指标。" />
           )}
         </CardContent>
       </Card>

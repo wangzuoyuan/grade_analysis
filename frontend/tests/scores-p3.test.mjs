@@ -173,13 +173,10 @@ test('班主任考试详情恢复旧版六板块与顶部排名分段图', () =>
   assert.match(uploadPage, /学生成绩明细表.*班级均分表.*名次段表/, '上传页须明确支持同场三类 Excel')
 })
 
-test('small_sample 与 estimated 标注存在（E04）', () => {
-  assert.match(homeroomScores, /样本&lt;5/, 'stats 卡须有样本<5 角标')
-  assert.match(teachingScores, /样本&lt;5/, '教学 stats 卡须有样本<5 角标')
-  assert.match(teachingScores, /fetchTeachingClassCompare/, '教学页须拉班级对比')
-  assert.match(teachingScores, /c\.source === 'estimated'/, '对比条必须识别 estimated 来源')
-  assert.match(teachingScores, /估算/, '对比卡须有「估算」角标')
-  assert.match(teachingScores, /非年级或官方口径/, '须声明不冒充官方口径')
+test('教学统计保留小样本提示，重复均分对比已收敛到班级对比页', () => {
+  assert.match(homeroomScores, /样本&lt;5/)
+  assert.match(teachingScores, /样本&lt;5/)
+  assert.doesNotMatch(teachingScores, /fetchTeachingClassCompare|ClassComparePanel/)
 })
 
 test('上传页工作台感知 + revise 修订重试 + token 作废（契约 §1）', () => {

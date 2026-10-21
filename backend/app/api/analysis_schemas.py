@@ -312,19 +312,23 @@ class TeachingExamStatsResponse(BaseModel):
 
 class TeachingAnalysisStudent(BaseModel):
     """教学班学生行：无 total_type/其他学科键（键本身缺席）。
-    source_domain 标注行来源（teaching 本域 / homeroom 反向投影）。"""
+    source_domain 标注行来源；两域成绩隔离后仅为 teaching 本域。"""
 
     person_id: int
     name: Optional[str] = None
     class_label: Optional[str] = None
     score: Optional[float] = None
     grade_score: Optional[float] = None
+    grade_label: Optional[str] = None
+    xueji_rank: Optional[int] = None
+    grade_percentile: Optional[float] = None
     rank: Optional[int] = None
     source_domain: str
 
 
 class TeachingExamStudentsResponse(BaseModel):
     metadata: AnalysisMetadata
+    grade: Optional[int] = None
     students: List[TeachingAnalysisStudent] = Field(default_factory=list)
 
 

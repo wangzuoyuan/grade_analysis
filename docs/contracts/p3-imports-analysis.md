@@ -1,3 +1,5 @@
+> 2026-10-21 教学展示调整：教学学生明细响应增可空 `grade`（实际考试年级；未知或冲突为 null），学生行增 `grade_label`、`xueji_rank`、`grade_percentile`（0–1）。等级标签按导入等级分的 11 档精确映射，排名继续为当前请求范围的后端 min-rank。前端合并所选管理班为一张表，不再分班重算，去来源列；高一显示来源学籍排名和百分比，高二三显示等级分和等级，年级未知显示指标并集。个人画像 ProfileExam 增来源 `grade_percentile`，教学趋势仅用该百分比，0% 在顶部，缺考/缺指标断开，分数 KPI 不变。质量对比原表与参照规则见 teaching-platform.md。班主任界面保持原样。
+
 # P3 接口契约：分区上传与成绩分析（v1，2026-09-11）
 
 依 `docs/planning/03-architecture.md`、`05-acceptance.md`（E01–E05/S02–S05）与

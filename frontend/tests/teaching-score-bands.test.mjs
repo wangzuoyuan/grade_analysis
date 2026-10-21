@@ -25,7 +25,7 @@ test('api-v1 提供 score-bands 类型与 fetch（band_width 参数）', () => {
 test('成绩分析页挂载分数段分析卡，位于统计卡与学生成绩表之间', () => {
   const statsCard = page.indexOf('单科 stats 卡')
   const bandsCard = page.indexOf('分数段分析卡（官方《分数段分析》表同构的本班口径')
-  const studentsCard = page.indexOf('学生表：分班展示')
+  const studentsCard = page.indexOf('学生明细：当前范围合并展示')
   assert.ok(statsCard > -1 && bandsCard > -1 && studentsCard > -1, '三个卡片的挂载点都必须在场')
   assert.ok(statsCard < bandsCard && bandsCard < studentsCard, '分数段分析卡必须排在统计卡之后、学生成绩表之前')
   assert.match(page, /fetchTeachingScoreBands\(selectedExam, scopeQ, bandWidth\)/, '取数必须跟随考试/范围/段宽')

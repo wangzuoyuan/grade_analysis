@@ -48,6 +48,9 @@ def test_platform_detail_download_supports_blank_supplement_and_zero(tmp_path, g
         assert row["xueji_rank"] == 9 and row["grade_percentile"] == 0.25
     else:
         assert row["grade_score"] == 64
+        ws.cell(2, 5, 0.023)
+        wb.save(target)
+        assert parse(target.read_bytes(), target.name, grade, "数学")["rows"][0]["grade_percentile"] == 0.023
 
 
 @pytest.mark.parametrize("grade", [1, 2, 3])
@@ -61,7 +64,7 @@ def test_platform_quality_downloads_preserve_case_and_teacher_rules(tmp_path, gr
     else:
         bands = [0] * 22
         bands[6:8] = [2, 1]  # B: both students, 100%.
-        values = (["模板班型", "TemplateAa", "模板任课教师"] if administrative else ["TemplateAa", None]) + [2, 2, 0, 61, 0] + bands
+        values = (["模板班型", "TemplateAa", "模板任课教师"] if administrative else ["TemplateAa", None]) + [2, 2, 0, 61, 0, 91.2, 0, None, 280.7] + bands
     for c, value in enumerate(values, 1):
         ws.cell(3, c, value)
         ws.cell(4, c, value)
@@ -74,12 +77,14 @@ def test_platform_quality_downloads_preserve_case_and_teacher_rules(tmp_path, gr
                          f"高{'二' if grade == 2 else '三'}{'行政班' if administrative else '教学班'}成绩质量分析模板.xlsx")
     wb.save(target)
     result = parse(target.read_bytes(), target.name, grade, "数学")
-    expected = ["TemplateAa"] if grade != 1 and administrative else ["TemplateAa", "TemplateaA"]
+    expected = ["TemplateAa", "TemplateaA"]
     assert [c["class_label"] for c in result["classes"]] == expected
     assert result["classes"][0]["metrics"]["raw_avg"] == 0
     assert result["classes"][0]["metrics"]["stddev"] == 0
     if grade != 1:
-        assert result["classes"][0]["metrics"]["grade_avg"] == 61
+        m = result["classes"][0]["metrics"]
+        assert (m["chinese_avg"], m["math_avg"], m["english_avg"], m["main_three_avg"]) == (91.2, 0, None, 280.7)
+        assert m["grade_avg"] == 61
         b = next(b for b in result["classes"][0]["metrics"]["bands"] if b["label"] == "B")
         assert b == {"label": "B", "count": 2, "ratio": 1}
 

@@ -101,7 +101,7 @@ def test_five_formats_and_selection():
     walking=parse(quality(),'教学班.xlsx',2,'物理')
     assert [c['class_label'] for c in walking['classes']]==['合成A','合成a']
     admin=parse(quality(2,'administrative',labels=['1','2'],teachers=['合成教师',None]),'质量.xlsx',2,'物理')
-    assert len(admin['classes'])==1 and admin['excluded'][0]['class_label']=='2'
+    assert len(admin['classes'])==2 and admin['excluded']==[]
 
 
 def school_detail(rows=None, headers=None, header_row=2):
@@ -176,10 +176,9 @@ def test_quality_filename_classification_without_class_type(filename, kind):
     r = parse(school_quality(labels=['1', '2'], teachers=['合成教师', None]), filename, 2, '物理')
     assert r['class_kind'] == kind
     assert all(c['class_kind'] == kind for c in r['classes'])
-    assert len(r['classes']) == (2 if kind == 'teaching' else 1)
+    assert len(r['classes']) == 2
     assert r['warnings'] == []
-    if kind == 'administrative':
-        assert r['excluded'] == [{'class_label': '2', 'reason': '行政班任课教师为空', 'row': 4}]
+    assert r['excluded'] == []
 
 
 def test_quality_filename_priority_fallback_and_ambiguity():
@@ -216,28 +215,28 @@ def test_school_mixed_import_official_values_and_revision(env):
     assert p['errors'] == [] and all(f['parsed_ok'] and f['warnings'] == [] for f in p['items'])
     assert [f.get('class_kind') for f in p['items']] == [None, 'teaching', 'administrative']
     assert {c['class_kind'] + ':' + c['class_label'] for c in p['roster_changes']} == {
-        'teaching:合成教学0', 'teaching:合成教学1', 'administrative:1'}
+        'teaching:合成教学0', 'teaching:合成教学1', 'administrative:1', 'administrative:2'}
     r = confirm(e, p)
-    assert r['imported'] == 5
+    assert r['imported'] == 6
     assert before == (e.db.query(TeachingClass).count(), e.db.query(TeachingClassMember).count(), e.db.query(WsStudentIdentity).count())
     facts = e.db.query(ScoreFact).filter_by(teaching_exam_id=r['exam_id']).all()
     assert {f.class_ref_id for f in facts} == set(ids)
     assert sorted((f.score, f.grade_score, f.grade_percentile) for f in facts) == [(0, 40, .25), (80, None, None)]
     response = e.client.get(API + f"/exams/{r['exam_id']}/compare")
     assert response.status_code == 200
-    assert len(response.json()['classes']) == 3
+    assert len(response.json()['classes']) == 4
     for c in response.json()['classes']:
         m = c['metrics']
         assert m['expected_count'] == 12 and m['actual_count'] == 10
         assert c['raw_avg'] == 50 and c['grade_avg'] == 55 and m['stddev'] == 8
         assert next(b for b in m['bands'] if b['label'] == 'C+')['ratio'] == .833
-    assert confirm(e, preview(e, files=files, target=False, auto_assign='true'))['skipped'] == 5
+    assert confirm(e, preview(e, files=files, target=False, auto_assign='true'))['skipped'] == 6
     revised = files[:2] + [('行政班.xlsx', school_quality(labels=['1', '2'], teachers=['合成教师', None], ratio='79%'))]
     p = preview(e, files=revised, target=False, auto_assign='true')
     assert p['conflicts']
     confirm(e, p, 409)
     confirm(e, p, revise=True)
-    saved = e.db.query(TeachingClassQuality).filter_by(exam_id=r['exam_id'], class_kind='administrative').one()
+    saved = e.db.query(TeachingClassQuality).filter_by(exam_id=r['exam_id'], class_kind='administrative', class_label='1').one()
     assert next(b for b in saved.metrics['bands'] if b['label'] == 'C+')['ratio'] == .79
 
 
@@ -317,17 +316,17 @@ def test_quality_only_and_atomic_mixed_population(env):
     before=(e.db.query(TeachingClass).count(),e.db.query(TeachingClassMember).count(),e.db.query(WsStudentIdentity).count())
     files=[('教学班.xlsx',quality()),('行政.xlsx',quality(2,'administrative',labels=['1','2'],teachers=['合成教师',None]))]
     p=preview(e,files=files,target=False)
-    assert len(p['roster_changes'])==3
+    assert len(p['roster_changes'])==4
     r=confirm(e,p)
     assert before==(e.db.query(TeachingClass).count(),e.db.query(TeachingClassMember).count(),e.db.query(WsStudentIdentity).count())
     cmp=e.client.get(API+f"/exams/{r['exam_id']}/compare").json()
-    assert len(cmp['classes'])==3 and cmp['overall']['raw'] is None
+    assert len(cmp['classes'])==4 and cmp['overall']['raw'] is None
     assert all(c['grade_avg']==55 for c in cmp['classes'])
-    assert len({c['id'] for c in cmp['classes']})==3
+    assert len({c['id'] for c in cmp['classes']})==4
     assert e.client.get(API+f"/exams/{r['exam_id']}/students").json()['students']==[]
     assert e.client.get(API+'/exams',params={'academic_year_id':e.year,'grade':2}).json()['exams'][0]['id']==r['exam_id']
     again=confirm(e,preview(e,files=files,target=False))
-    assert again['imported']==0 and again['skipped']==3
+    assert again['imported']==0 and again['skipped']==4
 
 
 def test_grade1_all_classes_and_weighted_official(env):
@@ -661,3 +660,95 @@ def test_event_candidate_drift_rejects_without_scores(env):
     original=e.db.query(ScoreFact).count()
     confirm(e,stale,409)
     assert e.db.query(ScoreFact).count()==original and e.db.query(WorkspaceExamEvent).count()==1
+
+
+def full_school_quality(zero=False, chinese=91.2):
+    """学校同构 33 列，新增四项均分。仅合成值，无真实学生/教师。"""
+    from openpyxl.utils import get_column_letter
+    bands=list(GRADE_LABELS.values())
+    top=['班级','任课教师','人数',None,'平均分',None,'标准差','语文','数学','英语','三大门','等级人数及比率']+[None]*21
+    sub=[None,None,'应考','实考','原始','等级',None,None,None,None,None]
+    for band in bands:sub += [band,'比率']
+    row=['02',None,0 if zero else 12,0 if zero else 10,0 if zero else 65.5,
+         0 if zero else 55,0 if zero else 8,chinese,0,None,280.7]
+    for band in bands:row += [0 if zero else 10 if band=='C+' else 0,'0%' if zero or band!='C+' else '83.3%']
+    return xlsx([top,sub,row], ['A1:A2','B1:B2','C1:D1','E1:F1','L1:AG1']+
+        [f'{get_column_letter(i)}1:{get_column_letter(i)}2' for i in range(7,12)])
+
+
+@pytest.mark.parametrize('kind',['行政班','教学班'])
+@pytest.mark.parametrize('zero',[False,True])
+def test_complete_quality_metrics_and_empty_teacher_persist(env,kind,zero):
+    e=env
+    before=(e.db.query(TeachingClass).count(),e.db.query(TeachingClassMember).count(),e.db.query(WsStudentIdentity).count())
+    files=[(kind+'.xlsx',full_school_quality(zero))]
+    p=preview(e,files=files,target=False)
+    assert len(p['items'][0]['classes'])==1 and not p['items'][0]['excluded']
+    r=confirm(e,p)
+    c=e.client.get(API+f"/exams/{r['exam_id']}/compare").json()['classes'][0]
+    m=c['metrics']
+    assert c['teacher_name'] is None
+    assert (m['chinese_avg'],m['math_avg'],m['english_avg'],m['main_three_avg'])==(91.2,0,None,280.7)
+    assert m['actual_count']==(0 if zero else 10)
+    assert next(b for b in m['bands'] if b['label']=='C+')['ratio']==(0 if zero else .833)
+    assert confirm(e,preview(e,files=files,target=False))['skipped']==1
+    p=preview(e,files=[(kind+'.xlsx',full_school_quality(zero,chinese=92))],target=False)
+    confirm(e,p,status=409)
+    assert e.db.query(TeachingClassQuality).one().metrics['chinese_avg']==91.2
+    confirm(e,p,revise=True)
+    assert e.db.query(TeachingClassQuality).one().metrics['chinese_avg']==92
+    assert before==(e.db.query(TeachingClass).count(),e.db.query(TeachingClassMember).count(),e.db.query(WsStudentIdentity).count())
+    assert e.db.query(ScoreFact).count()==0
+
+
+def test_analysis_details_and_profile_keep_source_percentile_and_scope_rank(env, monkeypatch):
+    class FrozenDate(date):
+        @classmethod
+        def today(cls): return cls(2030, 11, 1)
+    monkeypatch.setattr("app.core.context.date", FrozenDate)
+    e=env
+    # 两班同场，原始分并列/0/缺考；百分比独立于等级分和范围名次。
+    first=confirm(e,preview(e,files=[('明细.xlsx',school_detail(rows=[
+        ['SYN001',1,'合成甲',90,67,.125],['SYN002',1,'合成乙',None,55,.5],
+        ['SYN003',1,'合成丙',0,40,1]]))]))
+    tc1=e.tc
+    tc2=TeachingClass(academic_year_id=e.year,grade=2,subject='物理',label='合成B')
+    e.db.add(tc2);e.db.commit();e.tc=tc2.id
+    confirm(e,preview(e,files=[('明细.xlsx',school_detail(rows=[['SYN004',1,'合成丁',90,70,0]]))]))
+    from urllib.parse import quote
+    exam=e.db.get(TeachingExamScope,first['exam_id'])
+    url='/api/v1/teaching/analysis/exams/'+quote('event:'+str(exam.exam_event_id))+'/students'
+    params={'academic_year_id':e.year}
+    response=e.client.get(url,params=params)
+    assert response.status_code==200,response.text
+    data=response.json();rows=data['students']
+    assert data['grade']==2 and len(rows)==4
+    assert [r['rank'] for r in rows]==[1,1,3,None]
+    assert {r['name']:r['grade_percentile'] for r in rows}=={'合成甲':.125,'合成乙':.5,'合成丙':1,'合成丁':0}
+    assert {r['name']:r['grade_label'] for r in rows}['合成甲']=='A'
+    assert all(r['source_domain']=='teaching' and 'totals' not in r for r in rows)
+    one=e.client.get(url,params={**params,'teaching_class_id':tc1}).json()['students']
+    assert [r['rank'] for r in one]==[1,2,None] and len(one)==3
+    person=next(r['person_id'] for r in rows if r['name']=='合成甲')
+    prof=e.client.get(f'/api/v1/teaching/students/{person}',params={**params,'teaching_class_id':tc1})
+    assert prof.status_code==200,prof.text
+    assert prof.json()['subjects'][0]['exams'][0]['grade_percentile']==.125
+    # 班主任侧不能读取教学身份，参照不授权学生。
+    denied=e.client.get(f'/api/v1/homeroom/students/{person}',params=params)
+    assert denied.status_code in (404,409)
+
+
+def test_analysis_grade1_and_unknown_grade_fields(env):
+    e=env
+    r=confirm(e,preview(e,grade=1,files=[('明细.xlsx',detail(1,rows=[['SYN001','合成甲',0,10,.2]]))]))
+    exam=e.db.get(TeachingExamScope,r['exam_id'])
+    url=f'/api/v1/teaching/analysis/exams/event:{exam.exam_event_id}/students'
+    data=e.client.get(url,params={'academic_year_id':e.year,'teaching_class_id':e.tc}).json()
+    assert data['grade']==1
+    assert data['students'][0]['xueji_rank']==10 and data['students'][0]['grade_percentile']==.2
+    from app.db.workspace_models import WorkspaceExamEvent
+    exam.grade=2  # 显式冲突时未知，不从分数/班名猜。
+    e.db.get(WorkspaceExamEvent,exam.exam_event_id).grade=1
+    e.db.commit()
+    data=e.client.get(url,params={'academic_year_id':e.year,'teaching_class_id':e.tc}).json()
+    assert data['grade'] is None

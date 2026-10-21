@@ -32,7 +32,7 @@ function vertical(merges, columns, row = 1) {
 }
 
 spec('teaching-g1-students', [['学号', '姓名', '分数', '学籍排名', '年级百分位']], { texts: [1, 2], percentages: [5], integers: [4] })
-spec('teaching-g23-students', [['学号', '姓名', '原始分数', '等级分数']], { texts: [1, 2], integers: [4] })
+spec('teaching-g23-students', [['学号', '姓名', '原始分数', '等级分数', '年级百分比']], { texts: [1, 2], integers: [4], percentages: [5] })
 
 for (const [id, g1, administrative] of [
   ['teaching-g1-quality', true, true],
@@ -55,6 +55,9 @@ for (const [id, g1, administrative] of [
   } else {
     pair(top, sub, merges, '平均分', ['原始', '等级'])
     top.push('标准差'); sub.push(null); vertical(merges, [top.length])
+    for (const label of ['语文', '数学', '英语', '三大门']) {
+      top.push(label); sub.push(null); vertical(merges, [top.length])
+    }
     const start = top.length + 1
     for (const band of bands) {
       top.push(top.length + 1 === start ? '等级人数及比率' : null, null)
@@ -101,7 +104,7 @@ for (const g1 of [true, false]) {
   spec(`homeroom-g${g1 ? '1' : '23'}-averages`, [top, sub], { merges, texts: [1, 3], integers: g1 ? [2, 14, 16, 18] : [2], frozenColumns: 3 })
 }
 
-for (const s of specs) {
+for (const s of specs.filter(s => !process.env.TEMPLATE_IDS || process.env.TEMPLATE_IDS.split(',').includes(s.id))) {
   const wb = Workbook.create(), sheet = wb.worksheets.add('导入数据')
   const width = Math.max(...s.rows.map(r => r.length)), last = col(width)
   const body = sheet.getRange(`A1:${last}53`)

@@ -178,6 +178,7 @@ def _exam_entry(fact, source_domain: str, db=None) -> ProfileExam:
         exam_date=q.display_exam_date(fact),
         score=fact.score,
         grade_score=fact.grade_score,
+        grade_percentile=fact.grade_percentile,
         source_domain=source_domain,
     )
 

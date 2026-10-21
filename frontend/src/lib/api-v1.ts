@@ -74,6 +74,7 @@ export interface PlatformMetrics {
   expected_count?: number | null; actual_count?: number | null
   raw_avg?: number | null; grade_avg?: number | null; stddev?: number | null
   stddev_basis?: string; score_sum?: number | null; max_score?: number | null; min_score?: number | null
+  chinese_avg?: number | null; math_avg?: number | null; english_avg?: number | null; main_three_avg?: number | null
   bands?: PlatformBand[]
 }
 export interface PlatformExam { id: number; exam_name: string; exam_date: string; grade: number; subject: string }
@@ -364,6 +365,7 @@ export interface ProfileExam {
   score: number | null
   /** 后端画像条目携带的等级分（E03）；旧来源无等级分时为 null。 */
   grade_score?: number | null
+  grade_percentile?: number | null
   source_domain: SourceDomain
 }
 
@@ -793,21 +795,25 @@ export interface TeachingStatsResponse {
   small_sample?: boolean
 }
 
-/** 教学学生行（契约 §2.2）；rank 为本班内名次，score 缺考为 null。 */
+/** 教学学生行（契约 §2.2）；rank 为当前所选管理班范围名次，score 缺考为 null。 */
 export interface TeachingStudentRow {
   person_id: PersonId
   name: string | null
   class_label: string | null
   score: number | null
   grade_score?: number | null
+  grade_label?: string | null
+  xueji_rank?: number | null
+  grade_percentile?: number | null
+  /** 当前所选管理班范围的 min-rank，缺考无名次。 */
   rank: number | null
-  /** 反向投影的班主任域事实参与名次计算并标注来源域。 */
   source_domain: SourceDomain
 }
 
 /** GET /api/v1/teaching/analysis/exams/{exam_name}/students 的响应。 */
 export interface TeachingStudentsResponse {
   metadata: ResponseMetadata
+  grade?: number | null
   students: TeachingStudentRow[]
 }
 

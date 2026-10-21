@@ -138,8 +138,9 @@ def parse(data: bytes, filename: str, grade: int, subject: str):
             metric_cols["expected_count" if sub=="应考" else "actual_count"] = c
         elif top == "平均分":
             metric_cols["grade_avg" if sub=="等级" else "raw_avg"] = c
-        elif top in ("标准差","总分","最高分","最低分"):
-            metric_cols[{"标准差":"stddev", "总分":"score_sum", "最高分":"max_score", "最低分":"min_score"}[top]]=c
+        elif top in ("标准差","总分","最高分","最低分","语文","数学","英语","三大门"):
+            metric_cols[{"标准差":"stddev", "总分":"score_sum", "最高分":"max_score", "最低分":"min_score",
+                         "语文":"chinese_avg", "数学":"math_avg", "英语":"english_avg", "三大门":"main_three_avg"}[top]]=c
         if is_g1 and any(top.startswith(x) for x in ("优秀人数","良好人数","合格人数","低分人数")):
             band_cols.setdefault(top,{})["ratio" if sub=="比率" else "count"] = c
         elif not is_g1:
@@ -192,9 +193,6 @@ def parse(data: bytes, filename: str, grade: int, subject: str):
         coverage_counts[key]=actual
         if key not in group_coverage:
             group_coverage.append(key)
-        if grade!=1 and class_kind=="administrative" and not teacher:
-            result["excluded"].append({"class_label":label,"reason":"行政班任课教师为空","row":r})
-            continue
         counts = [b.get("count") for b in metrics["bands"]]
         if not is_g1 and actual is not None and all(n is not None for n in counts) and sum(counts)!=actual:
             result["warnings"].append(f"第 {r} 行：等级人数合计与实考不符，等级总体均分不可合并")
