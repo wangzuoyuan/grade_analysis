@@ -25,7 +25,7 @@ test('api-v1 提供名次段分布类型与 fetch（total_type 参数）', () =>
 
 test('名次段分布面板：堆叠条 + 学校表格样式 + 本班高亮 + 年级行', () => {
   assert.match(page, /function RankBandsPanel/, '独立面板组件')
-  assert.match(page, /bandBarColor\(i, c\.bands\.length\)/, '段色按段绝对位置取 Viridis 色')
+  assert.match(page, /bandBarColor\(i, c\.bands\.length, INFERNO_ANCHORS\)/, '段色按段绝对位置取 Inferno 色（2026-10-21 拍板）')
   assert.match(page, /\{String\(b\.count\)\} 人 · \{|\{String\(b\.count\)\} 人 ·\{' '\}/, '悬浮须显示人数')
   assert.match(page, /\(\(b\.count \/ c\.total\) \* 100\)\.toFixed\(1\)\}%/, '悬浮须显示占班内比例')
   assert.match(page, /名/s, '悬浮段名带「名」语义')
@@ -36,6 +36,23 @@ test('名次段分布面板：堆叠条 + 学校表格样式 + 本班高亮 + �
   // 空态：classes 为空 → 上传引导，绝不编造分段
   assert.match(page, /rankBands\.classes\.length === 0/, '空态分支按 classes 判定')
   assert.match(page, /尚未导入名次段表/, '空态文案必须在场')
+})
+
+test('名次段卡 2026-10-21 拍板：Inferno 配色 + 白色细分隔线 + 悬浮联动高亮同段', () => {
+  assert.match(bandColors, /export const INFERNO_ANCHORS = \[/, 'Inferno 锚点常量必须在场（官方 8 点采样）')
+  assert.match(bandColors, /'#fcffa4'/, 'Inferno 亮端锚点（高名次段）')
+  assert.match(bandColors, /'#000004'/, 'Inferno 暗端锚点（低名次段）')
+  assert.match(page, /import \{ bandBarColor, INFERNO_ANCHORS \} from '\.\/band-colors'/, '名次段卡须引用 Inferno 配色')
+  assert.match(page, /bandBarColor\(i, bandCount, INFERNO_ANCHORS\)/, '图例同用 Inferno')
+  assert.doesNotMatch(page, /'#fde725'/, '名次段卡不得残留 Viridis 亮端锚点')
+  // 白色细分隔线：段与段之间 1px（首段除外，由兄弟选择器保证）
+  assert.match(page, /\[\&>\*\+\*\]:border-l \[\&>\*\+\*\]:border-white\/90/, '段间须有 1px 白色分隔线')
+  // 悬浮联动：同一段在全部班级行高亮，其余降暗
+  assert.match(page, /const \[hoverBand, setHoverBand\] = useState<number \| null>\(null\)/, '联动高亮状态')
+  assert.match(page, /onMouseEnter=\{\(\) => setHoverBand\(i\)\}/, '悬浮记录当前段序')
+  assert.match(page, /onMouseLeave=\{\(\) => setHoverBand\(null\)\}/, '离开堆叠条区清除高亮')
+  assert.match(page, /hoverBand != null && hoverBand !== i && 'opacity-25'/, '其余段降暗')
+  assert.match(page, /hoverBand === i && 'ring-1 ring-inset ring-slate-900\/50'/, '同段高亮描边')
 })
 
 test('跨栈：后端 rank-bands 端点只读导入数据、空态不 404', () => {

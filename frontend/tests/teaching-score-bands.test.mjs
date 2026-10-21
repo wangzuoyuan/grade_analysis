@@ -50,12 +50,22 @@ test('合并列仅在多班范围出现；全零尾段折叠；缺考红线文�
 
 test('堆叠条段悬浮显示段名/人数/占比（Radix Tooltip，非原生 title）', () => {
   assert.match(page, /<TooltipProvider delayDuration=\{150\}>/, '堆叠条区必须包裹 TooltipProvider（150ms 即时悬浮）')
-  assert.match(page, /<TooltipTrigger asChild>\s*<div\s+className="h-full cursor-default/, '每段须以 div 触发悬浮')
+  assert.match(page, /<TooltipTrigger asChild>\s*<div\s+className=\{cn\(/, '每段须以 div 触发悬浮')
   assert.match(page, /\{String\(b\.count\)\} 人 ·\{' '\}/, '悬浮内容必须显示人数')
   assert.match(page, /\(\(b\.count \/ c\.valid_count\) \* 100\)\.toFixed\(1\)\}%/, '悬浮内容必须显示占班内比例')
   // 段元素不得再依赖原生 title（延迟约 1 秒、易被当成没显示）
   const segBlock = page.slice(page.indexOf('overflow-hidden rounded-full bg-slate-100'), page.indexOf('</TooltipProvider>'))
   assert.doesNotMatch(segBlock, /title=\{`\$\{bandLabel/, '段悬浮不得再走原生 title')
+})
+
+test('教学卡 2026-10-21 拍板：维持 Viridis，但加白色细分隔线 + 悬浮联动高亮同段', () => {
+  assert.doesNotMatch(page, /INFERNO_ANCHORS/, '教学卡不得引入名次段卡的 Inferno（两卡分工：名次段卡换色、分数段卡仅共享交互）')
+  assert.match(page, /\[\&>\*\+\*\]:border-l \[\&>\*\+\*\]:border-white\/90/, '段间须有 1px 白色分隔线（首段除外）')
+  assert.match(page, /const \[hoverBand, setHoverBand\] = useState<number \| null>\(null\)/, '联动高亮状态')
+  assert.match(page, /onMouseEnter=\{\(\) => setHoverBand\(i\)\}/, '悬浮记录当前段序')
+  assert.match(page, /onMouseLeave=\{\(\) => setHoverBand\(null\)\}/, '离开堆叠条区清除高亮')
+  assert.match(page, /hoverBand != null && hoverBand !== i && 'opacity-25'/, '其余段降暗')
+  assert.match(page, /hoverBand === i && 'ring-1 ring-inset ring-slate-900\/50'/, '同段高亮描边')
 })
 
 test('段位配色采用 Viridis 官方锚点（2026-10-18 用户拍板：不自配色）', () => {
@@ -67,7 +77,7 @@ test('段位配色采用 Viridis 官方锚点（2026-10-18 用户拍板：不自
   assert.match(bandColors, /'#440154'/, '锚点须含暗端 #440154（低分段）')
   assert.match(bandColors, /感知均匀[\s\S]*?色盲安全/, '须注明色系出处与特性')
   assert.match(bandColors, /export function hexToRgb/, '须有 hex→RGB 解析供插值')
-  assert.match(bandColors, /VIRIDIS_ANCHORS\.length - 2/, '插值须钳制在锚点区间内')
+  assert.match(bandColors, /anchors\.length - 2/, '插值须钳制在锚点区间内（锚点参数化，缺省 Viridis）')
   assert.doesNotMatch(page, /hsl\(201 74%/, '不得再残留旧的自配 HSL 渐变')
 })
 

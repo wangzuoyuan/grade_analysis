@@ -138,6 +138,7 @@ function ScoreBandsPanel({
   bands: TeachingScoreBandsResponse
   detail: boolean
 }) {
+  const [hoverBand, setHoverBand] = useState<number | null>(null)
   const showMerged = bands.classes.length > 1
   const cols = showMerged ? [...bands.classes, bands.merged] : bands.classes
   const bandCount = bands.merged.bands.length
@@ -159,9 +160,11 @@ function ScoreBandsPanel({
 
   return (
     <div className="space-y-4">
-      {/* 段位分布堆叠条：宽度=本段占有效人数比例；悬浮显示段名/人数/占比 */}
+      {/* 段位分布堆叠条：宽度=本段占有效人数比例；白色细分隔线分段；悬浮显示段名/人数/占比，
+          且同一段在全部班级列联动高亮（其余降暗）。配色维持 Viridis（2026-10-21 用户拍板：
+          名次段卡的 Inferno 不进教学卡，仅共享分隔线与联动交互） */}
       <TooltipProvider delayDuration={150}>
-        <div className="space-y-2">
+        <div className="space-y-2" onMouseLeave={() => setHoverBand(null)}>
           {cols.map((c) => (
             <div key={colKey(c)} className="flex items-center gap-3">
               <span
@@ -170,13 +173,18 @@ function ScoreBandsPanel({
               >
                 {colLabel(c)} <span className="text-slate-400">{String(c.valid_count)} 人</span>
               </span>
-              <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100">
+              <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100 [&>*+*]:border-l [&>*+*]:border-white/90">
                 {c.bands.map((b, i) =>
                   b.count > 0 && c.valid_count > 0 ? (
                     <Tooltip key={i}>
                       <TooltipTrigger asChild>
                         <div
-                          className="h-full cursor-default transition-opacity hover:opacity-75"
+                          className={cn(
+                            'h-full cursor-default transition-opacity',
+                            hoverBand != null && hoverBand !== i && 'opacity-25',
+                            hoverBand === i && 'ring-1 ring-inset ring-slate-900/50',
+                          )}
+                          onMouseEnter={() => setHoverBand(i)}
                           style={{
                             width: `${String((b.count / c.valid_count) * 100)}%`,
                             background: bandBarColor(i, c.bands.length),

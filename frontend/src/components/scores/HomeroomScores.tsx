@@ -98,7 +98,7 @@ import {
 import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, sortExamsDesc } from './shared'
-import { bandBarColor } from './band-colors'
+import { bandBarColor, INFERNO_ANCHORS } from './band-colors'
 import tableStyles from './homeroom-tables.module.css'
 
 const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e05a68', '#64748b', '#0d9488', '#c2410c']
@@ -488,10 +488,13 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
   )
 }
 
-/** 名次段分布面板（2026-10-19）：堆叠条（每班一行，Viridis 段色按段绝对
- *  位置、高名次亮端）+ 学校名次段表原样表格（行=班级，列=段，本班行高亮，
+/** 名次段分布面板（2026-10-19）：堆叠条（每班一行，Inferno 段色按段绝对
+ *  位置、高名次亮端；2026-10-21 用户拍板换 Inferno——16 段离散采样下中段
+ *  色相变化比 Viridis 绿青中段更易分辨）+ 白色细分隔线 + 悬浮联动高亮同段
+ *  （跨班对比某段人数）+ 学校名次段表原样表格（行=班级，列=段，本班行高亮，
  *  末行全年级合计）。分段与人数全部来自导入的名次段表，不从学生名次现算。 */
 function RankBandsPanel({ data }: { data: HomeroomRankBandsResponse }) {
+  const [hoverBand, setHoverBand] = useState<number | null>(null)
   const bandCount = Math.max(data.grade_bands.length, ...data.classes.map((c) => c.bands.length), 0)
   // 全零尾段折叠：与教学分数段卡同款（图例与表格都截到最后一个非零段）
   let lastNonZero = -1
@@ -514,9 +517,10 @@ function RankBandsPanel({ data }: { data: HomeroomRankBandsResponse }) {
 
   return (
     <div className="space-y-4">
-      {/* 堆叠条：宽度=本段占本班人数比例；悬浮显示段名/人数/占比 */}
+      {/* 堆叠条：宽度=本段占本班人数比例；白色细分隔线分段；悬浮显示段名/人数/占比，
+          且同一段在全部班级行联动高亮（其余降暗），跨班对比某段人数 */}
       <TooltipProvider delayDuration={150}>
-        <div className="space-y-1.5">
+        <div className="space-y-1.5" onMouseLeave={() => setHoverBand(null)}>
           {data.classes.map((c) => {
             const isCurrent = c.class_num === data.current_class_num
             return (
@@ -529,16 +533,21 @@ function RankBandsPanel({ data }: { data: HomeroomRankBandsResponse }) {
                   {c.teacher_name ? ` ${c.teacher_name}` : ''}
                   <span className="ml-1 text-slate-400">{String(c.total)} 人</span>
                 </span>
-                <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100">
+                <div className="flex h-4 flex-1 overflow-hidden rounded-full bg-slate-100 [&>*+*]:border-l [&>*+*]:border-white/90">
                   {c.bands.map((b, i) =>
                     b.count > 0 && c.total > 0 ? (
                       <UITooltip key={i}>
                         <TooltipTrigger asChild>
                           <div
-                            className="h-full cursor-default transition-opacity hover:opacity-75"
+                            className={cn(
+                              'h-full cursor-default transition-opacity',
+                              hoverBand != null && hoverBand !== i && 'opacity-25',
+                              hoverBand === i && 'ring-1 ring-inset ring-slate-900/50',
+                            )}
+                            onMouseEnter={() => setHoverBand(i)}
                             style={{
                               width: `${String((b.count / c.total) * 100)}%`,
-                              background: bandBarColor(i, c.bands.length),
+                              background: bandBarColor(i, c.bands.length, INFERNO_ANCHORS),
                             }}
                           />
                         </TooltipTrigger>
@@ -564,7 +573,7 @@ function RankBandsPanel({ data }: { data: HomeroomRankBandsResponse }) {
           <span key={b.label} className="inline-flex items-center gap-1 text-[10px] text-slate-500">
             <span
               className="inline-block h-2.5 w-2.5 rounded-sm"
-              style={{ background: bandBarColor(i, bandCount) }}
+              style={{ background: bandBarColor(i, bandCount, INFERNO_ANCHORS) }}
             />
             {b.label}
           </span>
