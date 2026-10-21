@@ -118,11 +118,11 @@ test('同名/同号歧义 → 专属主提示（候选清单由组件另行渲�
   assert.doesNotMatch(text, /学年与班级/)
 })
 
-test('真正的作用域参数错误（无 name_or_alias）仍显示学年/班级通用提示', () => {
+test('作用域错误缺少后端具体原因时才显示学年/班级通用提示', () => {
   const { fn } = loadPreviewErrorModule()
   // 后端 param=teaching_class_id（多班未显式）/ person_id 未命中 / 空白姓名 → 通用映射
   for (const body of [{ param: 'teaching_class_id' }, { person_id: 999 }, { name_or_alias: '   ' }, {}]) {
-    const text = fn(new FakeApiV1Error(422, 'invalid_scope_param', 'invalid', body), '教学班')
+    const text = fn(new FakeApiV1Error(422, 'invalid_scope_param', undefined, body), '教学班')
     assert.equal(text, '请求参数有误，请检查学年与班级的选择', `body=${JSON.stringify(body)}`)
   }
 })

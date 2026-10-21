@@ -527,9 +527,9 @@ function LegacyUploadPage() {
           {previewError ? (
             <Card className="border-danger-500 bg-danger-50">
               <CardContent className="flex flex-wrap items-start justify-between gap-2 py-3">
-                <div className="flex items-start gap-2 text-sm text-danger-500">
+                <div className="flex min-w-0 items-start gap-2 text-sm text-danger-500">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  {previewError}
+                  <span className="min-w-0 whitespace-pre-wrap break-words">{previewError}</span>
                 </div>
                 <Button
                   variant="outline"
@@ -610,7 +610,7 @@ function LegacyUploadPage() {
                 <Card className="border-danger-500 bg-danger-50">
                   <CardContent className="flex items-start gap-2 py-3">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-danger-500" />
-                    <div className="text-sm text-danger-500">{confirmError}</div>
+                    <div className="min-w-0 whitespace-pre-wrap break-words text-sm text-danger-500">{confirmError}</div>
                   </CardContent>
                 </Card>
               ) : null}

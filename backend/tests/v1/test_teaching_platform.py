@@ -252,6 +252,27 @@ def test_quality_filename_failure_rolls_back_whole_batch(env):
     assert e.db.query(TeachingExamScope).count() == 0
 
 
+def test_preview_returns_all_current_name_conflicts_without_writes(env):
+    e = env
+    confirm(e, preview(e, files=[('明细.xlsx', detail(rows=[
+        ['SYN001', '合成甲', 60, None], ['SYN002', '合成乙', 70, None],
+    ]))]))
+    before = (e.db.query(ScoreFact).count(), e.db.query(ImportBatch).count(), e.db.query(WsStudentIdentity).count())
+    r = e.client.post(API + '/imports/preview', data={
+        'academic_year_id': str(e.year), 'grade': '2', 'subject': '物理',
+        'exam_name': '合成名称核验', 'exam_date': '2030-11-01', 'auto_assign': 'true',
+    }, files=[('files', ('明细.xlsx', school_detail(rows=[
+        ['SYN001', 1, '合成甲06', 60, 55, None], ['SYN002', 1, '合成乙08', 70, 61, None],
+    ]), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))])
+    assert r.status_code == 409
+    assert r.json()['detail'] == '学号姓名冲突，整批拒绝'
+    assert r.json()['conflicts'] == [
+        '同学号不同姓名：SYN001（库内「合成甲」≠ 文件「合成甲06」）',
+        '同学号不同姓名：SYN002（库内「合成乙」≠ 文件「合成乙08」）',
+    ]
+    assert before == (e.db.query(ScoreFact).count(), e.db.query(ImportBatch).count(), e.db.query(WsStudentIdentity).count())
+
+
 def test_initial_supplement_blank_idempotence_and_conflict(env):
     e=env
     p=preview(e);r=confirm(e,p)

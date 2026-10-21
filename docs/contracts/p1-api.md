@@ -13,6 +13,7 @@ v1 其余条款未列出者继续有效。变更须经集成者修订本文件�
   - `invalid_scope_param` → HTTP 422（参数非法）
   - `resource_out_of_scope` → HTTP 404（合法格式但不在允许范围）
   - `link_version_conflict` → HTTP 409（token 过期/范围或版本变化/乐观锁冲突）
+- 前端错误提示优先使用非空的后端 `detail`，无具体说明才回退到错误码的通用文案；不得把身份/字段冲突统一解释为“预览过期”。错误体含 `conflicts`（字符串或结构化对象）、`drift`、`identity_candidates`、`roster_changes` 时完整逐项展示，结构化信息使用中文字段标签及原值/本次值，不输出原始 JSON；已有专用冲突/候选面板仍保留。
 - 所有 200 数据响应含 `metadata`：`{mode, subject, scope, cohort_size, data_revision}`；
   `scope` 为对象 `{academic_year_id, term_id, class_id | teaching_class_id, link_id?, link_version?}`。
 - 缺考成绩 `score: null`，不得转为 0。

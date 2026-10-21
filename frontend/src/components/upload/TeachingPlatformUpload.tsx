@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { platformPreview, platformConfirm, ApiV1Error, type PlatformPreview, type PlatformChange } from '@/lib/api-v1'
+import { platformPreview, platformConfirm, type PlatformPreview, type PlatformChange } from '@/lib/api-v1'
 import { PlatformScope, usePlatformScope } from '@/components/scores/PlatformScope'
 import { apiErrorMessage } from '@/components/link/error-text'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,7 @@ export function PlatformChanges({ rows }: {rows: PlatformChange[]}) {
     return [...new Set([...Object.keys(before),...Object.keys(after)])].filter(k=>before[k]!==after[k]).map(k=>({...r,field:k,existing:before[k],incoming:after[k]}))
   })
   return <div className="max-h-72 overflow-auto rounded-lg border"><table className="w-full text-left text-sm"><thead className="sticky top-0 bg-slate-50"><tr><th className="p-2">学生 / 班级</th><th>字段</th><th>原值</th><th>本次值</th></tr></thead><tbody>
-    {expanded.map((r,i) => <tr className="border-t" key={i}><td className="p-2">{r.entity ?? r.alias ?? '—'}</td><td>{r.field?.split('.').map(k=>fieldNames[k]??k).join(' · ')??r.message}</td><td className="max-w-64 break-words p-2">{show(r.existing,r.field)}</td><td className="max-w-64 break-words p-2">{show(r.incoming,r.field)}</td></tr>)}
+    {expanded.map((r,i) => <tr className="border-t" key={i}><td className="break-words p-2">{r.entity ?? r.alias ?? r.class_label ?? r.file ?? '—'}</td><td>{r.field?.split('.').map(k=>fieldNames[k]??k).join(' · ')??r.message}{r.field&&r.message?<p className="mt-1 text-xs">{r.message}</p>:null}</td><td className="max-w-64 break-words p-2">{show(r.existing,r.field)}</td><td className="max-w-64 break-words p-2">{show(r.incoming,r.field)}</td></tr>)}
   </tbody></table></div>
 }
 export function TeachingPlatformUpload() {
@@ -82,7 +82,7 @@ export function TeachingPlatformUpload() {
     const identity_new_aliases: string[]=[]
     Object.entries(picks).forEach(([alias,pick]) => { if(pick==='new') identity_new_aliases.push(alias); else identity_confirmations[alias]=Number(pick) })
     try { const r=await platformConfirm({token:preview.token,exam_choice:examChoice,revise,accept_roster_changes:acceptRoster,identity_confirmations,identity_new_aliases}); if(id===requestId.current){setResult(r);setPreview(null)} }
-    catch(e) { if(id===requestId.current) setError(e instanceof ApiV1Error && e.body?.conflicts ? `${apiErrorMessage(e)}：${JSON.stringify(e.body.conflicts)}` : apiErrorMessage(e)) }
+    catch(e) { if(id===requestId.current) setError(apiErrorMessage(e)) }
     finally { if(id===requestId.current) setBusy(false) }
   }
   const aliases=[...new Set(preview?.identity_candidates.map(c => c.alias) ?? [])]
@@ -108,7 +108,7 @@ export function TeachingPlatformUpload() {
       {files.length ? <ul className="text-sm text-slate-600">{files.map((f,i)=><li key={`${f.name}-${i}`}>{f.name}</li>)}</ul> : null}
       <Button disabled={busy || !files.length || !scope.year || !scope.subject || !name.trim() || !date} onClick={runPreview}>{busy?'处理中…':'预览解析与差异'}</Button>
     </fieldset></CardContent></Card>
-    {error?<p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>:null}
+    {error?<p role="alert" className="whitespace-pre-wrap break-words rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>:null}
     {result?<Card><CardContent className="space-y-3 pt-6"><p role="status" className="font-medium text-emerald-700">导入成功：新增 {result.imported} 条，修订 {result.revised} 条，同值跳过 {result.skipped} 条。</p><Button asChild variant="outline"><Link href={`/compare?ws=teaching&exam_id=${result.exam_id}&grade=${scope.grade}&academic_year_id=${scope.year}`}>查看本次班级对比与成绩</Link></Button></CardContent></Card>:null}
     {preview?<Card><CardHeader><CardTitle>预览与确认</CardTitle></CardHeader><CardContent className="space-y-4">
       <ExamResolutionSelect resolution={preview.exam_resolution} value={examChoice} onChange={setExamChoice} disabled={busy}/>

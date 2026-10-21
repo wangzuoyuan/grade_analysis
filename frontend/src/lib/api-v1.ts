@@ -77,7 +77,7 @@ export interface PlatformMetrics {
   bands?: PlatformBand[]
 }
 export interface PlatformExam { id: number; exam_name: string; exam_date: string; grade: number; subject: string }
-export interface PlatformChange { entity?: string; alias?: string; field?: string; existing?: unknown; incoming?: unknown; message?: string }
+export interface PlatformChange { entity?: string; alias?: string; class_label?: string; file?: string; field?: string; existing?: unknown; incoming?: unknown; message?: string }
 export interface PlatformPreview {
   exam_resolution?: ExamResolution
   token: string; scope: Record<string, string | number>
