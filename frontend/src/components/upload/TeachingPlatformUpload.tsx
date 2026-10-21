@@ -35,7 +35,7 @@ export function PlatformChanges({ rows }: {rows: PlatformChange[]}) {
     {expanded.map((r,i) => <tr className="border-t" key={i}><td className="p-2">{r.entity ?? r.alias ?? '—'}</td><td>{r.field?.split('.').map(k=>fieldNames[k]??k).join(' · ')??r.message}</td><td className="max-w-64 break-words p-2">{show(r.existing,r.field)}</td><td className="max-w-64 break-words p-2">{show(r.incoming,r.field)}</td></tr>)}
   </tbody></table></div>
 }
-export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
+export function TeachingPlatformUpload() {
   const scope = usePlatformScope()
   const [name,setName] = useState('')
   const [date,setDate] = useState('')
@@ -91,7 +91,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
   const unresolved=aliases.some(a => picks[a]===undefined)
   const hasFatal=preview?.errors.some(e => !e.message?.startsWith('补录须先存在') || !preview.identity_candidates.some(c => c.alias===e.alias))
   return <div className="space-y-5">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold text-slate-900">教学成绩导入</h1><p className="mt-1 text-sm text-slate-500">学生明细与官方质量分析可一起导入，也可单独上传质量表。</p></div><Button variant="outline" onClick={onLegacy}>使用旧模板导入</Button></div>
+    <div><h1 className="text-2xl font-semibold text-slate-900">教学成绩导入</h1><p className="mt-1 text-sm text-slate-500">学生明细与官方质量分析可一起导入，也可单独上传质量表。</p></div>
     <Card><CardHeader><CardTitle>选择考试与导入范围</CardTitle></CardHeader><CardContent><fieldset disabled={busy} className="space-y-5">
       <PlatformScope value={scope}/>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -104,6 +104,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
       <ScoreImportTemplates mode="teaching" grade={scope.grade}/>
       <label className="flex items-start gap-2 text-sm text-slate-600"><input type="checkbox" className="mt-1" checked={replaceRoster} onChange={e=>setReplaceRoster(e.target.checked)}/><span>分班已变化：以本次质量表替换所提供类别的对比参照名单。未勾选时保留已有参照并补充新班；其他历史考试不变。</span></label>
       <label className="block rounded-lg border-2 border-dashed border-sky-200 bg-sky-50/40 p-6 text-sm">选择成绩明细、教学班或行政班质量分析（可多选）<input aria-label="选择教学平台成绩文件" className="mt-3 block w-full" type="file" multiple accept=".xlsx" onChange={e=>setFiles(Array.from(e.target.files??[]))}/></label>
+      <p className="text-xs text-slate-500">质量表文件名包含「教学班」或「行政班」即可自动识别类别；官方统计值按表格读取，不反算比率。</p>
       {files.length ? <ul className="text-sm text-slate-600">{files.map((f,i)=><li key={`${f.name}-${i}`}>{f.name}</li>)}</ul> : null}
       <Button disabled={busy || !files.length || !scope.year || !scope.subject || !name.trim() || !date} onClick={runPreview}>{busy?'处理中…':'预览解析与差异'}</Button>
     </fieldset></CardContent></Card>
@@ -112,7 +113,7 @@ export function TeachingPlatformUpload({ onLegacy }: {onLegacy: () => void}) {
     {preview?<Card><CardHeader><CardTitle>预览与确认</CardTitle></CardHeader><CardContent className="space-y-4">
       <ExamResolutionSelect resolution={preview.exam_resolution} value={examChoice} onChange={setExamChoice} disabled={busy}/>
       <p className="text-sm text-slate-500">预览未写入成绩。高一纳入全部真实班级；高二、高三纳入全部教学班及教师非空的行政班。新增参照不会创建管理班或成员。</p>
-      {preview.items.map((f,i)=><div key={i} className="rounded border p-3 text-sm"><strong>{f.filename}</strong><span className={f.parsed_ok?'ml-3 text-emerald-700':'ml-3 text-red-700'}>{f.parsed_ok?f.kind==='class_quality'?`质量分析 · ${f.classes?.length ?? 0} 个班级`:`学生明细 · ${f.row_count} 行`:f.message}</span>
+      {preview.items.map((f,i)=><div key={i} className="rounded border p-3 text-sm"><strong className="break-all">{f.filename}</strong><span className={f.parsed_ok?'ml-3 text-emerald-700':'ml-3 text-red-700'}>{f.parsed_ok?f.kind==='class_quality'?`${f.class_kind==='teaching'?'教学班质量分析':f.class_kind==='administrative'?'行政班质量分析':'质量分析'} · 纳入 ${f.classes?.length ?? 0} 个班级`:`学生明细 · ${f.row_count} 行`:f.message}</span>
         {f.excluded?.length?<details className="mt-2"><summary>查看排除的行（{f.excluded.length}）</summary><ul>{f.excluded.map((r,j)=><li key={j}>{r.class_label}：{r.reason}</li>)}</ul></details>:null}
         {f.warnings?.map((w,j)=><p key={j} className="mt-1 text-amber-700">{w}</p>)}
       </div>)}

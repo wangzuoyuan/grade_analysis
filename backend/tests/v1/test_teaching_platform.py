@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import itertools
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from app.db.models import SessionLocal, Teacher, engine
 from app.db.workspace_models import (AcademicYear,TeachingClass,TeachingClassMember,ScoreFact,
     TeachingExamScope,TeachingClassQuality,TeachingComparisonRoster,WsStudentIdentity,WsStudentAlias,ImportBatch)
@@ -98,10 +98,158 @@ def test_five_formats_and_selection():
     assert parse(detail(),'高二.xlsx',2,'物理')['rows'][0]['grade_score'] is None
     high1=parse(quality(1,'administrative',labels=['01','02'],teachers=['合成教师',None]),'质量.xlsx',1,'物理')
     assert len(high1['classes'])==2
-    walking=parse(quality(),'质量.xlsx',2,'物理')
+    walking=parse(quality(),'教学班.xlsx',2,'物理')
     assert [c['class_label'] for c in walking['classes']]==['合成A','合成a']
     admin=parse(quality(2,'administrative',labels=['1','2'],teachers=['合成教师',None]),'质量.xlsx',2,'物理')
     assert len(admin['classes'])==1 and admin['excluded'][0]['class_label']=='2'
+
+
+def school_detail(rows=None, headers=None, header_row=2):
+    return xlsx([['物理学生成绩'], *([[]] * (header_row - 2)),
+        headers or ['学号', '学籍', '姓名', '原始', '等级', '年级百分比'],
+        *(rows if rows is not None else [['SYN001', 1, '合成甲', 60, 55, '25%']])])
+
+
+def school_quality(labels=None, teachers=None, avg=50, ratio='83.3%'):
+    # 与学校两类原表一致：无“班级类型”列，类别必须由文件名明确。
+    w = load_workbook(BytesIO(quality(labels=labels, teachers=teachers, avg=avg)))
+    for row in w.active.iter_rows(min_row=3):
+        row[2].value = 12  # 应考 12、实考 10，官方比率按应考口径。
+        row[18].value = ratio  # C+ 档比率，其他档仍为 0。
+    b = BytesIO()
+    w.save(b)
+    return b.getvalue()
+
+
+@pytest.mark.parametrize('raw,level,percentile', [
+    ('原始', '等级', '年级百分比'),
+    ('原始分', '等级分', '年级百分位'),
+    ('原始分数', '等级分数', '年级百分位'),
+])
+def test_school_detail_headers_and_values(raw, level, percentile):
+    data = school_detail(headers=['学号', '学籍', '姓名', raw, level, percentile],
+        rows=[['00001', 1, '合成甲', 0, 40, '0%'], ['00002', 3, '合成乙', None, None, None]])
+    result = parse(data, '明细.xlsx', 2, '物理')
+    a, b = result['rows']
+    assert a == {'alias': '00001', 'name': '合成甲', 'source_row': 3,
+                 'score': 0, 'grade_score': 40, 'grade_percentile': 0}
+    assert b['score'] is None and b['grade_score'] is None and b['grade_percentile'] is None
+    assert 'xueji_rank' not in a and 'class_kind' not in result
+    # 文件名分类仅用于质量表，不误伤明细。
+    assert parse(data, '教学班行政班学生.xlsx', 2, '物理')['kind'] == 'student_scores'
+
+
+@pytest.mark.parametrize('header_row', [2, 10])
+def test_school_detail_header_scan_and_original_row_numbers(header_row):
+    result = parse(school_detail(header_row=header_row), '明细.xlsx', 2, '物理')
+    assert result['rows'][0]['source_row'] == header_row + 1
+    with pytest.raises(ValueError, match=f'第 {header_row + 1} 行 原始'):
+        parse(school_detail(header_row=header_row, rows=[['SYN001', 1, '合成甲', 'bad', 55, None]]), '明细.xlsx', 2, '物理')
+
+
+def test_school_detail_scan_limit_duplicate_aliases_and_numeric_id():
+    with pytest.raises(ValueError, match='前 10 行'):
+        parse(school_detail(header_row=11), '明细.xlsx', 2, '物理')
+    for headers in [
+        ['学号', '姓名', '原始', '原始分数'],
+        ['学号', '姓名', '原始', '等级', '等级分数'],
+        ['学号', '姓名', '原始', '年级百分比', '年级百分位'],
+    ]:
+        with pytest.raises(ValueError, match='重复字段'):
+            parse(school_detail(headers=headers), '明细.xlsx', 2, '物理')
+    w = load_workbook(BytesIO(school_detail()))
+    w.active['A3'] = 1
+    w.active['A3'].number_format = '00000'
+    b = BytesIO(); w.save(b)
+    assert parse(b.getvalue(), '明细.xlsx', 2, '物理')['rows'][0]['alias'] == '00001'
+
+
+@pytest.mark.parametrize('filename,kind', [
+    ('教学班.xlsx', 'teaching'),
+    ('2031 教 学 班（副本）.xlsx', 'teaching'),
+    ('行政班.xlsx', 'administrative'),
+    ('2031 行 政 班导出 (2).xlsx', 'administrative'),
+    ('/行政班目录/教学班.xlsx', 'teaching'),
+    ('C:\\教学班目录\\行政班.xlsx', 'administrative'),
+])
+def test_quality_filename_classification_without_class_type(filename, kind):
+    r = parse(school_quality(labels=['1', '2'], teachers=['合成教师', None]), filename, 2, '物理')
+    assert r['class_kind'] == kind
+    assert all(c['class_kind'] == kind for c in r['classes'])
+    assert len(r['classes']) == (2 if kind == 'teaching' else 1)
+    assert r['warnings'] == []
+    if kind == 'administrative':
+        assert r['excluded'] == [{'class_label': '2', 'reason': '行政班任课教师为空', 'row': 4}]
+
+
+def test_quality_filename_priority_fallback_and_ambiguity():
+    # 文件名优先，即便存在“班级类型”列也不覆盖明确的教学班文件名。
+    admin = quality(kind='administrative', labels=['1', '2'], teachers=['合成教师', None])
+    assert len(parse(admin, '教学班.xlsx', 2, '物理')['classes']) == 2
+    assert parse(admin, '质量.xlsx', 2, '物理')['class_kind'] == 'administrative'
+    for data, name, error in [
+        (admin, '教学班行政班.xlsx', '只能包含'),
+        (school_quality(), '质量.xlsx', '文件名中添加'),
+        (school_quality(), '/教学班目录/质量.xlsx', '文件名中添加'),
+    ]:
+        with pytest.raises(ValueError, match=error):
+            parse(data, name, 2, '物理')
+    # 高一仍保留教师空白的真实行政班。
+    high1 = parse(quality(1, 'administrative', teachers=[None, None]), '高一质量.xlsx', 1, '物理')
+    assert len(high1['classes']) == 2
+
+
+def test_school_mixed_import_official_values_and_revision(env):
+    e = env
+    roster = [('SYN001', '合成甲'), ('SYN002', '合成乙')]
+    ids = []
+    for i, (alias, name) in enumerate(roster):
+        tc = TeachingClass(academic_year_id=e.year, subject='物理', label=f'合成教学{i}')
+        e.db.add(tc); e.db.commit(); e.tc = tc.id; ids.append(tc.id)
+        confirm(e, preview(e, name='合成摸底', files=[('明细.xlsx', detail(rows=[[alias, name, 60, None]]))]))
+    before = (e.db.query(TeachingClass).count(), e.db.query(TeachingClassMember).count(), e.db.query(WsStudentIdentity).count())
+    rows = [['SYN001', 1, '合成甲', 0, 40, '25%'], ['SYN002', 3, '合成乙', 80, None, None]]
+    files = [('明细.xlsx', school_detail(rows)),
+        ('教学班.xlsx', school_quality(labels=['合成教学0', '合成教学1'], teachers=['合成教师', None])),
+        ('行政班.xlsx', school_quality(labels=['1', '2'], teachers=['合成教师', None]))]
+    p = preview(e, files=files, target=False, auto_assign='true')
+    assert p['errors'] == [] and all(f['parsed_ok'] and f['warnings'] == [] for f in p['items'])
+    assert [f.get('class_kind') for f in p['items']] == [None, 'teaching', 'administrative']
+    assert {c['class_kind'] + ':' + c['class_label'] for c in p['roster_changes']} == {
+        'teaching:合成教学0', 'teaching:合成教学1', 'administrative:1'}
+    r = confirm(e, p)
+    assert r['imported'] == 5
+    assert before == (e.db.query(TeachingClass).count(), e.db.query(TeachingClassMember).count(), e.db.query(WsStudentIdentity).count())
+    facts = e.db.query(ScoreFact).filter_by(teaching_exam_id=r['exam_id']).all()
+    assert {f.class_ref_id for f in facts} == set(ids)
+    assert sorted((f.score, f.grade_score, f.grade_percentile) for f in facts) == [(0, 40, .25), (80, None, None)]
+    response = e.client.get(API + f"/exams/{r['exam_id']}/compare")
+    assert response.status_code == 200
+    assert len(response.json()['classes']) == 3
+    for c in response.json()['classes']:
+        m = c['metrics']
+        assert m['expected_count'] == 12 and m['actual_count'] == 10
+        assert c['raw_avg'] == 50 and c['grade_avg'] == 55 and m['stddev'] == 8
+        assert next(b for b in m['bands'] if b['label'] == 'C+')['ratio'] == .833
+    assert confirm(e, preview(e, files=files, target=False, auto_assign='true'))['skipped'] == 5
+    revised = files[:2] + [('行政班.xlsx', school_quality(labels=['1', '2'], teachers=['合成教师', None], ratio='79%'))]
+    p = preview(e, files=revised, target=False, auto_assign='true')
+    assert p['conflicts']
+    confirm(e, p, 409)
+    confirm(e, p, revise=True)
+    saved = e.db.query(TeachingClassQuality).filter_by(exam_id=r['exam_id'], class_kind='administrative').one()
+    assert next(b for b in saved.metrics['bands'] if b['label'] == 'C+')['ratio'] == .79
+
+
+def test_quality_filename_failure_rolls_back_whole_batch(env):
+    e = env
+    files = [('明细.xlsx', school_detail()), ('教学班.xlsx', school_quality()), ('质量.xlsx', school_quality())]
+    before = (e.db.query(ScoreFact).count(), e.db.query(TeachingClassQuality).count(), e.db.query(WsStudentIdentity).count())
+    p = preview(e, files=files)
+    assert not p['items'][2]['parsed_ok'] and '文件名中添加' in p['items'][2]['message']
+    confirm(e, p, 409)
+    assert before == (e.db.query(ScoreFact).count(), e.db.query(TeachingClassQuality).count(), e.db.query(WsStudentIdentity).count())
+    assert e.db.query(TeachingExamScope).count() == 0
 
 
 def test_initial_supplement_blank_idempotence_and_conflict(env):
@@ -146,7 +294,7 @@ def test_grade1_rank_percentile_patch(env):
 def test_quality_only_and_atomic_mixed_population(env):
     e=env
     before=(e.db.query(TeachingClass).count(),e.db.query(TeachingClassMember).count(),e.db.query(WsStudentIdentity).count())
-    files=[('教学.xlsx',quality()),('行政.xlsx',quality(2,'administrative',labels=['1','2'],teachers=['合成教师',None]))]
+    files=[('教学班.xlsx',quality()),('行政.xlsx',quality(2,'administrative',labels=['1','2'],teachers=['合成教师',None]))]
     p=preview(e,files=files,target=False)
     assert len(p['roster_changes'])==3
     r=confirm(e,p)
@@ -182,13 +330,13 @@ def test_scope_and_fact_drift_rolls_back(env):
 
 def test_snapshot_history_quality_revision(env):
     e=env
-    files=[('质量.xlsx',quality(labels=['合成A']))]
+    files=[('教学班.xlsx',quality(labels=['合成A']))]
     old=confirm(e,preview(e,files=files,target=False))['exam_id']
-    p=preview(e,files=[('质量.xlsx',quality(labels=['合成a'],avg=55))],target=False,name='合成期末')
+    p=preview(e,files=[('教学班.xlsx',quality(labels=['合成a'],avg=55))],target=False,name='合成期末')
     confirm(e,p)
     assert len(e.db.get(TeachingExamScope,old).class_snapshot)==1
     assert e.db.query(TeachingComparisonRoster).filter_by(academic_year_id=e.year).count()==2
-    p=preview(e,files=[('质量.xlsx',quality(labels=['合成A'],avg=60))],target=False)
+    p=preview(e,files=[('教学班.xlsx',quality(labels=['合成A'],avg=60))],target=False)
     assert any(c['field']=='raw_avg' for c in p['conflicts'])
     confirm(e,p,409)
     confirm(e,p,revise=True)
@@ -224,7 +372,7 @@ def test_supplement_no_identity_creation_and_partial_failure(env):
 def test_transaction_injected_write_failure(env):
     from sqlalchemy import event
     e=env
-    p=preview(e,files=[('明细.xlsx',detail()),('质量.xlsx',quality(labels=['合成A']))])
+    p=preview(e,files=[('明细.xlsx',detail()),('教学班.xlsx',quality(labels=['合成A']))])
     def fail(connection,cursor,statement,parameters,context,executemany):
         if statement.startswith('INSERT INTO teaching_class_quality'):
             raise RuntimeError('synthetic transaction failure')
@@ -374,15 +522,15 @@ def test_history_candidates_and_own_domain_only(env):
 
 def test_new_division_replaces_only_future_snapshot(env):
     e=env
-    old=confirm(e,preview(e,target=False,files=[('旧班.xlsx',quality())]))['exam_id']
+    old=confirm(e,preview(e,target=False,files=[('旧教学班.xlsx',quality())]))['exam_id']
     p=preview(e,target=False,name='合成期末',exam_date='2031-01-10',replace_roster='true',
-        files=[('新班.xlsx',quality(labels=['合成b']))])
+        files=[('新教学班.xlsx',quality(labels=['合成b']))])
     assert [c['action'] for c in p['roster_changes']].count('remove')==2
     current=confirm(e,p)['exam_id']
     assert len(e.db.get(TeachingExamScope,old).class_snapshot)==2
     assert [c['class_label'] for c in e.db.get(TeachingExamScope,current).class_snapshot]==['合成b']
     # 修正旧考试均分不能把最新分班参照倒退回旧班名。
-    confirm(e,preview(e,target=False,files=[('修正.xlsx',quality(avg=60))]),revise=True)
+    confirm(e,preview(e,target=False,files=[('修正教学班.xlsx',quality(avg=60))]),revise=True)
     latest=e.db.query(TeachingComparisonRoster).filter_by(academic_year_id=e.year).order_by(TeachingComparisonRoster.version.desc()).first()
     assert [c['class_label'] for c in latest.classes]==['合成b']
 
@@ -415,7 +563,7 @@ def test_legacy_score_date_conflict_does_not_attach_wrong_exam(env):
 def test_ai_uses_same_official_service(env):
     from app.api.chat_tools import resolve_scope_snapshot,execute_session_tool
     e=env
-    exam=confirm(e,preview(e,target=False,files=[('质量.xlsx',quality())]))['exam_id']
+    exam=confirm(e,preview(e,target=False,files=[('教学班.xlsx',quality())]))['exam_id']
     snap=resolve_scope_snapshot(e.db,1,'teaching',academic_year_id=e.year,teaching_class_id=e.tc,subject='物理')
     result=execute_session_tool(e.db,snap,'get_class_comparison',{'exam_id':exam})
     http=e.client.get(API+f'/exams/{exam}/compare').json()

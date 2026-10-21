@@ -82,6 +82,7 @@ export interface PlatformPreview {
   exam_resolution?: ExamResolution
   token: string; scope: Record<string, string | number>
   items: Array<{ filename: string; parsed_ok: boolean; kind: string; row_count: number; message?: string
+    class_kind?: 'teaching' | 'administrative'
     classes?: Array<{class_label: string}>; excluded?: Array<{class_label: string; reason: string}>; warnings?: string[] }>
   changes: PlatformChange[]; conflicts: PlatformChange[]; errors: PlatformChange[]
   roster_changes: Array<{action: string; class_kind: string; class_label: string}>

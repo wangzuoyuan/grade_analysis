@@ -112,9 +112,8 @@ function StepIndicator({ current }: { current: 1 | 2 }) {
 
 export default function UploadPage() {
   const { mode } = useWorkspace()
-  const [legacy, setLegacy] = useState(false)
-  if (mode === 'teaching' && !legacy) return <TeachingPlatformUpload onLegacy={() => setLegacy(true)} />
-  return <>{mode === 'teaching' ? <Button variant="outline" className="mb-4" onClick={() => setLegacy(false)}>返回教学平台单科导入</Button> : null}<LegacyUploadPage /></>
+  if (mode === 'teaching') return <TeachingPlatformUpload />
+  return <LegacyUploadPage />
 }
 
 function LegacyUploadPage() {

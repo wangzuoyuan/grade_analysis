@@ -69,7 +69,9 @@ def test_platform_quality_downloads_preserve_case_and_teacher_rules(tmp_path, gr
     teacher_col = label_col + 1
     ws.cell(4, label_col, "TemplateaA")
     ws.cell(4, teacher_col).value = None
-    target = tmp_path / "quality.xlsx"
+    # 使用下载时保留的中文类别名；无类别关键词的教学质量表现在要求改名。
+    target = tmp_path / ("高一成绩质量分析模板.xlsx" if grade == 1 else
+                         f"高{'二' if grade == 2 else '三'}{'行政班' if administrative else '教学班'}成绩质量分析模板.xlsx")
     wb.save(target)
     result = parse(target.read_bytes(), target.name, grade, "数学")
     expected = ["TemplateAa"] if grade != 1 and administrative else ["TemplateAa", "TemplateaA"]

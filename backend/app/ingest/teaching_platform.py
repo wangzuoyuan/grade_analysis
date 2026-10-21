@@ -48,20 +48,24 @@ def parse(data: bytes, filename: str, grade: int, subject: str):
     ws = wb.worksheets[0]
     result = {"filename": filename, "kind": "unknown", "rows": [], "classes": [],
               "aggregates": [], "excluded": [], "warnings": [], "sheet": ws.title}
-    # 明细：列名定位，容许可选补录列完全省略。
-    headers = [text(c.value) for c in ws[1]]
-    if "学号" in headers and "姓名" in headers:
+    # 学校原表可在表头前带标题；仅扫描前十行，来源行号保留 Excel 原位。
+    detail_header = next((r for r in range(1, min(10, ws.max_row) + 1)
+                          if {"学号", "姓名"}.issubset(text(c.value) for c in ws[r])), None)
+    if detail_header is not None:
+        headers = [text(c.value) for c in ws[detail_header]]
         fields = {"学号": "alias", "姓名": "name", "分数": "score", "原始分数": "score",
-                  "等级分数": "grade_score", "学籍排名": "xueji_rank", "年级百分位": "grade_percentile"}
+                  "原始": "score", "原始分": "score", "等级": "grade_score", "等级分": "grade_score",
+                  "等级分数": "grade_score", "学籍排名": "xueji_rank",
+                  "年级百分位": "grade_percentile", "年级百分比": "grade_percentile"}
         cols = {fields[h]: i + 1 for i,h in enumerate(headers) if h in fields}
         if len(cols)!=len([h for h in headers if h in fields]):
             raise ValueError("明细存在重复字段列，请保留一列对应字段")
         if "score" not in cols:
             raise ValueError("缺少分数/原始分数列（补录时可以留空）")
-        if (grade == 1 and "原始分数" in headers) or (grade != 1 and "分数" in headers):
+        if (grade == 1 and any(h in headers for h in ("原始", "原始分", "原始分数"))) or (grade != 1 and "分数" in headers):
             raise ValueError("明细格式与所选年级不一致")
         result["kind"] = "student_scores"
-        for r in range(2, ws.max_row + 1):
+        for r in range(detail_header + 1, ws.max_row + 1):
             if all(ws.cell(r,c).value is None for c in cols.values()):
                 continue
             id_cell=ws.cell(r,cols["alias"])
@@ -92,7 +96,7 @@ def parse(data: bytes, filename: str, grade: int, subject: str):
     header_row = next((r for r in range(1, min(10,ws.max_row)+1)
                        if "班级" in [text(ws.cell(r,c).value) for c in range(1,ws.max_column+1)]), None)
     if header_row is None:
-        raise ValueError("未识别教学平台单科格式；旧模板请使用旧模板入口")
+        raise ValueError("未识别教学单科成绩格式：前 10 行须有含学号、姓名的明细表头，或含班级的质量分析表头")
     def merged_value(r,c):
         v = ws.cell(r,c).value
         if v is None:
@@ -107,7 +111,18 @@ def parse(data: bytes, filename: str, grade: int, subject: str):
     is_g1 = "平均分" in tops and "原始" not in subs
     if is_g1 != (grade==1):
         raise ValueError("质量表格式与所选年级不一致")
-    class_kind = "administrative" if "班级类型" in tops else "teaching"
+    # 仅质量表按文件基本名判类；目录名不参与，文件名优先于可选的班级类型列。
+    basename = re.sub(r"\s+", "", filename.replace("\\", "/").rsplit("/", 1)[-1])
+    teaching_name, admin_name = "教学班" in basename, "行政班" in basename
+    if teaching_name and admin_name:
+        raise ValueError("文件名只能包含‘教学班’或‘行政班’其中一种，请改名后重新上传")
+    if teaching_name:
+        class_kind = "teaching"
+    elif admin_name or "班级类型" in tops:
+        class_kind = "administrative"
+    else:
+        raise ValueError("无法确定质量表类别，请在文件名中添加‘教学班’或‘行政班’后重新上传")
+    result["class_kind"] = class_kind
     class_col = tops.index("班级")+1
     teacher_col = next((i+1 for i,h in enumerate(tops) if h in ("任课教师", "任教老师")), None)
     if teacher_col is None:
@@ -183,9 +198,7 @@ def parse(data: bytes, filename: str, grade: int, subject: str):
         counts = [b.get("count") for b in metrics["bands"]]
         if not is_g1 and actual is not None and all(n is not None for n in counts) and sum(counts)!=actual:
             result["warnings"].append(f"第 {r} 行：等级人数合计与实考不符，等级总体均分不可合并")
-        for b in metrics["bands"]:
-            if actual and b.get("count") is not None and b.get("ratio") is not None and abs(b["count"]/actual-b["ratio"])>0.0011:
-                result["warnings"].append(f"第 {r} 行 {b['label']} 人数与比率不符，保留官方原值")
+        # 比率分母由学校定义，按官方值保留，不用实考或应考人数反算校验。
         result["classes"].append({"class_kind":class_kind,"class_label":label,
             "class_type":current_type or None,"teacher_name":teacher or None,"metrics":metrics,"source":source})
     result["kind"]="class_quality"
