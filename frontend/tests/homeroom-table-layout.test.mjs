@@ -9,7 +9,7 @@ import ts from 'typescript'
 // 执行页面中的真实表格组件，验证合并格和数据位置，而不是检查源码写法。
 const source = readFileSync(new URL('../src/components/scores/HomeroomScores.tsx', import.meta.url), 'utf8')
 const ast = ts.createSourceFile('HomeroomScores.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
-const names = new Set(['subjectColumnGroups', 'summaryNumber', 'formatRate', 'ClassAveragesTable'])
+const names = new Set(['subjectColumnGroups', 'summaryNumber', 'ClassAveragesTable'])
 const extracted = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
 assert.equal(extracted.length, names.size)
 const code = ts.transpileModule(extracted.map(node => node.getText(ast)).join('\n'), {
@@ -33,6 +33,7 @@ test('平行班汇总紧随本组成绩，实验班汇总紧随实验班，合�
   const makeRow = (class_num, class_type, score) => ({
     class_num, class_type, teacher_name: '合成教师',
     subjects: { '语文': score, '物理_原始': score, '物理_等级': score },
+    // 后端仍下发五指标包；组件应只取 均分，率值/标准差一律不渲染（2026-10-22 拍板）
     totals: { '3+3': { '均分': score, '及格率': 80, '高分率': null, '低分率': 5, '标准差': 10 } },
     total_ranks: { '3+3': 1 },
   })
@@ -55,5 +56,5 @@ test('平行班汇总紧随本组成绩，实验班汇总紧随实验班，合�
   assert.match(rows[6], /rowspan="3"[^>]*>实验班汇总/)
   assert.match(rows[6], />90<\/td>/)
   assert.equal((body.match(/汇总<\/td>/g) ?? []).length, 2, '每组名称仅渲染一次')
-  assert.match(rows[2], />—<\/td>/, '缺失指标仍显示缺值')
+  assert.doesNotMatch(body, /及格率|高分率|低分率|标准差|80%|>10<\/td>/, '总分率值/标准差列已删除：后端五指标包在场也不渲染')
 })

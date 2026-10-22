@@ -73,11 +73,13 @@ test('跨栈：名次段导入链路（判型/口径/幂等）', () => {
   assert.match(wsParse, /rank_bands: Optional\[dict\]/, 'ParsedImportFile 须有 rank_bands 字段')
 })
 
-test('班级均分表：班型合并单元格 + 指标包子列 + 班型内排名', () => {
+test('班级均分表：班型合并单元格 + 总分仅均分/班型排名 + 班型内排名', () => {
   assert.match(page, /subjectColumnGroups/, '学科列分组（语数英单列 + 选科原始/等级）')
   assert.match(page, /typeSpans/, '班级类型列同值合并 rowSpan 计算')
-  assert.match(page, /及格率[\s\S]*?高分率[\s\S]*?低分率[\s\S]*?标准差/, '总分指标包子列')
   assert.match(page, /班型排名/, '排名列名标注班型内口径')
+  // 2026-10-22 拍板：总分没有及格率/高分率/低分率/标准差指标（导入数据恒为空），四列不再展示
+  assert.doesNotMatch(page, /及格率|高分率|低分率|标准差/, '总分区块只留 均分+班型排名，率值/标准差列不得残留')
+  assert.match(page, /colSpan=\{2\} className="whitespace-nowrap border-r text-center text-xs font-semibold">\{totalType\}总分/, '总分区块表头只跨 均分+班型排名 两列')
   assert.match(page, /排名按平行班、实验班分别计算/, '说明文案注明分组口径')
   assert.match(backend, /ranks_by_total\[total_type\]\.update\(_rank_map\(pairs\)\)/, '后端按班型分组各排')
   assert.match(backend, /type_groups\.setdefault\(record\.class_type or "未分类"/, '分组键为 class_type')

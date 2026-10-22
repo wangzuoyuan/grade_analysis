@@ -165,7 +165,8 @@ test('班主任考试详情恢复旧版六板块与顶部排名分段图', () =>
   assert.match(homeroomScores, /subjectColumnGroups/, '学科列须按 原始/等级 分组')
   assert.match(homeroomScores, /rowSpan=\{typeSpans\[idx\]\}/, '班级类型列须同值合并单元格')
   assert.match(homeroomScores, /班型排名/, '排名列须标注班型内口径')
-  assert.match(homeroomScores, /及格率/, '均分表须展示及格率等指标包子列')
+  // 2026-10-22 拍板：总分没有及格率/高分率/低分率/标准差指标（导入数据恒为空），四列不再展示
+  assert.doesNotMatch(homeroomScores, /及格率|高分率|低分率|标准差/, '总分区块只留 均分+班型排名，率值/标准差列不得残留')
   // 明细表表头按图2：学号/班级/学籍/姓名 + 校名次/班名次
   assert.match(homeroomScores, /学籍/, '明细表须有学籍列')
   assert.match(homeroomScores, /班名次/, '明细表须有班名次（本班口径前端计算）')

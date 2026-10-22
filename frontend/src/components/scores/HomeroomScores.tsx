@@ -286,12 +286,6 @@ function summaryNumber(
   return Math.round((nums.reduce((sum, value) => sum + value, 0) / nums.length) * 100) / 100
 }
 
-/** 率值显示：及格率/高分率/低分率以百分数展示（一位小数）。 */
-function formatRate(value: number | null | undefined): string {
-  if (value == null) return '—'
-  return `${String(Math.round(value * 10) / 10)}%`
-}
-
 function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | null }) {
   if (data == null) {
     return <Card><CardContent className="py-8 text-center text-sm text-slate-500">正在读取班级均分表…</CardContent></Card>
@@ -309,7 +303,6 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
   }
   const resolved = data
   const subjectGroups = subjectColumnGroups(resolved.subjects)
-  const totalSubKeys = ['均分', '及格率', '高分率', '低分率', '标准差'] as const
 
   // 班级类型列：同类型连续行合并单元格（后端已按 班型序+班号 排序）
   const rows = resolved.rows
@@ -337,7 +330,7 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
   function exportCsv() {
     const header = ['班级类型', '班级', '班主任', ...resolved.subjects]
     for (const totalType of resolved.total_types) {
-      header.push(`${totalType}均分`, `${totalType}及格率`, `${totalType}高分率`, `${totalType}低分率`, `${totalType}标准差`, `${totalType}班型排名`)
+      header.push(`${totalType}均分`, `${totalType}班型排名`)
     }
     const csvRows = rows.map((row) => {
       const values: Array<string | number> = [row.class_type ?? '', row.class_num, row.teacher_name ?? '']
@@ -346,10 +339,6 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
         const entry = row.totals[totalType]
         values.push(
           entry?.均分 ?? '',
-          entry?.及格率 ?? '',
-          entry?.高分率 ?? '',
-          entry?.低分率 ?? '',
-          entry?.标准差 ?? '',
           row.total_ranks[totalType] ?? '',
         )
       }
@@ -394,7 +383,7 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                   <TableHead key={g.subject} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
                 ))}
                 {resolved.total_types.map((totalType) => (
-                  <TableHead key={totalType} colSpan={6} className="whitespace-nowrap border-r text-center text-xs font-semibold">{totalType}总分</TableHead>
+                  <TableHead key={totalType} colSpan={2} className="whitespace-nowrap border-r text-center text-xs font-semibold">{totalType}总分</TableHead>
                 ))}
               </TableRow>
               <TableRow className="bg-slate-50">
@@ -404,10 +393,6 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                 ] : [])}
                 {resolved.total_types.flatMap((totalType) => [
                   <TableHead key={`${totalType}-avg`} className="whitespace-nowrap text-center text-xs">均分</TableHead>,
-                  <TableHead key={`${totalType}-pass`} className="whitespace-nowrap text-center text-xs">及格率</TableHead>,
-                  <TableHead key={`${totalType}-high`} className="whitespace-nowrap text-center text-xs">高分率</TableHead>,
-                  <TableHead key={`${totalType}-low`} className="whitespace-nowrap text-center text-xs">低分率</TableHead>,
-                  <TableHead key={`${totalType}-sd`} className="whitespace-nowrap text-center text-xs">标准差</TableHead>,
                   <TableHead key={`${totalType}-rank`} className="whitespace-nowrap border-r text-center text-xs">班型排名</TableHead>,
                 ])}
               </TableRow>
@@ -443,17 +428,13 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                             const entry = row.totals[totalType]
                             return [
                               <TableCell key={`${totalType}-avg`} className="text-right tabular-nums text-sm font-medium">{formatScore(entry?.均分)}</TableCell>,
-                              <TableCell key={`${totalType}-pass`} className="text-right tabular-nums text-sm">{formatRate(entry?.及格率)}</TableCell>,
-                              <TableCell key={`${totalType}-high`} className="text-right tabular-nums text-sm">{formatRate(entry?.高分率)}</TableCell>,
-                              <TableCell key={`${totalType}-low`} className="text-right tabular-nums text-sm">{formatRate(entry?.低分率)}</TableCell>,
-                              <TableCell key={`${totalType}-sd`} className="text-right tabular-nums text-sm">{entry?.标准差 == null ? '—' : String(entry.标准差)}</TableCell>,
                               <TableCell key={`${totalType}-rank`} className="border-r text-center tabular-nums text-sm font-medium">{row.total_ranks[totalType] ?? '—'}</TableCell>,
                             ]
                           })}
                         </TableRow>
                       )
                     })}
-                    {/* 班型分组汇总：平均/最高/最低（对均分与率、标准差列均有意义；排名列留空） */}
+                    {/* 班型分组汇总：平均/最高/最低（排名列留空） */}
                     {summaryKinds.map((kind, kindIndex) => (
                       <TableRow key={`${start}-${kind}`} data-summary={kind}>
                         {kindIndex === 0 ? <TableCell rowSpan={3} className={cn('whitespace-nowrap border-r align-middle text-xs font-semibold', tableStyles.summaryGroup)}>{groupRows[0].class_type ?? '未分类'}汇总</TableCell> : null}
@@ -469,10 +450,6 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                         })}
                         {resolved.total_types.flatMap((totalType) => [
                           <TableCell key={`${totalType}-avg`} className="text-right tabular-nums text-sm font-semibold">{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.均分, kind))}</TableCell>,
-                          <TableCell key={`${totalType}-pass`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.及格率, kind))}</TableCell>,
-                          <TableCell key={`${totalType}-high`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.高分率, kind))}</TableCell>,
-                          <TableCell key={`${totalType}-low`}>{formatRate(summaryNumber(groupRows, (row) => row.totals[totalType]?.低分率, kind))}</TableCell>,
-                          <TableCell key={`${totalType}-sd`}>{formatScore(summaryNumber(groupRows, (row) => row.totals[totalType]?.标准差, kind))}</TableCell>,
                           <TableCell key={`${totalType}-rank`} className="border-r" />,
                         ])}
                       </TableRow>
