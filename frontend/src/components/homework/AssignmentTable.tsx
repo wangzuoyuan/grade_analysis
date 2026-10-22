@@ -1568,9 +1568,10 @@ function AssignmentDetailView({
 }
 
 /** 当日全科透视面板：汇总展示当日各科概况与待跟进学生（缺交/迟到/负面评价）。
- * 性能口径：全班名单只拉一次（取当日任一批次明细）；各学生的异常归属
- * 全部来自列表项自带的例外学生 ID（excused/missing/attendance/negative_ids），
- * 不再对每个批次各发一次明细请求。 */
+ * 名册口径：当日全部有效批次明细「应交∪有记录」名单的并集——任一批次都可能
+ * 是部分名单（如教学域共享投影只含关联生），不能只取其中一个批次当全班。
+ * 各学生的异常归属全部来自列表项自带的例外学生 ID
+ * （excused/missing/attendance/negative_ids）。 */
 function DayGroupOverview({
   assignments,
   mode,
@@ -1610,27 +1611,44 @@ function DayGroupOverview({
   )
 
   useEffect(() => {
-    // 名册：取当日任一有效批次的全班名单（含姓名），一天只发一次请求
-    const first = activeAssignments[0]
+    // 名册：当日全部有效批次明细名单求并集（含姓名）；个别批次明细失败不拖垮整份透视
     let cancelled = false
     setLoading(true)
     setError(null)
-    if (!first) {
+    if (activeAssignments.length === 0) {
       setRoster([])
       setLoading(false)
       return
     }
-    homeworkAssignmentDetail(first.assignment_id, mode, scopeQ)
-      .then((d) => {
-        if (cancelled) return
-        setRoster(d.submissions.map((s) => ({ personId: Number(s.person_id), name: s.name || '（未命名）' })))
+    Promise.allSettled(
+      activeAssignments.map((a) => homeworkAssignmentDetail(a.assignment_id, mode, scopeQ))
+    ).then((results) => {
+      if (cancelled) return
+      const fulfilled: Array<Awaited<ReturnType<typeof homeworkAssignmentDetail>>> = []
+      let firstError: unknown = null
+      for (const r of results) {
+        if (r.status === 'fulfilled') fulfilled.push(r.value)
+        else if (firstError === null) firstError = r.reason
+      }
+      if (fulfilled.length === 0) {
+        setError(firstError === null ? '加载失败' : apiErrorMessage(firstError))
         setLoading(false)
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        setError(apiErrorMessage(err))
-        setLoading(false)
-      })
+        return
+      }
+      // 同一学生出现在多个批次时取首次即可：透视只把名单当人员轴，
+      // 提交/缺交等状态全部来自列表项例外 ID，不依赖明细里的状态
+      const byId = new Map<number, { personId: number; name: string }>()
+      for (const d of fulfilled) {
+        for (const s of d.submissions) {
+          const pid = Number(s.person_id)
+          if (!byId.has(pid)) byId.set(pid, { personId: pid, name: s.name || '（未命名）' })
+        }
+      }
+      const roster = Array.from(byId.values())
+      roster.sort((a, b) => a.personId - b.personId)
+      setRoster(roster)
+      setLoading(false)
+    })
     return () => {
       cancelled = true
     }
