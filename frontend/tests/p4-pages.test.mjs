@@ -15,6 +15,10 @@ const reportPage = readFileSync(
 )
 const profilePage = readFileSync(new URL('../src/app/homeroom/profile/page.tsx', import.meta.url), 'utf8')
 const profileView = readFileSync(new URL('../src/components/students/HomeroomProfileView.tsx', import.meta.url), 'utf8')
+const homeworkSubjectsCard = readFileSync(
+  new URL('../src/components/students/StudentHomeworkSubjectsCard.tsx', import.meta.url),
+  'utf8',
+)
 const rosterTable = readFileSync(new URL('../src/components/students/RosterTable.tsx', import.meta.url), 'utf8')
 const studentDialog = readFileSync(new URL('../src/components/students/StudentFormDialog.tsx', import.meta.url), 'utf8')
 const aliasPanel = readFileSync(new URL('../src/components/students/AliasHistoryPanel.tsx', import.meta.url), 'utf8')
@@ -216,4 +220,99 @@ test('上传页 P3 遗留：考试名/日期覆盖输入；row_count 标签改�
   assert.match(uploadPage, /\[files, examNameOverride, examDateOverride\]/, '覆盖输入变化须参与 token 作废键')
   assert.doesNotMatch(previewTable, />行数</, '预览表不得再用「行数」标签')
   assert.match(previewTable, /成绩条目/, 'row_count 标签应为「成绩条目」')
+})
+
+test('档案页「个人作业与成绩分析」全科并列卡：挂作业卡上方、14 天窗口、无学科筛选（2026-10-22）', () => {
+  assert.match(
+    profileView,
+    /import StudentHomeworkSubjectsCard from '@\/components\/students\/StudentHomeworkSubjectsCard'/,
+    '档案视图导入全科作业并列卡',
+  )
+  const mountIdx = profileView.indexOf('<StudentHomeworkSubjectsCard')
+  const hwIdx = profileView.indexOf('<HomeworkCard')
+  assert.ok(mountIdx > 0 && hwIdx > 0 && mountIdx < hwIdx, '全科作业卡须挂在 HomeworkCard 上方')
+  assert.match(
+    profileView,
+    /<StudentHomeworkSubjectsCard\s+personId=\{Number\(selectedPersonId\)\}\s+academicYearId=\{scopeQ\.academic_year_id\}\s*\/>/,
+    '装配参数：person_id + 学年（mode 恒班主任域，不传）',
+  )
+  // 数据契约：单生全科一次请求，窗口固定 14 天，迟到回包按请求序号丢弃
+  assert.match(
+    homeworkSubjectsCard,
+    /studentHomeworkSubjects\(\{ person_id: personId, academic_year_id: academicYearId, window_days: 14 \}\)/,
+    '须调用 studentHomeworkSubjects 且 window_days=14',
+  )
+  assert.match(homeworkSubjectsCard, /if \(req !== reqRef\.current\) return/, '切换学生后的迟到回包须丢弃')
+  assert.match(homeworkSubjectsCard, /个人作业与成绩分析/, '卡片标题')
+  assert.match(
+    homeworkSubjectsCard,
+    /各学科考前作业提交率与成绩变化并列对比；语数英与高一用年级百分位（前%），高二\/高三六选科用等级分/,
+    '口径描述',
+  )
+  assert.match(homeworkSubjectsCard, /grid gap-3 md:grid-cols-2 xl:grid-cols-3/, '学科块三列网格')
+  assert.match(homeworkSubjectsCard, /配对 \{series\.paired_n\} 场/, '配对场数徽标')
+  assert.match(homeworkSubjectsCard, /该生暂无可配对的考试与作业记录/, 'subjects 为空的空态提示')
+  // 双迷你图契约：提交率蓝 0–100%；成绩紫，百分位口径 reversed（越上越靠前）
+  assert.match(homeworkSubjectsCard, /#0ea5e9/, '提交率线蓝色')
+  assert.match(homeworkSubjectsCard, /#8b5cf6/, '成绩线紫色')
+  assert.match(homeworkSubjectsCard, /domain=\{\[0, 100\]\}|domain=\[0, 100\]/, '提交率 Y 域 0–100')
+  assert.match(homeworkSubjectsCard, /reversed=\{allPercentile\}/, '百分位口径 Y 轴 reversed')
+  assert.match(homeworkSubjectsCard, /`前\$\{v\}%`/, '百分位口径 Y 轴刻度「前X%」')
+  assert.match(homeworkSubjectsCard, /p\.exam_date != null && p\.exam_date !== ''/, '点只取考试日期非空者')
+  assert.match(homeworkSubjectsCard, /connectNulls=\{false\}/, '缺考点断线')
+  assert.match(homeworkSubjectsCard, /isAnimationActive=\{false\}/, '关闭动画')
+  assert.match(homeworkSubjectsCard, /subjectAchievementLabel\(latest\)/, '最近成绩用共享格式化（student-homework.ts）')
+  assert.doesNotMatch(homeworkSubjectsCard, /分析学科/, '全科并列，不得引入学科筛选下拉')
+})
+
+test('档案页历次走势拆图A各科/图B总分：图例按钮点选筛选、缺考点断线（2026-10-22）', () => {
+  assert.match(profileView, /<LineChartIcon className="h-4 w-4" \/>\s*历次走势\s*<\/CardTitle>/, '走势卡标题')
+  assert.match(profileView, /图A · 各科成绩走势（原始分）/, '图A 各科原始分')
+  assert.match(profileView, /图B · 总分走势/, '图B 总分口径')
+  // 图例筛选：自定义小按钮组（过滤渲染时须保留图例条目可再点回，故不用默认 Legend）
+  assert.match(profileView, /hiddenSubjects/, '学科显隐状态')
+  assert.match(profileView, /hiddenTotals/, '总分口径显隐状态')
+  assert.match(profileView, /onClick=\{\(\) => toggleSubject\(sub\)\}/, '图例按钮切换学科')
+  assert.match(profileView, /onClick=\{\(\) => toggleTotal\(t\)\}/, '图例按钮切换总分口径')
+  assert.match(profileView, /aria-pressed=\{active\}/, '图例按钮带按压态')
+  assert.match(profileView, /const visibleSubjects = allSubjects\.filter\(\(s\) => !hiddenSubjects\.has\(s\)\)/, '渲染前过滤隐藏学科')
+  assert.match(profileView, /const visibleTotals = totalTypes\.filter\(\(t\) => !hiddenTotals\.has\(t\)\)/, '渲染前过滤隐藏口径')
+  assert.match(profileView, /\{visibleSubjects\.map\(\(sub\) => \(/, '图A 按可见学科渲染 Line')
+  assert.match(profileView, /\{visibleTotals\.map\(\(t\) => \(/, '图B 按可见口径渲染 Line')
+  assert.match(profileView, /connectNulls=\{false\}/, '缺考点不连线')
+  assert.match(profileView, /angle=\{-15\}/, 'X 轴考试名斜排')
+  assert.match(profileView, /dataKey=\{sub\}/, '图A 每学科一条线（dataKey=学科名）')
+  assert.match(profileView, /name=\{totalTypeLabel\(t\)\}/, '图B 线名用口径展示名')
+})
+
+test('档案页历次明细表：总分组列 + 校名次小字 + 选修等级分小字 + 口径脚注（2026-10-22）', () => {
+  assert.match(profileView, /totalTypeLabel\(t\)/, '总分列头走口径映射')
+  for (const [k, label] of [
+    ['+3', '+3总分（等级和）'],
+    ['主三门', '三门总分'],
+    ['3+3', '3+3总分'],
+    ['五门', '五门总分'],
+    ['九门', '九门总分'],
+  ]) {
+    assert.ok(profileView.includes(`'${k}': '${label}',`), `口径 ${k} 应映射为「${label}」`)
+  }
+  assert.match(profileView, /cell\.rank != null && \(/, '校名次非空才显示')
+  assert.match(profileView, / · 第\{cell\.rank\}名/, '名次小字「 · 第N名」')
+  assert.match(profileView, /text-\[10px\] text-slate-400/, '等级分小字样式')
+  assert.match(profileView, /等\{fmtScore\(cell\.grade_score\)\}/, '选修等级分小字「等N」')
+  assert.match(
+    profileView,
+    /\+3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加；总分行的『第N名』为校名次。/,
+    '脚注说明 +3 口径与校名次',
+  )
+  assert.doesNotMatch(profileView, /total_score/, '旧「总分」单列（total_score）已删除')
+  // 列头顺序：考试名称 / 考试日期 / 各科（report.subjects 序）/ 总分列（report.totals 序）
+  const nameIdx = profileView.indexOf('>考试名称<')
+  const dateIdx = profileView.indexOf('>考试日期<')
+  const subjectsHeadIdx = profileView.indexOf('{allSubjects.map((sub) => (')
+  const totalsHeadIdx = profileView.indexOf('{totalTypes.map((t) => (')
+  assert.ok(
+    nameIdx > 0 && dateIdx > nameIdx && subjectsHeadIdx > dateIdx && totalsHeadIdx > subjectsHeadIdx,
+    '列头顺序 = 考试名称→考试日期→各科→总分口径',
+  )
 })

@@ -78,12 +78,9 @@ test('student 搜索页最新一场成绩按 exam_key 请求', () => {
   )
 })
 
-test('compare 旧模板页初始选中用 exam_key ?? exam_name', () => {
-  assert.match(
-    comparePage,
-    /setSelectedExam\(sorted\[0\]\.exam_key \?\? sorted\[0\]\.exam_name\)/,
-    '初始 state 必须 canonical 化为 exam_key ?? exam_name',
-  )
+test('compare 页样本估算视图退役（2026-10-22），旧模板 exam_key 初始选中断言随之退役', () => {
+  assert.match(comparePage, /<TeachingPlatformCompare \/>/, '教学模式渲染官方质量分析主视图')
+  assert.doesNotMatch(comparePage, /setSelectedExam\(sorted\[0\]\.exam_key/, '旧模板视图已删除，本页不再有 listExams 初始选中逻辑')
 })
 
 test('两成绩页（已修基线，防回退）：初始 state 用 exam_key', () => {

@@ -272,6 +272,21 @@ def _teaching_exam_grade(db, entries, class_ids):
     return next(iter(grades)) if len(grades) == 1 else None
 
 
+def _exam_grade_of_facts(db: Session, facts) -> Optional[int]:
+    """列序年级（2026-10-22 拍板的学科/总分规范列序）：取事实关联的考试
+    事件 grade（归并到 canonical 根）；事实无事件（legacy）、事件无年级或
+    同场年级混杂 → None（order_totals 回退既有字母序）。"""
+    from app.api import exam_events as events
+
+    grades = set()
+    for fact in facts:
+        if fact.exam_event_id:
+            event = db.get(WorkspaceExamEvent, events.canonical_id(db, fact.exam_event_id))
+            if event is not None and event.grade in (1, 2, 3):
+                grades.add(event.grade)
+    return next(iter(grades)) if len(grades) == 1 else None
+
+
 def _resolve_homeroom_ctx(db: Session, teacher_id: int, academic_year_id, class_id, term_id):
     """homeroom 分析端点的作用域解析（与 students.py 画像同模式：
     class_id 可选，缺省取教师绑定班；非绑定班 404）。"""
@@ -368,6 +383,9 @@ def homeroom_exam_stats(
     member_ids = _exam_member_ids(db, ctx, exam_name)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
     facts = [e.fact for e in entries]
+    # 2026-10-22 列序拍板：学科/总分按规范序输出（年级取该考试事件的
+    # grade；事件年级不可得 → 总分回退字母序）。
+    exam_grade = _exam_grade_of_facts(db, facts)
     by_subject: Dict[str, List] = {}
     by_total: Dict[str, List] = {}
     for f in facts:
@@ -379,7 +397,7 @@ def homeroom_exam_stats(
     subjects = []
     totals = []
     small_sample = False
-    for subject in sorted(by_subject):
+    for subject in defs.order_subjects(by_subject):
         valid = [f.score for f in by_subject[subject] if f.score is not None]
         if len(valid) < 5:
             small_sample = True
@@ -394,7 +412,7 @@ def homeroom_exam_stats(
                 score_basis="raw",
             )
         )
-    for total_type in sorted(by_total):
+    for total_type in defs.order_totals(by_total, exam_grade):
         valid = [f.score for f in by_total[total_type] if f.score is not None]
         if len(valid) < 5:
             small_sample = True
@@ -588,11 +606,14 @@ def homeroom_exam_students(
     if not entries:
         return HomeroomExamStudentsResponse(metadata=_analysis_metadata(ctx, "exam"), students=[])
 
-    subject_keys = sorted(
+    # 2026-10-22 列序拍板：scores/grade_scores/percentiles/totals/ranks 的
+    # 键序按规范序输出（学科语数英+六选科；总分按事件年级的口径序）。
+    subject_keys = defs.order_subjects(
         {e.fact.subject for e in entries if e.fact.total_type is None}
     )
-    total_keys = sorted(
-        {e.fact.total_type for e in entries if e.fact.total_type is not None}
+    total_keys = defs.order_totals(
+        {e.fact.total_type for e in entries if e.fact.total_type is not None},
+        _exam_grade_of_facts(db, [e.fact for e in entries]),
     )
     by_person: Dict[int, Dict[str, Optional[float]]] = {}
     totals_by_person: Dict[int, Dict[str, Optional[float]]] = {}

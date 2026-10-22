@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.api import _queries as q
 from app.api import current_teacher_id, domain_endpoint
+from app.api.exam_events import canonical_id
+from app.analysis.definitions import order_subjects, order_totals, resolve_year_rank
 from app.api.schemas import (
     Metadata,
     PersonInfo,
@@ -33,6 +35,7 @@ from app.api.schemas import (
 from app.core.context import WorkspaceContext, resolve_workspace_context
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
 from app.db.models import get_db
+from app.db.workspace_models import WorkspaceExamEvent
 
 router = APIRouter(tags=["students"])
 
@@ -172,15 +175,39 @@ def teaching_students(
 # ────────────────────────────── 画像 ──────────────────────────────
 
 
-def _exam_entry(fact, source_domain: str, db=None) -> ProfileExam:
+def _exam_entry(fact, source_domain: str, db=None, rank: Optional[int] = None) -> ProfileExam:
     return ProfileExam(
         exam_name=q.exam_label(db, q.fact_key(db, fact)) if db is not None and fact.exam_event_id else fact.exam_name,
         exam_date=q.display_exam_date(fact),
         score=fact.score,
         grade_score=fact.grade_score,
         grade_percentile=fact.grade_percentile,
+        # 2026-10-22：总分行带校名次（学籍名次优先）；单科行调用方不传，恒 None。
+        rank=rank,
         source_domain=source_domain,
     )
+
+
+def _report_grade_of(db, facts) -> Optional[int]:
+    """画像/报告的列序年级（2026-10-22 拍板）：该生有成绩事实的考试事件中，
+    按考试日期倒序取第一个 grade 非 None 的年级（最新一场能定位年级的考试）。
+    无关联事件（legacy 事实）或事件均无年级 → None，order_totals 回退字母序。
+    与 students_mgmt.student_report 共用（导入自本模块），两处列序保持一致。"""
+    dated = sorted(
+        ((fact.exam_date, fact.exam_event_id) for fact in facts if fact.exam_event_id),
+        key=lambda pair: pair[0] or date.min,  # 无日期兜底排最后
+        reverse=True,  # 考试日期倒序：最新一场优先
+    )
+    seen_roots = set()
+    for _exam_date, event_id in dated:
+        root = canonical_id(db, event_id)
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        event = db.get(WorkspaceExamEvent, root)
+        if event is not None and event.grade in (1, 2, 3):
+            return event.grade
+    return None
 
 
 def _group_exams(facts, source_domain: str, db=None):
@@ -231,24 +258,37 @@ def homeroom_student_profile(
     ):
         grouped.setdefault(fact.subject, []).append(_exam_entry(fact, "homeroom", db))
 
-    subjects = [SubjectGroup(subject=subject, exams=exams) for subject, exams in grouped.items()]
     totals_grouped: dict = {}
     for fact in sorted(
         total_facts,
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
         totals_grouped.setdefault(fact.total_type, []).append(
-            _exam_entry(fact, "homeroom", db)
+            # 总分行带校名次（学籍名次优先）；单科行不传 rank 恒 None
+            _exam_entry(
+                fact,
+                "homeroom",
+                db,
+                rank=resolve_year_rank(fact.xueji_rank, fact.grade_rank),
+            )
         )
+    # 2026-10-22 列序拍板：学科/总分按规范序输出。年级与
+    # students_mgmt.student_report 同一逻辑（最新一场可定位年级的考试事件），
+    # 画像页与打印页列序保持一致；年级不可得 → 总分回退字母序。
+    report_grade = _report_grade_of(db, [e.fact for e in entries])
+    subjects = [
+        SubjectGroup(subject=subject, exams=grouped[subject])
+        for subject in order_subjects(grouped)
+    ]
     totals = [
-        TotalGroup(total_type=total_type, exams=exams)
-        for total_type, exams in totals_grouped.items()
+        TotalGroup(total_type=total_type, exams=totals_grouped[total_type])
+        for total_type in order_totals(totals_grouped, report_grade)
     ]
     return StudentProfileResponse(
         metadata=_metadata(ctx),
         person=PersonInfo(person_id=person_id, name=names.get(person_id), domain="homeroom"),
-        subjects=sorted(subjects, key=lambda group: group.subject),
-        totals=sorted(totals, key=lambda group: group.total_type),
+        subjects=subjects,
+        totals=totals,
     )
 
 

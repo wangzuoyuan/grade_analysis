@@ -8,6 +8,7 @@ import ts from 'typescript'
 
 // 执行页面中的真实表格组件，验证合并格和数据位置，而不是检查源码写法。
 const source = readFileSync(new URL('../src/components/scores/HomeroomScores.tsx', import.meta.url), 'utf8')
+const tableCss = readFileSync(new URL('../src/components/scores/homeroom-tables.module.css', import.meta.url), 'utf8')
 const ast = ts.createSourceFile('HomeroomScores.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
 const names = new Set(['subjectColumnGroups', 'summaryNumber', 'ClassAveragesTable'])
 const extracted = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
@@ -23,7 +24,7 @@ const tags = {
 const scope = {
   React, Fragment: React.Fragment,
   cn: (...args) => args.filter(Boolean).join(' '),
-  tableStyles: Object.fromEntries(['table', 'classType', 'classNumber', 'currentClassNumber', 'summaryGroup', 'summaryLabel'].map(key => [key, key])),
+  tableStyles: Object.fromEntries(['table', 'classType', 'classNumber', 'currentClassNumber', 'summaryGroup', 'summaryLabel', 'stickyCol'].map(key => [key, key])),
   formatScore: value => value == null ? '—' : Number.isInteger(value) ? String(value) : value.toFixed(1),
   ...tags,
 }
@@ -57,4 +58,35 @@ test('平行班汇总紧随本组成绩，实验班汇总紧随实验班，合�
   assert.match(rows[6], />90<\/td>/)
   assert.equal((body.match(/汇总<\/td>/g) ?? []).length, 2, '每组名称仅渲染一次')
   assert.doesNotMatch(body, /及格率|高分率|低分率|标准差|80%|>10<\/td>/, '总分率值/标准差列已删除：后端五指标包在场也不渲染')
+  // 2026-10-22 尺寸改造：限高双轴滚动 + 两级粘性表头（module.css 统一注入 top/z/行高）+ 冻结前两列
+  assert.match(markup, /max-h-\[70vh\]/, '均分表容器限高 70vh')
+  assert.match(markup, /overflow-auto/, '容器双轴滚动')
+  assert.match(tableCss, /thead tr:first-child th\s*\{\s*position: sticky;\s*top: 0;\s*z-index: 30;/, '第一级表头吸顶（含 rowSpan 跨行格）')
+  assert.match(tableCss, /thead tr:nth-child\(2\) th\s*\{\s*position: sticky;\s*top: 2rem;/, '第二级表头吸在第一级正下方（第一级行高 2rem）')
+  assert.match(tableCss, /height: 2rem;/, '两级表头固定行高保证偏移对齐')
+  assert.match(tableCss, /border-collapse: separate/, 'separate 边框：collapse 下粘性格边框不随定位移动')
+  assert.match(tableCss, /td\.stickyCol\s*\{\s*background: inherit/, '冻结列背景继承所在行（斑马纹/汇总/悬浮同步，防滚动透字）')
+  assert.match(markup, /sticky left-0 w-24/, '班级类型表头冻结在最左')
+  assert.match(markup, /sticky left-24 w-16/, '班级表头冻结在类型列右侧（left=类型列宽 6rem）')
+  assert.match(body, /sticky left-0 z-10 w-24/, '数据行班级类型格冻结')
+  assert.match(body, /sticky left-24 z-10 w-16/, '数据行班级格冻结')
+  assert.match(body, /stickyCol/, '冻结格带不透明背景类')
+})
+
+test('2026-10-22 明细表尺寸：限高容器+粘性表头+冻结学号/姓名列+3+3口径脚注', () => {
+  const studentsIdx = source.indexOf('学生成绩明细表')
+  const studentsTabIdx = source.indexOf('value="students"')
+  assert.ok(studentsIdx > 0 && studentsTabIdx > 0, '应能定位学生成绩明细表板块')
+  // 明细表容器限高 + 内层 Table 包装交还滚动容器（sticky 绑定外层）
+  const containerIdx = source.indexOf('max-h-[70vh] overflow-auto rounded-lg border border-slate-200', studentsTabIdx)
+  assert.ok(containerIdx > 0, '明细表容器应限高 70vh 双轴滚动')
+  assert.match(source.slice(studentsTabIdx, containerIdx + 400), /wrapperClassName="overflow-visible"/, '内层 Table 包装须 overflow-visible（否则 sticky 被内层滚动容器截胡）')
+  // 冻结学号（w-24）/姓名（left-24，紧贴学号列右缘）两列：表头 + 数据格
+  // （表头吸顶由 module.css 注入，JSX 侧只断言冻结列的 left 偏移与列宽）
+  assert.match(source, /sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs">学号/, '学号表头冻结最左')
+  assert.match(source, /sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs">姓名/, '姓名表头冻结在学号右侧')
+  assert.match(source, /sticky left-0 z-10 w-24 whitespace-nowrap border-r text-xs tabular-nums/, '学号数据格冻结')
+  assert.match(source, /sticky left-24 z-10 w-20 whitespace-nowrap border-r text-sm font-medium/, '姓名数据格冻结')
+  // +3 口径脚注
+  assert.match(source, /\+3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加。/, '+3 口径脚注必须在场')
 })

@@ -87,8 +87,6 @@ import {
 import { cn } from '@/lib/utils'
 import { displayStudentId } from '@/lib/student-id'
 import { compareStudentIds } from '@/lib/student-order'
-import { CorrelationCard } from '@/components/homework/CorrelationCard'
-import { homeworkScopeQuery } from '@/components/homework/shared'
 import {
   Tooltip as UITooltip,
   TooltipContent,
@@ -102,6 +100,10 @@ import { bandBarColor, INFERNO_ANCHORS } from './band-colors'
 import tableStyles from './homeroom-tables.module.css'
 
 const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e05a68', '#64748b', '#0d9488', '#c2410c']
+
+/** ?tab= 直达白名单（2026-10-22）：仪表盘摘要卡等外链按 tab 锚点进入对应分析板块；
+ *  仅作初次进入的初始值（Tabs 非受控 defaultValue），页内切换照旧，非法值回退班级均分表。 */
+const SCORES_TABS = new Set(['averages', 'students', 'bands', 'duanwei', 'frequency', 'range', 'focus'])
 
 function TrendChart({
   title,
@@ -370,12 +372,15 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
         </Button>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto rounded-lg border border-slate-200">
-          <Table className={cn('min-w-max', tableStyles.table)}>
+        {/* 2026-10-22 尺寸改造：限高双轴滚动 + 两级粘性表头 + 冻结前两列（类型/班级）；
+            内层 Table 自带 overflow-auto 包装会截胡 sticky，须以 overflow-visible 交还外层滚动容器 */}
+        <div className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200">
+          <Table wrapperClassName="overflow-visible" className={cn('min-w-max', tableStyles.table)}>
             <TableHeader>
               <TableRow className="bg-slate-100">
-                <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级类型</TableHead>
-                <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
+                {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；此处只负责冻结列 left 偏移 */}
+                <TableHead rowSpan={2} className="sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs">班级类型</TableHead>
+                <TableHead rowSpan={2} className="sticky left-24 w-16 whitespace-nowrap border-r text-center text-xs">班级</TableHead>
                 <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班主任</TableHead>
                 {subjectGroups.map((g) => g.paired ? (
                   <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
@@ -408,9 +413,9 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                       return (
                         <TableRow key={String(row.class_num)} data-stripe={groupIndex % 2 === 1}>
                           {typeSpans[idx] > 0 ? (
-                            <TableCell rowSpan={typeSpans[idx]} className={cn('whitespace-nowrap border-r align-middle text-center text-xs', tableStyles.classType)}>{row.class_type ?? '未分类'}</TableCell>
+                            <TableCell rowSpan={typeSpans[idx]} className={cn('sticky left-0 z-10 w-24 whitespace-nowrap border-r align-middle text-center text-xs', tableStyles.classType, tableStyles.stickyCol)}>{row.class_type ?? '未分类'}</TableCell>
                           ) : null}
-                          <TableCell className={cn('border-r text-center text-sm font-medium', tableStyles.classNumber, isCurrent && tableStyles.currentClassNumber)}>
+                          <TableCell className={cn('sticky left-24 z-10 w-16 border-r text-center text-sm font-medium', tableStyles.classNumber, tableStyles.stickyCol, isCurrent && tableStyles.currentClassNumber)}>
                             {String(row.class_num).padStart(2, '0')}
                             {isCurrent ? <span className="block text-xs">本班</span> : null}
                           </TableCell>
@@ -437,8 +442,8 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
                     {/* 班型分组汇总：平均/最高/最低（排名列留空） */}
                     {summaryKinds.map((kind, kindIndex) => (
                       <TableRow key={`${start}-${kind}`} data-summary={kind}>
-                        {kindIndex === 0 ? <TableCell rowSpan={3} className={cn('whitespace-nowrap border-r align-middle text-xs font-semibold', tableStyles.summaryGroup)}>{groupRows[0].class_type ?? '未分类'}汇总</TableCell> : null}
-                        <TableCell colSpan={2} className={cn('border-r text-xs font-semibold', tableStyles.summaryLabel)}>{kind}</TableCell>
+                        {kindIndex === 0 ? <TableCell rowSpan={3} className={cn('sticky left-0 z-10 w-24 whitespace-nowrap border-r align-middle text-xs font-semibold', tableStyles.summaryGroup, tableStyles.stickyCol)}>{groupRows[0].class_type ?? '未分类'}汇总</TableCell> : null}
+                        <TableCell colSpan={2} className={cn('sticky left-24 z-10 border-r text-xs font-semibold', tableStyles.summaryLabel, tableStyles.stickyCol)}>{kind}</TableCell>
                         {subjectGroups.map((g) => {
                           if (!g.paired) {
                             return <TableCell key={g.subject} className="border-r text-right tabular-nums text-sm font-semibold">{formatScore(summaryNumber(groupRows, (row) => row.subjects[g.subject], kind))}</TableCell>
@@ -622,9 +627,12 @@ function RankBandsPanel({ data }: { data: HomeroomRankBandsResponse }) {
 }
 
 export function HomeroomScores() {
-  const { filter, generation, switching, scope } = useWorkspace()
+  const { filter, generation, switching } = useWorkspace()
   const searchParams = useSearchParams()
   const requestedExam = searchParams.get('exam')
+  // ?tab= 直达（2026-10-22）：白名单内的板块作为初始 tab；非法/缺省保持原默认
+  const requestedTab = searchParams.get('tab')
+  const initialTab = requestedTab != null && SCORES_TABS.has(requestedTab) ? requestedTab : 'averages'
   // 考试清单
   const [exams, setExams] = useState<ExamSummary[] | null>(null)
   const [examsError, setExamsError] = useState<string | null>(null)
@@ -692,10 +700,6 @@ export function HomeroomScores() {
   const trendsReqRef = useRef(0)
 
   const scopeQ = useMemo(() => analysisScopeQuery(filter), [filter])
-
-  // 相关性卡走作业域作用域（homeworkScopeQuery，不带 term_id），考试跟随页面顶部选择
-  const hwScopeQ = useMemo(() => homeworkScopeQuery(filter), [filter])
-  const scopeSubject = scope?.subject ?? null
 
   // 考试清单：跟随工作台筛选/世代变化整体重置（仅考试列表自身状态；
   // stats/students/bands/trends 由各自 effect 的 scopeQ/考试依赖负责重置，互不作废）
@@ -1115,7 +1119,7 @@ export function HomeroomScores() {
                 </CardContent>
               </Card>
 
-              <Tabs defaultValue="averages" className="space-y-4">
+              <Tabs defaultValue={initialTab} className="space-y-4">
                 <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-xl bg-slate-100/80 p-1 print:hidden">
                   <TabsTrigger value="averages" className="whitespace-nowrap">班级均分表</TabsTrigger>
                   <TabsTrigger value="students" className="whitespace-nowrap">学生成绩明细表</TabsTrigger>
@@ -1159,14 +1163,18 @@ export function HomeroomScores() {
                       </p>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
-                      <Table className={cn('min-w-max', tableStyles.table)}>
+                    <div className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200">
+                      {/* 2026-10-22 尺寸改造：限高双轴滚动 + 两级粘性表头 + 冻结学号/姓名列
+                          （班级/学籍两列在其下横向滑过）；内层 Table 包装以 overflow-visible
+                          交还外层滚动容器，sticky 才能同时吸顶/冻结 */}
+                      <Table wrapperClassName="overflow-visible" className={cn('min-w-max', tableStyles.table)}>
                         <TableHeader>
                           <TableRow className="bg-slate-100">
-                            <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学号</TableHead>
+                            {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；此处只负责冻结列 left 偏移 */}
+                            <TableHead rowSpan={2} className="sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs">学号</TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学籍</TableHead>
-                            <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">姓名</TableHead>
+                            <TableHead rowSpan={2} className="sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs">姓名</TableHead>
                             {subjectColumnGroups(subjectCols).map((g) => g.paired ? (
                               <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
                             ) : (
@@ -1208,7 +1216,7 @@ export function HomeroomScores() {
                                   aria-expanded={expanded}
                                   onClick={() => setExpandedPerson(expanded ? null : key)}
                                 >
-                                  <TableCell className="whitespace-nowrap border-r text-xs tabular-nums text-slate-500">
+                                  <TableCell className={cn('sticky left-0 z-10 w-24 whitespace-nowrap border-r text-xs tabular-nums text-slate-500', tableStyles.stickyCol)}>
                                     {displayStudentId(s.alias) || '—'}
                                   </TableCell>
                                   <TableCell className="border-r text-center text-xs text-slate-500">
@@ -1217,7 +1225,7 @@ export function HomeroomScores() {
                                   <TableCell className="border-r text-center text-xs text-slate-500">
                                     {s.xueji != null ? String(s.xueji) : '—'}
                                   </TableCell>
-                                  <TableCell className="whitespace-nowrap border-r text-sm font-medium text-slate-900">
+                                  <TableCell className={cn('sticky left-24 z-10 w-20 whitespace-nowrap border-r text-sm font-medium text-slate-900', tableStyles.stickyCol)}>
                                     {s.name ?? '（未命名）'}
                                   </TableCell>
                                   {subjectColumnGroups(subjectCols).flatMap((g) => {
@@ -1322,6 +1330,10 @@ export function HomeroomScores() {
                       </Table>
                     </div>
                   )}
+                  {/* 2026-10-22：+3 口径脚注（学校导出口径说明） */}
+                  <p className="mt-2 text-xs text-slate-400">
+                    +3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加。
+                  </p>
                 </CardContent>
               </Card>
                 </TabsContent>
@@ -1719,9 +1731,6 @@ export function HomeroomScores() {
           </CardContent>
         </Card>
       )}
-
-      {/* 契约 p5 §7 相关性散点卡（r 不可计算态）；挂两域成绩分析页底部，考试跟随顶部选择 */}
-      <CorrelationCard mode="homeroom" scopeQ={hwScopeQ} scopeSubject={scopeSubject} generation={generation} preferredExamName={selectedExam} />
 
     </div>
   )

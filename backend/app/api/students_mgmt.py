@@ -29,7 +29,12 @@ from app.api import _queries as q
 from app.api import current_teacher_id, domain_endpoint
 from app.api.schemas import SubjectGroup, TotalGroup
 from app.api.shared import _homeroom_binding, _load_preview_batch
-from app.api.students import _exam_entry, _metadata as _profile_metadata
+from app.api.students import (
+    _exam_entry,
+    _metadata as _profile_metadata,
+    _report_grade_of,
+)
+from app.analysis.definitions import order_subjects, order_totals, resolve_year_rank
 from app.api.students_mgmt_schemas import (
     AliasItem,
     AliasesResponse,
@@ -2834,23 +2839,34 @@ def student_report(
     total_facts = [f for f in facts if f.total_type is not None]
 
     # 2026-10 用户裁决：两域成绩不互通，画像/打印只读本域事实。
+    # 2026-10-22 列序拍板：学科/总分按规范序输出（年级 = 该生最新一场
+    # 可定位年级的考试事件；年级不可得 → 总分回退字母序）。
+    report_grade = _report_grade_of(db, facts)
     grouped: dict = {}
     for fact in sorted(
         subject_facts, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
         grouped.setdefault(fact.subject, []).append(_exam_entry(fact, "homeroom", db))
     subjects = [
-        SubjectGroup(subject=subject, exams=exams)
-        for subject, exams in sorted(grouped.items())
+        SubjectGroup(subject=subject, exams=grouped[subject])
+        for subject in order_subjects(grouped)
     ]
     totals_grouped: dict = {}
     for fact in sorted(
         total_facts, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
-        totals_grouped.setdefault(fact.total_type, []).append(_exam_entry(fact, "homeroom", db))
+        totals_grouped.setdefault(fact.total_type, []).append(
+            # 总分行带校名次（学籍名次优先）；单科行不传 rank 恒 None
+            _exam_entry(
+                fact,
+                "homeroom",
+                db,
+                rank=resolve_year_rank(fact.xueji_rank, fact.grade_rank),
+            )
+        )
     totals = [
-        TotalGroup(total_type=total_type, exams=exams)
-        for total_type, exams in sorted(totals_grouped.items())
+        TotalGroup(total_type=total_type, exams=totals_grouped[total_type])
+        for total_type in order_totals(totals_grouped, report_grade)
     ]
 
     enrollment = _strict_current_enrollment(db, ctx.class_ids[0], person_id, ctx.as_of)

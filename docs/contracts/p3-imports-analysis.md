@@ -105,6 +105,9 @@
 - `grade_score Float NULL`：等级分/赋分列（E03；原始分仍在 `score`，缺考两者皆 NULL）。
   teaching 上传含等级分列时一并入库；homeroom 含则同规则。读取响应在 ScoreRow/ProfileExam 增加可选
   `grade_score`。
+  **2026-10-22**：ProfileExam 增可选 `rank`（校名次，resolve_year_rank 口径：学籍名次优先、
+  其次年级名次，缺考/无名次 null）——仅画像与打印报告的**总分行**考试点有值，单科行恒 null
+  （档案页总分行显示「第N名」）。
 
 ### 1.4 `GET /api/v1/shared/exams?mode=&academic_year_id=&class_id=|teaching_class_id=`
 
@@ -142,6 +145,21 @@
 
 
 ## 2. 分析端点（读 ScoreFact；作用域解析/metadata/空态沿用 §1.3/§1.4 既有规则）
+
+### 2.0 学科/总分列序规范（2026-10-22 用户拍板；码点字母序退役）
+
+- stats 的 `subjects`/`totals` 列表序、students 的 `scores`/`grade_scores`/`percentiles`/
+  `totals`/`ranks` 键序、画像与打印报告的 `subjects`/`totals` 分组序，统一按
+  `app.analysis.definitions.order_subjects/order_totals` 输出，不再按 Python sorted()
+  字母序（旧码点序会把「化学、历史、地理、政治、数学…」排在前面）：
+  - 学科：语文、数学、英语、物理、化学、生物、政治、历史、地理（仅列有数据的）；
+    未知学科排已知之后（按名称排序）。
+  - 总分：高一 = 主三门、五门、九门；高二/高三 = +3、主三门、3+3；未知口径排已知之后。
+  - 年级来源：stats/students 取该考试事件的 grade（`_exam_grade_of_facts`，同场年级
+    混杂或不可得 → None）；画像/报告取该生最新一场可定位年级的考试事件
+    （`_report_grade_of`，两处共用保持画像页与打印页一致）。年级不可得（legacy 事实
+    无考试事件）→ 总分保持既有字母序回退，学科序不受影响。
+- class-averages 与 rank-bands 维持各自既有 preferred 顺序，不在本规则范围。
 
 ### 2.1 homeroom（/api/v1/homeroom/analysis/*）
 

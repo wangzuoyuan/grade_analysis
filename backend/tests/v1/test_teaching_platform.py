@@ -225,6 +225,9 @@ def test_school_mixed_import_official_values_and_revision(env):
     response = e.client.get(API + f"/exams/{r['exam_id']}/compare")
     assert response.status_code == 200
     assert len(response.json()['classes']) == 4
+    # is_managed（2026-10-22 柱状图高亮）：教学班 label 命中或行政班任课教师同名
+    managed = {c['class_label']: c['is_managed'] for c in response.json()['classes']}
+    assert managed == {'合成教学0': True, '合成教学1': True, '1': True, '2': False}, managed
     for c in response.json()['classes']:
         m = c['metrics']
         assert m['expected_count'] == 12 and m['actual_count'] == 10

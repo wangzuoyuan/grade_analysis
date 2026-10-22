@@ -100,7 +100,12 @@ export default function WeeklyFocusCard({
     : ''
 
   return (
-    <Card className="border-amber-400/40 bg-gradient-to-b from-amber-50/20 via-white to-white shadow-sm">
+    // id="weekly-focus"：行动首页「待办」摘要卡的锚点落点（同页滚动直达）；
+    // scroll-mt-20 为粘性顶栏遮挡留白，滚动定位后标题不被顶栏盖住。
+    <Card
+      id="weekly-focus"
+      className="scroll-mt-20 border-amber-400/40 bg-gradient-to-b from-amber-50/20 via-white to-white shadow-sm"
+    >
       <CardHeader className="flex-row items-start justify-between space-y-0 pb-3">
         <div>
           <CardTitle className="flex items-center gap-2 text-base font-semibold text-slate-900">

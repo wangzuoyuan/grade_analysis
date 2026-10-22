@@ -51,3 +51,23 @@ export function personalAchievement(point: PersonalHomeworkPoint | null): string
   if (point.basis === 'grade_percentile') return point.percentile == null ? '—' : `前 ${(point.percentile * 100).toFixed(1)}%`
   return `${point.achievement.toFixed(1)} 等级分`
 }
+
+/** 2026-10-22 学生档案「个人作业与成绩分析」全科并列卡（HomeworkSubjectPoint）成绩展示：
+ *  grade_percentile 口径的「前X%」取自 percentile 字段本身（库存口径 = 年级位置，
+ *  p≈rank/N，越大越靠后、越小越好；achievement 是换算后的 100×(1−p)「越大越好」
+ *  分数，不得直接当「前%」展示）；percentile 缺失时按 100−achievement 反推。
+ *  grade_score 口径为等级分（越大越好）。缺考/缺值恒「—」不转 0。 */
+export function subjectAchievementLabel(
+  point: {
+    basis: 'grade_percentile' | 'grade_score' | null
+    achievement: number | null
+    percentile?: number | null
+  } | null | undefined,
+): string {
+  if (point == null || point.achievement == null) return '—'
+  if (point.basis === 'grade_percentile') {
+    const front = point.percentile != null ? point.percentile * 100 : 100 - point.achievement
+    return `前${Number.isInteger(front) ? String(front) : front.toFixed(1)}%`
+  }
+  return `${point.achievement.toFixed(1)} 等级分`
+}

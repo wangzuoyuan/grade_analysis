@@ -73,3 +73,19 @@ test('档案区消费入口：listStudentNotes/createNote/deleteNote 且固定 h
   // mode 固定：不得出现 teaching 域调用（报告页即班主任视图）
   assert.doesNotMatch(reportPage, /(listStudentNotes|createNote|deleteNote)\('teaching'/, '不得读写 teaching 域档案')
 })
+
+test('档案页明细表消费 report.totals 全部口径（score+rank）与各科 grade_score（2026-10-22）', () => {
+  const profileView = readFileSync(
+    new URL('../src/components/students/HomeroomProfileView.tsx', import.meta.url),
+    'utf8',
+  )
+  // examMatrix 收集：totals 逐口径 {score, rank}（不再只取 totals[0]），subjects 保留选修等级分
+  assert.match(
+    profileView,
+    /totals\[t\.total_type\] = \{\s*score: e\.score,\s*rank: e\.rank \?\? null,/,
+    '总分口径收集分数与校名次',
+  )
+  assert.match(profileView, /grade_score: e\.grade_score \?\? null/, '各科单元格保留 grade_score')
+  // KPI「最新考试总分」仍取 totals[0]（后端规范序后第一个即主口径）
+  assert.match(profileView, /const totalGroup = report\.totals\[0\]/, 'KPI 主口径取 totals[0]')
+})

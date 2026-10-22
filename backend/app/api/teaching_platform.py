@@ -544,17 +544,25 @@ def students(exam_id:int,teaching_class_id:int|None=None,db:Session=Depends(get_
 
 
 def comparison(db,exam,ctx):
+    from app.db.models import Teacher
     quality={r.class_kind+":"+r.class_label:r for r in db.query(TeachingClassQuality).filter_by(exam_id=exam.id)}
     samples=student_rows(db,exam,ctx)
+    # 「我教的班级」判定（2026-10-22 柱状图高亮）：教学班按导入时 label 命中
+    # 我管理的教学班（managed_class_id）；行政班无教学班对应，改按官方质量表
+    # 任课教师与当前教师同名判定（单人系统，同名风险可忽略）。
+    _teacher=db.get(Teacher,ctx.teacher_id)
+    _teacher_name=_teacher.name if _teacher else None
     classes=[]
     for c in exam.class_snapshot:
         row=quality.get(class_key(c))
         metrics=row.metrics if row else {}
         sample=[r for r in samples if r["class_id"]==c.get("managed_class_id") and r["score"] is not None]
         estimated=sum(r["score"] for r in sample)/len(sample) if sample else None
+        is_managed=bool(c.get("managed_class_id")) or (
+            _teacher_name is not None and c.get("teacher_name")==_teacher_name)
         classes.append({**c,"id":class_key(c),"metrics":metrics,"source":"official" if row else "estimated" if sample else "unavailable",
             "raw_avg":metrics.get("raw_avg") if row else estimated,"grade_avg":metrics.get("grade_avg"),
-            "sample_count":len(sample),"provenance":row.source if row else None})
+            "sample_count":len(sample),"provenance":row.source if row else None,"is_managed":is_managed})
     overall={"raw":None,"grade":None}
     warnings=[]
     keys={c["id"] for c in classes}

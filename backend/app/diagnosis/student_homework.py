@@ -17,6 +17,14 @@ MIN_EXAMS = 4
 MIN_HOMEWORK = 3
 MIN_EVALUATIONS = 3
 
+# 成绩口径按学科分（2026-10-22 起，与 app/chat/tools.py 的 metric_note 同一规则）：
+# 高一全部学科用年级百分位；高二/三语数英用年级百分位，六选科用等级分。
+# 生产现实：高二语数英 grade_score 全为 NULL 只有年级百分位，六选科反之——
+# 旧「高二/三一律 grade_score」会把高二语数英整科排除出时间线。
+CORE_SUBJECTS = ("语文", "数学", "英语")
+# homework-student-subjects 总览端点的规范学科序（语数英在前，六选科随后）。
+SUBJECT_ORDER = ("语文", "数学", "英语", "物理", "化学", "生物", "政治", "历史", "地理")
+
 
 def _number(value):
     return float(value) if value is not None and math.isfinite(float(value)) else None
@@ -149,7 +157,8 @@ def _catalog(db, ctx, subject):
             if entry.person_id not in membership_cache[membership_key]:
                 continue
         key = q.fact_key(db, f, roots) if f.exam_event_id else f"platform:{exam.id}" if exam else f"{q.fact_key(db, f, roots)}:grade:{exam_grade}"
-        bucket = grouped.setdefault(key, dict(key=key, exam_name=event.exam_name if event else f.exam_name, date=day,
+        bucket = grouped.setdefault(key, dict(key=key, subject=subject,
+            exam_name=event.exam_name if event else f.exam_name, date=day,
             grade=exam_grade, grade_conflict=False, date_conflict=False, classes=set(), facts={}))
         bucket["grade_conflict"] |= conflict
         bucket["date_conflict"] |= day != bucket["date"] or (exam is not None and day is not None and day != exam.exam_date)
@@ -173,10 +182,16 @@ def _catalog(db, ctx, subject):
 
 
 def _observation(exam, pid, events, previous_day, same_day):
+    # 成绩口径按学科分（与 app/chat/tools.py 及 CORE_SUBJECTS 同一规则）：
+    # 高一全部学科用年级百分位；高二/三语数英用年级百分位（100−前百分比，
+    # 归一逻辑与高一相同），六选科（物化生政史地）用等级分。subject 由
+    # _catalog 写入 exam（attention 等复用方经 _catalog 同样带出，不改签名）。
+    subject = exam.get("subject")
     day, grade = exam["date"], exam["grade"]
     fact = exam["facts"].get(pid)
     raw = _number(fact.score) if fact else None
-    basis = "grade_percentile" if grade == 1 else "grade_score" if grade in (2, 3) else None
+    percentile_basis = grade == 1 or (grade in (2, 3) and subject in CORE_SUBJECTS)
+    basis = "grade_percentile" if percentile_basis else "grade_score" if grade in (2, 3) else None
     percentile = _number(fact.grade_percentile) if fact else None
     value = None
     reason = None
@@ -186,7 +201,7 @@ def _observation(exam, pid, events, previous_day, same_day):
         reason = "grade_conflict"
     elif raw is None:
         reason = "score_missing"
-    elif grade == 1:
+    elif percentile_basis:
         if percentile is not None and 0 <= percentile <= 100:
             percentile = normalized_percentile(percentile)
             value = 100 * (1 - percentile)
@@ -209,7 +224,7 @@ def _observation(exam, pid, events, previous_day, same_day):
     if reason is None and homework["unknown_batches"] > homework["eligible"]:
         reason = "denominator_unknown_over_half"
     return dict(exam_key=exam["key"], exam_name=exam["exam_name"], exam_date=day.isoformat() if day else None,
-        grade=grade, basis=basis, raw_score=raw, percentile=_rounded(percentile) if grade == 1 else None,
+        grade=grade, basis=basis, raw_score=raw, percentile=_rounded(percentile) if basis == "grade_percentile" else None,
         achievement=_rounded(value), window_start=start.isoformat() if start else None,
         window_end=(day - timedelta(days=1)).isoformat() if day and start is not None and start < day else None,
         homework=homework, pair_reason=reason, gain=None, submission_change=None)
@@ -341,6 +356,7 @@ def student_homework_analysis(db, scope, subject=None, window_days=14,
     return dict(calc_version="student-homework-v2", mode=ctx.mode, academic_year_id=ctx.academic_year_id,
                 subject=subject, window_days=window_days, end_exam_name=end_exam_name,
                 minimum_exams=MIN_EXAMS, minimum_homework=MIN_HOMEWORK, students=students,
-                note="高一用年级百分位（越小越靠前），计算系数时转换为100−前百分比；高二、高三用等级分。"
+                note="成绩口径按学科分：高一全部学科和高二/三语数英用年级百分位（越小越靠前），计算系数时转换为100−前百分比；"
+                     "高二/三六选科（物化生政史地）用等级分。"
                      "不含考试当日与考后作业，窗口不重复使用上一场考前作业。"
                      "相关性仅描述该学生的统计共变，不构成因果结论或提分保证；时间趋势、考试内容和记录偏差仍可能影响结果。" + cutoff_note)

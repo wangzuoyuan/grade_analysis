@@ -208,12 +208,34 @@ test('班主任工作台仪表盘包含本周关注卡片、年级名次范围�
   assert.match(dashboard, /<WeeklyFocusCard/, '仪表盘必须引入并渲染 WeeklyFocusCard')
   assert.match(dashboard, /label="年级名次范围"/, '班主任模式下 KPI 卡片须将班级人数改为年级名次范围')
   assert.match(dashboard, /homeroomTotal\?\.rank_min/, '名次范围须读取 rank_min 与 rank_max')
+  // 2026-10-22 修复：totals 按码点排序恒为「+3」打头，而 +3 口径按导入设计没有
+  // 名次列（名次在主三门/3+3 行上）——恒取 totals[0] 会让名次范围恒显「—」。
+  // 须取「第一个有名次的总分口径，否则回退 totals[0]」，勿再改回恒取 totals[0]。
+  assert.match(
+    dashboard,
+    /totals\.find\(\(t\) => t\.rank_min != null\) \?\? totals\[0\]/,
+    '名次范围口径须选第一个有名次的总分行（find(rank_min != null) ?? totals[0]），不得恒取 totals[0]',
+  )
   assert.match(dashboard, /href=\{\`\/\$\{mode\}\/homework\?tab=warnings\`\}/, '作业预警卡片须支持点击跳转到预警页')
 
   const weeklyCard = readFileSync(new URL('../src/components/WeeklyFocusCard.tsx', import.meta.url), 'utf8')
   assert.match(weeklyCard, /fetchHomeroomWeeklyFocus/, '本周关注卡片须调用 fetchHomeroomWeeklyFocus 端点')
   assert.match(weeklyCard, /本周关注/, '必须包含本周关注标题')
   assert.match(weeklyCard, /\/homeroom\/profile\?person_id=/, '学生姓名须以 person_id 可点击直达学生档案')
+  // 2026-10-22：行动首页「待办」摘要卡的锚点落点——本页锚点 + 粘性顶栏遮挡留白
+  assert.match(weeklyCard, /id="weekly-focus"/, '本周关注卡须带 weekly-focus 锚点（待办摘要卡同页直达落点）')
+  assert.match(weeklyCard, /scroll-mt-20/, '锚点滚动定位须为粘性顶栏留白（scroll-mt-20）')
+})
+
+test('行动首页四段摘要卡整卡可点击直达对应页面与标签（2026-10-22）', () => {
+  const card = readFileSync(new URL('../src/app/homeroom/action-summary.tsx', import.meta.url), 'utf8')
+  assert.match(card, /\/homeroom\/scores\?tab=focus/, '趋势摘要卡须直达成绩页重点关注标签')
+  assert.match(card, /\/homeroom\/scores\?tab=duanwei/, '结构摘要卡须直达成绩页段位分布标签')
+  assert.match(card, /\/homeroom\/homework\?tab=overview/, '作业摘要卡须直达作业跟进作业管理标签')
+  assert.match(card, /'#weekly-focus'/, '待办摘要卡须直达本页本周关注锚点')
+  assert.match(card, /hover:border-slate-200 hover:bg-slate-50/, '摘要卡须有整卡悬浮反馈样式（可点击暗示）')
+  // 锚点链接用原生 a 同页滚动，页面链接走 next/link
+  assert.match(card, /href=\{row\.href\}/, '渲染层须以 row.href 作为跳转目标（契约字段驱动，不得硬编码两套）')
 })
 
 test('作业缺交卡片支持点击学科胶囊进行筛选与联动', () => {

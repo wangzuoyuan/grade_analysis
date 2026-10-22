@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, History, NotebookPen, Sparkles } from 'lucide-react'
 
 import {
@@ -90,6 +90,70 @@ function resolveHomeworkContent(r: HomeworkStudentEvent): string {
   }
 
   return '—'
+}
+
+/** 明细表（精简4列：日期、学科、作业内容、状态）；行渲染与原单表逐字一致，供
+ *  全部视图/近 14 天/更早三处复用，避免三份拷贝。 */
+function EventRowsTable({ rows }: { rows: HomeworkStudentEvent[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="mt-2 w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-slate-400 border-b border-slate-100">
+            <th className="py-1.5 font-normal">日期</th>
+            <th className="py-1.5 font-normal">学科</th>
+            <th className="py-1.5 font-normal">作业内容</th>
+            <th className="py-1.5 font-normal">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => {
+            const isMissing = r.status === 'missing' && r.subject !== '考勤'
+            const isExcused = r.status === 'excused'
+            const isAttendance = isAttendanceAnomaly(r)
+            const isNormalAttendance = r.subject === '考勤' && !isAttendance
+            const content = resolveHomeworkContent(r)
+
+            return (
+              <tr
+                key={`${r.assignment_id}-${i}`}
+                className={`border-t border-slate-50 transition-colors ${
+                  isMissing ? 'bg-rose-50/30' : ''
+                }`}
+              >
+                <td className="py-1.5 text-slate-500 tabular-nums whitespace-nowrap text-xs">
+                  {r.assigned_date}
+                </td>
+                <td className="py-1.5 font-medium text-slate-800 whitespace-nowrap">
+                  {r.subject}
+                </td>
+                <td className="py-1.5 text-slate-600 whitespace-nowrap text-xs">
+                  {content}
+                </td>
+                <td className="py-1.5 whitespace-nowrap">
+                  {isMissing ? (
+                    <span className="text-xs font-medium text-rose-600">缺交</span>
+                  ) : isExcused ? (
+                    <span className="text-xs text-slate-500">请假免交</span>
+                  ) : isAttendance ? (
+                    <span className="text-xs font-medium text-amber-600">
+                      {r.evaluation || (r.status === 'missing' ? '未到校' : '迟到')}
+                    </span>
+                  ) : isNormalAttendance ? (
+                    <span className="text-xs font-medium text-emerald-600">正常出勤</span>
+                  ) : (
+                    <span className="text-xs text-emerald-600">
+                      {homeworkStatusLabel(r.status)}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 /** 学生作业缺交卡（P8-UXFIX：改接 /api/v1/homework/students/{person_id} 事件流 + streaks）。 */
@@ -220,6 +284,15 @@ export default function HomeworkCard({
 
   const anomaliesList = filteredEvents.filter(isAnomalyEvent)
   const displayEvents = showAllEvents ? filteredEvents : anomaliesList
+
+  // 近 2 周折叠（默认异常视图）：近 14 天异常直接展示，更早异常收进 <details> 默认收起。
+  // assigned_date 为 ISO 日期串（或 ISO 时间串），与 cutoff 做字符串比较即可。
+  const recentCutoff = useMemo(
+    () => new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    [],
+  )
+  const recentAnomalies = anomaliesList.filter((e) => e.assigned_date >= recentCutoff)
+  const olderAnomalies = anomaliesList.filter((e) => e.assigned_date < recentCutoff)
 
   return (
     <Card>
@@ -366,7 +439,9 @@ export default function HomeworkCard({
                   )}
                   {showAllEvents
                     ? `（显示全部 ${displayEvents.length} 条记录）`
-                    : `（仅展示 ${displayEvents.length} 条异常记录）`}
+                    : `（近 14 天 ${recentAnomalies.length} 条异常${
+                        olderAnomalies.length > 0 ? `，更早 ${olderAnomalies.length} 条已折叠` : ''
+                      }）`}
                 </span>
               </span>
               <button
@@ -394,71 +469,38 @@ export default function HomeworkCard({
                   </button>
                 )}
               </div>
+            ) : showAllEvents ? (
+              <>
+                <EventRowsTable rows={eventsExpanded ? displayEvents : displayEvents.slice(0, 30)} />
+                <MoreToggle
+                  hiddenCount={displayEvents.length - 30}
+                  unit="条记录"
+                  expanded={eventsExpanded}
+                  onToggle={() => setEventsExpanded((v) => !v)}
+                />
+              </>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="mt-2 w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-slate-400 border-b border-slate-100">
-                      <th className="py-1.5 font-normal">日期</th>
-                      <th className="py-1.5 font-normal">学科</th>
-                      <th className="py-1.5 font-normal">作业内容</th>
-                      <th className="py-1.5 font-normal">状态</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(eventsExpanded ? displayEvents : displayEvents.slice(0, 30)).map((r, i) => {
-                      const isMissing = r.status === 'missing' && r.subject !== '考勤'
-                      const isExcused = r.status === 'excused'
-                      const isAttendance = isAttendanceAnomaly(r)
-                      const isNormalAttendance = r.subject === '考勤' && !isAttendance
-                      const content = resolveHomeworkContent(r)
-
-                      return (
-                        <tr
-                          key={`${r.assignment_id}-${i}`}
-                          className={`border-t border-slate-50 transition-colors ${
-                            isMissing ? 'bg-rose-50/30' : ''
-                          }`}
-                        >
-                          <td className="py-1.5 text-slate-500 tabular-nums whitespace-nowrap text-xs">
-                            {r.assigned_date}
-                          </td>
-                          <td className="py-1.5 font-medium text-slate-800 whitespace-nowrap">
-                            {r.subject}
-                          </td>
-                          <td className="py-1.5 text-slate-600 whitespace-nowrap text-xs">
-                            {content}
-                          </td>
-                          <td className="py-1.5 whitespace-nowrap">
-                            {isMissing ? (
-                              <span className="text-xs font-medium text-rose-600">缺交</span>
-                            ) : isExcused ? (
-                              <span className="text-xs text-slate-500">请假免交</span>
-                            ) : isAttendance ? (
-                              <span className="text-xs font-medium text-amber-600">
-                                {r.evaluation || (r.status === 'missing' ? '未到校' : '迟到')}
-                              </span>
-                            ) : isNormalAttendance ? (
-                              <span className="text-xs font-medium text-emerald-600">正常出勤</span>
-                            ) : (
-                              <span className="text-xs text-emerald-600">
-                                {homeworkStatusLabel(r.status)}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <>
+                {recentAnomalies.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-slate-400">
+                    近 2 周无异常记录（更早 {olderAnomalies.length} 条已折叠在下方）
+                  </div>
+                ) : (
+                  <>
+                    <div className="mt-1 text-[11px] text-slate-400">近 14 天（{recentAnomalies.length} 条）</div>
+                    <EventRowsTable rows={recentAnomalies} />
+                  </>
+                )}
+                {olderAnomalies.length > 0 && (
+                  <details className="mt-2 rounded-md border border-slate-100 px-2.5 pt-1.5">
+                    <summary className="cursor-pointer text-xs font-medium text-slate-500">
+                      更早异常记录（{olderAnomalies.length} 条）
+                    </summary>
+                    <EventRowsTable rows={olderAnomalies} />
+                  </details>
+                )}
+              </>
             )}
-            <MoreToggle
-              hiddenCount={displayEvents.length - 30}
-              unit="条记录"
-              expanded={eventsExpanded}
-              onToggle={() => setEventsExpanded((v) => !v)}
-            />
           </details>
         )}
 

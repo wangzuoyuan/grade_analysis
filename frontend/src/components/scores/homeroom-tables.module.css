@@ -1,19 +1,51 @@
 /* Ant Design 官方 Blue / Gray 色板：https://ant.design/docs/spec/colors/
    与用户选定预览一致：隔行 blue-1，平均 blue-2，最高 blue-3，最低 gray-4。
-   仅作用于班主任均分表与成绩明细表。 */
+   仅作用于班主任均分表与成绩明细表。
+   2026-10-22 尺寸改造：两张宽表改限高双轴滚动 + 粘性表头 + 冻结列——
+   border-collapse: collapse 下粘性单元格的边框不随定位移动，必须 separate；
+   行内格改为只画 右/下 边框（外缘由容器边框收口），网格线仍为 1px。 */
 .table {
   color: #262626;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 .table th,
 .table td {
-  border: 1px solid #91caff;
+  border-right: 1px solid #91caff;
+  border-bottom: 1px solid #91caff;
+  /* 紧凑化：默认 p-4(16px) 对几十列宽表过高，收窄行高与列内距 */
+  padding: 4px 10px;
 }
 
 .table thead th {
   background: #bae0ff;
   color: #003eb3;
   text-align: center;
+  padding: 0 10px;
+}
+
+/* 两级粘性表头（配合容器 max-h 双轴滚动）：第一行吸顶 0、第二行吸在 2rem。
+   两行 th 固定 2rem 行高保证第二行偏移对齐（rowSpan 跨两行的表头格自然拉伸到 4rem）。
+   top/z-index/行高统一由这里注入，JSX 侧 th 只负责冻结列的 left 偏移。 */
+.table thead tr:first-child th {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: 2rem;
+}
+
+.table thead tr:nth-child(2) th {
+  position: sticky;
+  top: 2rem;
+  z-index: 20;
+  height: 2rem;
+}
+
+/* 冻结列（sticky left）单元格：背景继承所在行（含斑马纹/汇总/悬浮态），
+   横向滚动时底层滑动内容不从透明格透出 */
+.table td.stickyCol {
+  background: inherit;
 }
 
 .table tbody > tr {
@@ -49,6 +81,10 @@
 
 .table tbody > tr[data-summary='平均'] {
   background: #bae0ff;
+}
+
+/* separate 边框模型下 tr 自身边框不渲染：汇总首行的蓝色分隔线画到单元格上 */
+.table tbody > tr[data-summary='平均'] > td {
   border-top: 2px solid #0958d9;
 }
 

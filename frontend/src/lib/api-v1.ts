@@ -99,7 +99,10 @@ export interface PlatformCompare {
   exam: PlatformExam; metadata: { data_revision: number }
   classes: Array<{id: string; class_kind: string; class_label: string; class_type: string | null
     teacher_name: string | null; source: string; metrics: PlatformMetrics; raw_avg: number | null; grade_avg: number | null
-    raw_rank?: number; grade_rank?: number; raw_diff?: number | null; grade_diff?: number | null; sample_count: number}>
+    raw_rank?: number; grade_rank?: number; raw_diff?: number | null; grade_diff?: number | null; sample_count: number
+    managed_class_id?: number | null
+    /** 我教的班级（教学班 label 命中 或 行政班任课教师=当前教师；后端判定，柱状图高亮用）。 */
+    is_managed?: boolean}>
   overall: Record<'raw' | 'grade', { value: number; source: string; method: string } | null>
   warnings: string[]
 }
@@ -1599,6 +1602,10 @@ export interface StudentReportExam {
   exam_date?: string | null
   score: number | null
   grade_score?: number | null
+  /** 来源保存的年级百分比（0–1）；后端 ProfileExam 已下发，前端按需使用。 */
+  grade_percentile?: number | null
+  /** 校名次（学籍名次优先；仅总分行有值，2026-10-22 起下发）。 */
+  rank?: number | null
   source_domain: 'homeroom' | 'teaching'
 }
 
@@ -2676,6 +2683,51 @@ export function studentHomeworkAnalysis(
     person_id?: number; end_exam_name?: string; homework_type?: string },
 ): Promise<import('./student-homework').StudentHomeworkResponse> {
   return request(withQuery(`${API_V1_BASE}/${mode}/diagnosis/homework-students`, { ...q }))
+}
+
+/* ------------------------------------------------------------------ */
+/* 个人作业与成绩分析（全科并列，学生档案页专用，2026-10-22）            */
+/* ------------------------------------------------------------------ */
+
+/** 逐场观察点：achievement 口径按学科分——语数英/高一=100×(1−百分位)（前%），
+ *  六选科（高二/三）=等级分；submission_rate 为 0–1。 */
+export interface HomeworkSubjectPoint {
+  exam_key: string
+  exam_name: string
+  exam_date: string | null
+  grade: number | null
+  basis: 'grade_percentile' | 'grade_score' | null
+  raw_score: number | null
+  achievement: number | null
+  percentile: number | null
+  submission_rate: number | null
+  submitted: number | null
+  eligible: number | null
+  pair_reason: string | null
+}
+
+export interface HomeworkSubjectSeries {
+  subject: string
+  /** 有效配对场数（pair_reason 为空）与全部考试场数。 */
+  paired_n: number
+  total_n: number
+  timeline: HomeworkSubjectPoint[]
+}
+
+export interface StudentHomeworkSubjectsResponse {
+  person_id: number
+  name: string | null
+  window_days: number
+  /** 规范学科序（语数英在前），仅含有考试记录的学科。 */
+  subjects: HomeworkSubjectSeries[]
+  note: string
+}
+
+/** GET /api/v1/homeroom/diagnosis/homework-student-subjects（单生全科，一次请求）。 */
+export function studentHomeworkSubjects(
+  q: { person_id: number; window_days?: 14 | 30; academic_year_id?: string | number },
+): Promise<StudentHomeworkSubjectsResponse> {
+  return request(withQuery(`${API_V1_BASE}/homeroom/diagnosis/homework-student-subjects`, { ...q }))
 }
 
 /** Legacy cross-sectional class analysis, retained for existing consumers. */

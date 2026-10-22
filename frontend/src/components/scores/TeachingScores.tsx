@@ -175,18 +175,20 @@ function ScoreBandsPanel({
       {visibleIdx.length === 0 ? (
         <p className="py-4 text-sm text-slate-500">本场考试当前范围没有可计入分数段的有效成绩。</p>
       ) : (
-        <div className="overflow-x-auto">
-          <Table wrapperClassName="lg:overflow-x-clip">
+        <div className="max-h-[60vh] overflow-x-auto">
+          {/* 2026-10-22 尺寸改造：限高滚动 + 两级粘性表头 + 冻结「分数段」首列；
+              内层 Table 包装改 overflow-visible（不产生滚动容器），sticky 绑定到本外层容器 */}
+          <Table wrapperClassName="overflow-visible" className="min-w-max [&_th]:h-8 [&_th]:px-3 [&_td]:px-3 [&_td]:py-1.5">
             <TableHeader>
               <TableRow>
-                <TableHead rowSpan={2} className="text-xs">
+                <TableHead rowSpan={2} className="sticky left-0 top-0 z-30 bg-slate-100 text-xs">
                   分数段
                 </TableHead>
                 {cols.map((c) => (
                   <TableHead
                     key={colKey(c)}
                     colSpan={detail ? 3 : 1}
-                    className="whitespace-nowrap text-center text-xs"
+                    className="sticky top-0 z-20 bg-slate-100 whitespace-nowrap text-center text-xs"
                   >
                     {colLabel(c)}
                     <span className="ml-1 font-normal text-slate-400">{String(c.valid_count)} 人</span>
@@ -197,16 +199,16 @@ function ScoreBandsPanel({
                 <TableRow>
                   {cols.map((c) => (
                     <Fragment key={colKey(c)}>
-                      <TableHead className="text-right text-xs">本段</TableHead>
-                      <TableHead className="text-right text-xs">累计</TableHead>
-                      <TableHead className="text-right text-xs">比例%</TableHead>
+                      <TableHead className="sticky top-8 z-20 bg-slate-50 text-right text-xs">本段</TableHead>
+                      <TableHead className="sticky top-8 z-20 bg-slate-50 text-right text-xs">累计</TableHead>
+                      <TableHead className="sticky top-8 z-20 bg-slate-50 text-right text-xs">比例%</TableHead>
                     </Fragment>
                   ))}
                 </TableRow>
               ) : (
                 <TableRow>
                   {cols.map((c) => (
-                    <TableHead key={colKey(c)} className="text-right text-xs">
+                    <TableHead key={colKey(c)} className="sticky top-8 z-20 bg-slate-50 text-right text-xs">
                       人数
                     </TableHead>
                   ))}
@@ -218,7 +220,7 @@ function ScoreBandsPanel({
                 const proto = bands.merged.bands[i]
                 return (
                   <TableRow key={i}>
-                    <TableCell className="whitespace-nowrap text-xs font-medium text-slate-600">
+                    <TableCell className="sticky left-0 z-10 bg-white whitespace-nowrap text-xs font-medium text-slate-600">
                       {bandLabel(proto.low, proto.high)}
                     </TableCell>
                     {cols.map((c) => {
@@ -259,7 +261,7 @@ function ScoreBandsPanel({
               })}
               {collapsedLow != null && (
                 <TableRow>
-                  <TableCell className="whitespace-nowrap text-xs text-slate-400">
+                  <TableCell className="sticky left-0 z-10 bg-white whitespace-nowrap text-xs text-slate-400">
                     (*, {String(collapsedLow)})
                   </TableCell>
                   {cols.map((c) => (
@@ -286,7 +288,7 @@ function ScoreBandsPanel({
                   key={label}
                   className={rowIdx === 0 ? 'border-t-2 border-slate-200' : undefined}
                 >
-                  <TableCell className="whitespace-nowrap text-xs text-slate-500">{label}</TableCell>
+                  <TableCell className={cn('sticky left-0 z-10 bg-white whitespace-nowrap text-xs text-slate-500', rowIdx === 0 && 'border-t-2 border-slate-200')}>{label}</TableCell>
                   {cols.map((c) => (
                     <TableCell
                       key={colKey(c)}
@@ -652,7 +654,9 @@ export function TeachingScores() {
                       </p>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
+                    /* 2026-10-22 尺寸改造：限高纵向滚动（表头粘性在 TeachingStudentDetails
+                       内部实现，受文件所有权约束本轮仅加容器限高） */
+                    <div className="max-h-[70vh] overflow-x-auto">
                       <TeachingStudentDetails rows={students} grade={examGrade} />
                     </div>
                   )}

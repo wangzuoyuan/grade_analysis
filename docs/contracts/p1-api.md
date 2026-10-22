@@ -100,6 +100,11 @@ v1 其余条款未列出者继续有效。变更须经集成者修订本文件�
 - `GET /api/v1/homeroom/students/{person_id}` / `GET /api/v1/teaching/students/{person_id}`
   画像：`{metadata, person: {person_id, name, domain}, subjects: [{subject, exams: [{exam_name, exam_date, score, source_domain}]}], totals?: [{total_type, exams: [...]}]}`
   homeroom 可见全科 + 总分；teaching 仅当前任教学科；跨域只经确认关联读取允许学科；越界 `resource_out_of_scope` 404。
+  **2026-10-22**：exam 点增可选 `rank`（校名次，resolve_year_rank 口径——学籍名次优先、
+  其次年级名次，缺考/无名次 null）；仅 homeroom **总分分组**的考试点有值（档案页总分行
+  显示「第N名」），单科行恒 null。`subjects`/`totals` 分组序按 §2.0 列序规范
+  （p3-imports-analysis.md：学科语数英+六选科规范序；总分按年级口径序，年级不可得回退
+  字母序）——画像页与打印报告（§2.3 student_report）共用同一排序与年级判定。
 
 ### 1.4 成绩查询
 

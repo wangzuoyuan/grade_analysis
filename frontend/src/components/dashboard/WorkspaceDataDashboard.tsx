@@ -386,7 +386,14 @@ export function WorkspaceDataDashboard({ mode }: { mode: WorkspaceMode }) {
   }, [mode, analysisQ, homeworkQ, generation, nonce, currentSemester])
 
   const latest = data?.exams[0] ?? null
-  const homeroomTotal = data?.latestHomeroom?.totals[0] ?? null
+  // 名次范围口径（2026-10-22 修复「年级名次范围恒显 —」）：后端 totals 按码点
+  // 排序，totals[0] 恒为「+3」，而 +3 总分按导入设计没有名次列（名次存在
+  // 主三门/3+3 行上，库中全员齐全）——不是数据缺失。取第一个有名次的总分
+  // 口径（高二/高一都会选中主三门，与重点关注功能口径一致），全部无名次时
+  // 回退 totals[0]。均分卡与名次范围卡共用该口径（均分卡标签自动跟随口径名）。
+  // 勿再改回恒取 totals[0]。
+  const totals = data?.latestHomeroom?.totals ?? []
+  const homeroomTotal = totals.find((t) => t.rank_min != null) ?? totals[0] ?? null
   const teachingStats = data?.latestTeaching ?? null
   const subjectRows = data?.latestHomeroom?.subjects ?? []
   const loading = data == null && error == null

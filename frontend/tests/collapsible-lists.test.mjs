@@ -61,11 +61,30 @@ test('WorkspaceDataDashboard：数据层去 slice 保留全量，渲染层 6/3/8
   assert.match(dashboard, /当前筛选下暂无重点作业预警/)
 })
 
-test('HomeworkCard：近期明细收起 30 条，MoreToggle（条记录）', () => {
-  assert.match(homeworkCard, /eventsExpanded \? displayEvents : displayEvents\.slice\(0, 30\)/, '收起默认 30 条')
+test('HomeworkCard：「查看全部」视图收起 30 条，MoreToggle（条记录）', () => {
+  assert.match(homeworkCard, /showAllEvents \? \(/, '明细区分支：全部视图 / 默认近 2 周视图')
+  assert.match(homeworkCard, /rows=\{eventsExpanded \? displayEvents : displayEvents\.slice\(0, 30\)\}/, '查看全部视图收起默认 30 条')
   assert.match(homeworkCard, /hiddenCount=\{displayEvents\.length - 30\}/, '')
   assert.match(homeworkCard, /unit="条记录"/, '')
   assert.match(homeworkCard, /<MoreToggle/, '')
+})
+
+test('HomeworkCard：默认视图近 2 周异常直出，更早异常折叠进默认收起的 <details>（2026-10-22）', () => {
+  // 14 天分界：assigned_date 为 ISO 串，字符串比较即可
+  assert.match(homeworkCard, /14 \* 24 \* 60 \* 60 \* 1000/, '分界 = 今天减 14 天')
+  assert.match(homeworkCard, /\.toISOString\(\)\.slice\(0, 10\)/, 'cutoff 取 ISO 日期串')
+  assert.match(homeworkCard, /e\.assigned_date >= recentCutoff/, '近组：assigned_date ≥ cutoff')
+  assert.match(homeworkCard, /e\.assigned_date < recentCutoff/, '更早组与近组互斥互补')
+  assert.match(homeworkCard, /rows=\{recentAnomalies\}/, '近 14 天组直接全列（默认视图不截断）')
+  assert.match(homeworkCard, /rows=\{olderAnomalies\}/, '更早组进入折叠表格')
+  assert.match(homeworkCard, /近 2 周无异常记录/, '近 14 天为空而更早有记录时的主区空态')
+  assert.match(homeworkCard, /更早异常记录（\{olderAnomalies\.length\} 条）/, '更早块标题带条数')
+  // 更早块默认收起：其 <details> 开标签不得带 open 属性
+  const olderIdx = homeworkCard.indexOf('更早异常记录')
+  assert.ok(olderIdx > 0, '更早异常块应存在')
+  const detailsStart = homeworkCard.lastIndexOf('<details', olderIdx)
+  const detailsTag = homeworkCard.slice(detailsStart, homeworkCard.indexOf('>', detailsStart) + 1)
+  assert.doesNotMatch(detailsTag, /\bopen\b/, '更早块 <details> 默认收起（不带 open）')
 })
 
 test('BackupCard：备份列表收起 6 份，MoreToggle（份备份）', () => {

@@ -628,6 +628,9 @@ class ProfileExam(BaseModel):
     grade_score: Optional[float] = None
     # 来源保存的年级百分比（0–1）；不由班内名次或分数推算。
     grade_percentile: Optional[float] = None
+    # 校名次（学籍名次优先，resolve_year_rank 口径）；仅总分行的考试点
+    # 有值，单科行恒 None（2026-10-22：档案/打印页总分行显示「第N名」）。
+    rank: Optional[int] = None
     source_domain: str
 
     model_config = ConfigDict(

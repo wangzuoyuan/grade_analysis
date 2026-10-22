@@ -7,7 +7,7 @@
 返回 `students` 每人含基本身份、逐场 `timeline`、`correlations`（提交率对成绩水平、提交率对进步、负面评价率对成绩水平）、`latest_change`、`advice`、`caveats`。所有数值有相应口径、分子分母、缺失原因；没有全班系数或总分分层。
 
 - 当前成员清单遵循后端范围。历史事实只读统一 readable_facts，并逐班核验考试时点成员；作业使用当前授权的事件时点共享门和确认快照。统计豁免只用于预警等聚合，本个人分析保留。不自动关联同名身份。
-- 高一 `grade_percentile` 归一化后原值是“前百分之几”（小为好）；计算成绩值 `100*(1-p)`（大为好）。高二/三只取 `grade_score`。原始分仅供明细参考。缺考即使残留指标也不参与；真实0分/0百分位保留。未知年级、跨年级、缺指标不得用原始分/班内排名/学校人数补造。
+- 成绩口径按学科分（2026-10-22 起，与 AI 工具口径一致）：高一全部学科用 `grade_percentile`；高二/三语数英（语文/数学/英语）同样用 `grade_percentile`——归一化后原值是“前百分之几”（小为好），计算成绩值 `100*(1-p)`（大为好），取不到记 `percentile_missing`；高二/三六选科（物理/化学/生物/政治/历史/地理）用 `grade_score`，取不到记 `grade_score_missing`。timeline 点的 `percentile` 字段凡 basis=grade_percentile 均返回（不再仅高一）。原始分仅供明细参考。缺考即使残留指标也不参与；真实0分/0百分位保留。未知年级、跨年级、缺指标不得用原始分/班内排名/学校人数补造。
 - 一个观察是一场考试。精确日期窗口 `[max(考试日-N, 上一场同科考试日+1),考试日)`；上一场依据当前学生可读的同科考试时间线（包括缺考场）。同日多场保留明细但排除关联及进步比较。月份/缺日期不伪造考前日期。截止考试含该场，未来场不参与。
 - 有应交快照才可默认已交。请假、忘带、出勤行不计提交率分子分母；考勤批次整批排除。取消批次排除。负面评价只在有效已交作业中计数，负面率分母为有评价作业数；覆盖率为有评价作业数 / 已交数；其他评价不当正面，无评价不当优良。评价关联要求每窗至少3份有文字评价的作业且覆盖率至少50%。分母不明批次在个人窗口内超过已知有效份数时，该窗也不参与系数。
 - 系数配对每窗至少3份有效作业；4场有效配对起展示探索系数，少于10场提示样本少（均为产品门槛，不是统计显著性界限）。提交率零方差/成绩零方差返回null及原因，集中或并列提示辨别力受限。Kendall tau-b 为主（校正并列），Spearman平均秩供对照；删一场的tau-b范围为敏感性检查，不是置信区间。进步仅比较时间线上相邻且同口径的两场，不跨缺考/缺失/未知场补连。负面评价率高对应成绩低时相关为负，不倒置含义。
@@ -22,3 +22,11 @@
 - `correlations` 增 `tau`、`tau_without_one`，保留 `rho`、`r` 兼容字段。常量、考试不足、相邻进步配对不足、评价覆盖不足分别返回原因；跨年级全部系数置空。删去后常量或方向变化计为敏感。
 - 公式按 [SciPy Kendall tau-b 定义](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kendalltau.html)：一致对减不一致对，除以两轴非并列对数乘积的平方根。只展示系数，不输出显著性、置信区间或因果判断。
 - 考试以 `workspace_exam_event` 根事件标识，subject 的真实日期继续决定考前窗口。归并来源不重复计场；同一学科同事件日期冲突仍排除，不伪造日期。旧未绑定记录保留原始平台范围/日期和明确年级约束。
+
+## 单人逐学科总览端点（2026-10-22）
+
+`GET /api/v1/homeroom/diagnosis/homework-student-subjects`（仅班主任域，教学域不提供）
+
+参数：`person_id`（必填，须在当前班主任范围内，越界 404）、`window_days=14|30`（非法 422）、`academic_year_id`/`class_id` 可选（与 homework-students 同一作用域解析）。
+
+实现：按规范学科序 语文/数学/英语/物理/化学/生物/政治/历史/地理 逐科复用 `student_homework_analysis`（钉 person_id 单人、不设截止考试与年级过滤）；timeline 为空的学科跳过（不占位）。响应 `{person_id, name, window_days, subjects[], note}`，每个学科 `{subject, paired_n, total_n, timeline[]}`；timeline 点为单科 homework-students 同源投影：`exam_key/exam_name/exam_date/grade/basis/raw_score/achievement/percentile/submission_rate/submitted/eligible/pair_reason`（作业三字段取自该场窗口 homework 摘要，无窗口时为 null）。成绩口径由各点 `basis` 自带（上一节按学科规则）。相关性、进步、评价等完整结论仍在单科 homework-students，本端点只做单人跨科总览。

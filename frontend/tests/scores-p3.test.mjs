@@ -111,6 +111,13 @@ test('成绩页可切换历史学年且切年清理陈旧班级范围（P8-D）'
   assert.match(teachingScores, /<ScoreYearPicker \/>/, '教学成绩页应显示学年选择器')
 })
 
+test('班主任成绩页支持 URL ?tab= 直达（2026-10-22：白名单作初始 tab，非法回退默认）', () => {
+  assert.match(homeroomScores, /searchParams\.get\('tab'\)/, '读取 ?tab= 参数')
+  assert.match(homeroomScores, /const SCORES_TABS = new Set\(\['averages', 'students', 'bands', 'duanwei', 'frequency', 'range', 'focus'\]/, '七个板块白名单')
+  assert.match(homeroomScores, /SCORES_TABS\.has\(requestedTab\) \? requestedTab : 'averages'/, '非法/缺省回退班级均分表')
+  assert.match(homeroomScores, /<Tabs defaultValue=\{initialTab\}/, '白名单值仅作初始值（非受控，页内切换照旧）')
+})
+
 test('缺考一律显示「—」，展示层绝不转 0（契约 §2.3）', () => {
   assert.match(scoresShared, /v == null\)\s*return '—'/, 'formatScore 对 null 返回「—」')
   for (const [src, name] of [

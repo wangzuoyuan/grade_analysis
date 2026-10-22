@@ -55,15 +55,13 @@ test('UX02：画像与报告页改接 v1（person_id 键 + 逐场名次 + 作业
   assert.doesNotMatch(studentNotes, /\/api\/notes/, 'StudentNotes 不得再调用旧档案接口')
 })
 
-test('UX03：班级对比与教学成绩页同源（v1 class-compare + stats），不接旧总分接口', () => {
-  assert.match(compare, /fetchTeachingClassCompare\(selectedExam, scopeQ\)/, '对比数据须走 v1 teaching/analysis/class-compare')
-  assert.match(compare, /fetchTeachingStats\(selectedExam, scopeQ\)/, '学科/口径/总体均分须走 v1 stats')
-  assert.match(compare, /listExams\('teaching', scopeQ\)/, '考试清单须走 v1 shared/exams')
-  assert.match(compare, /样本估算/, '样本估算口径必须可见（E04），不冒充官方')
-  assert.match(compare, /deriveRanks/, '名次为派生排序（同分同名次），不得编造')
-  assert.match(compare, /examsReqRef/, '考试清单须有独立请求序号（F11）')
-  assert.match(compare, /dataReqRef/, '对比数据须有独立请求序号（F11）')
-  assert.match(compare, /if \(mode === 'homeroom'\)/, '班主任域不得混读教学班对比')
+test('UX03：班级对比主视图为官方质量分析（2026-10-22 样本估算视图退役、两表合并）', () => {
+  // 样本估算视图（LegacyComparePage）已删除：class-compare/stats 取数移出本页，
+  // 仍供 WorkspaceDataDashboard / TeachingScores 使用；本页只渲染官方质量分析。
+  assert.match(compare, /<TeachingPlatformCompare \/>/, '教学模式渲染官方质量分析主视图')
+  assert.match(compare, /router\.replace\('\/homeroom\/compare'\)/, '班主任域须跳转班主任班级对比，不混读教学班数据')
+  assert.doesNotMatch(compare, /LegacyComparePage|deriveRanks|examsReqRef|dataReqRef/, '样本估算视图及其派生名次不得残留')
+  assert.doesNotMatch(compare, /fetchTeachingClassCompare|fetchTeachingStats|listExams\('teaching'/, '本页不再直接取 class-compare/stats/exams')
   assert.doesNotMatch(compare, /\/api\/(class\/compare|exams)/, '不得再调用旧 /api/class/compare 或 /api/exams')
 })
 
@@ -101,11 +99,15 @@ test('UX05：作业页标签跟随 URL ?tab=（同页深链/前进后退），�
 const reportPage = studentReport
 
 test('R01：对比页筛选行常驻渲染，冷启动空态也能切学年', () => {
-  // 学年选择器必须出现在「无考试空态」之前（源码顺序 = 渲染结构），
-  // 否则当前学年无考试时学年切换不可达。
-  const pickerIdx = compare.indexOf('<ScoreYearPicker />')
-  const emptyIdx = compare.indexOf("exams != null && exams.length === 0")
-  assert.ok(pickerIdx >= 0, '对比页须有学年选择器')
+  // 2026-10-22 起本页为官方质量分析主视图：学年/年级选择由 TeachingPlatformCompare
+  // 的 PlatformScope 承担，必须出现在「无考试空态」之前（源码顺序 = 渲染结构）。
+  const platformCompare = readFileSync(
+    new URL('../src/components/scores/TeachingPlatformCompare.tsx', import.meta.url),
+    'utf8',
+  )
+  const pickerIdx = platformCompare.indexOf('<PlatformScope')
+  const emptyIdx = platformCompare.indexOf('尚无教学平台考试')
+  assert.ok(pickerIdx >= 0, '对比页须有学年/年级选择器（PlatformScope）')
   assert.ok(emptyIdx >= 0, '对比页须保留无考试空态')
   assert.ok(pickerIdx < emptyIdx, '学年选择器须在空态分支之外常驻渲染')
 })
@@ -115,7 +117,7 @@ test('R03：班主任工作台不发任何教学域业务请求（列表/画像/
   assert.match(studentDetail, /if \(mode !== 'teaching'\) return/, '画像数据 effect 须按工作台门控')
   assert.match(reportPage, /if \(mode !== 'teaching'\) return/, '报告数据 effect 须按工作台门控')
   assert.match(reportPage, /if \(mode === 'homeroom'\)/, '报告页 H 模式须显示指引卡而非取数')
-  assert.match(compare, /if \(mode !== 'teaching'\) return/, '对比页数据 effect 须按工作台门控')
+  assert.match(compare, /router\.replace\('\/homeroom\/compare'\)/, '对比页 homeroom 模式不取数直接跳转（数据 effect 门控语义）')
 })
 
 test('R04：「全部所教班」部分失败显式标注 + 重试，不冒充完整名单', () => {

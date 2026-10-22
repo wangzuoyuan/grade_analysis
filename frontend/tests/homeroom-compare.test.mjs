@@ -72,10 +72,13 @@ test('缺数据显示「—」不转 0；口径由接口返回动态生成', () 
   assert.match(component, /deriveSubjectRanks/, '单科口径名次须前端按值降序同分同名次计算')
 })
 
-test('/compare 在 homeroom 模式直达 /homeroom/compare，teaching 行为不变', () => {
+test('/compare 在 homeroom 模式直达 /homeroom/compare，teaching 模式渲染官方质量分析', () => {
   assert.match(comparePage, /router\.replace\('\/homeroom\/compare'\)/, 'homeroom 模式必须 replace 到 /homeroom/compare')
   assert.match(comparePage, /if \(mode === 'homeroom'\) router\.replace/, '跳转须以 homeroom 模式为条件')
-  assert.match(comparePage, /fetchTeachingClassCompare/, 'teaching 模式的教学班对比取数必须保留')
-  assert.match(comparePage, /listExams\('teaching'/, 'teaching 模式的考试清单取数必须保留')
+  // 2026-10-22：样本估算视图退役，class-compare/stats/listExams 取数已随视图移出本页
+  // （fetchTeachingClassCompare/fetchTeachingStats 仍供 WorkspaceDataDashboard/TeachingScores 使用）。
+  assert.match(comparePage, /<TeachingPlatformCompare \/>/, 'teaching 模式渲染官方质量分析主视图')
+  assert.doesNotMatch(comparePage, /fetchTeachingClassCompare/, '本页不再发起样本班对比取数')
+  assert.doesNotMatch(comparePage, /listExams\('teaching'/, '本页不再拉教学域考试清单')
   assert.doesNotMatch(comparePage, /WorkspaceSwitcher/, 'homeroom 分支不再渲染切换指引卡')
 })

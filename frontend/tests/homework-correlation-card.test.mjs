@@ -25,11 +25,11 @@ const teachingScores = readFileSync(
 const chatTools = readFileSync(
   new URL('../../backend/app/api/chat_tools.py', import.meta.url), 'utf8')
 
-test('CorrelationCard 挂入两域成绩分析页（作业页移除）', () => {
-  assert.match(homeroomScores, /import \{ CorrelationCard \} from '@\/components\/homework\/CorrelationCard'/,
-    'HomeroomScores 应导入 CorrelationCard')
-  assert.match(homeroomScores, /<CorrelationCard mode="homeroom" scopeQ=\{hwScopeQ\} scopeSubject=\{scopeSubject\} generation=\{generation\} preferredExamName=\{selectedExam\} \/>/,
-    '班主任成绩页应挂载 CorrelationCard（作业域作用域+考试跟随顶部选择）')
+test('CorrelationCard 仅挂入教学工作台成绩页（2026-10-22 班主任成绩页移除，个人作业与成绩分析并入学生档案）', () => {
+  assert.doesNotMatch(homeroomScores, /CorrelationCard/,
+    'HomeroomScores 不再挂载相关性卡（「个人作业与成绩分析」并入学生档案页）')
+  assert.doesNotMatch(homeroomScores, /homeworkScopeQuery/,
+    '随卡卸载作业域作用域映射（班主任成绩页不再需要）')
   assert.match(teachingScores, /import \{ CorrelationCard \} from '@\/components\/homework\/CorrelationCard'/,
     'TeachingScores 应导入 CorrelationCard')
   assert.match(teachingScores, /<CorrelationCard mode="teaching" scopeQ=\{hwScopeQ\} scopeSubject=\{scopeSubject\} generation=\{generation\} preferredExamName=\{selectedExam\} \/>/,

@@ -124,6 +124,59 @@ def homeroom_student_homework(
         person_id=person_id, end_exam_name=end_exam_name, grade=grade)
 
 
+@router.get("/homeroom/diagnosis/homework-student-subjects")
+@domain_endpoint
+def homeroom_student_homework_subjects(
+    person_id: int,
+    window_days: int = 14,
+    academic_year_id: Optional[int] = None,
+    class_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """班主任域单人逐学科总览（仅班主任域，教学域不提供）。
+
+    按规范学科序（语文/数学/英语/物理/化学/生物/政治/历史/地理）逐科复用
+    student_homework_analysis（钉 person_id 单人、不设截止考试与年级过滤），
+    timeline 为空的学科跳过。成绩口径由各科 timeline 点 basis 字段自带
+    （见 app/diagnosis/student_homework.py CORE_SUBJECTS 按学科规则）；
+    person_id 越界 404、window_days 非 14|30 422 沿用既有领域错误契约。
+    """
+    from app.diagnosis.student_homework import SUBJECT_ORDER, student_homework_analysis
+    _check_window_days(window_days)
+    ctx = _homeroom_ctx(db, academic_year_id, class_id, None)
+    subjects = []
+    name = None
+    for subject in SUBJECT_ORDER:
+        students = student_homework_analysis(db, ctx, subject, window_days,
+            person_id=person_id, end_exam_name=None, grade=None)["students"]
+        if not students:
+            continue
+        name = name or students[0]["name"]
+        if not students[0]["timeline"]:
+            continue
+        # 学生未选修/无成绩事实的学科（timeline 全部点 raw_score 与 achievement
+        # 均为 None，如高二学生的非选考科目）不进入全科并列卡，避免空数据块噪音。
+        if all(p["raw_score"] is None and p["achievement"] is None for p in students[0]["timeline"]):
+            continue
+        subjects.append({
+            "subject": subject,
+            "paired_n": students[0]["paired_n"],
+            "total_n": len(students[0]["timeline"]),
+            "timeline": [{
+                "exam_key": p["exam_key"], "exam_name": p["exam_name"], "exam_date": p["exam_date"],
+                "grade": p["grade"], "basis": p["basis"], "raw_score": p["raw_score"],
+                "achievement": p["achievement"], "percentile": p["percentile"],
+                "submission_rate": (p["homework"] or {}).get("submission_rate"),
+                "submitted": (p["homework"] or {}).get("submitted"),
+                "eligible": (p["homework"] or {}).get("eligible"),
+                "pair_reason": p["pair_reason"],
+            } for p in students[0]["timeline"]],
+        })
+    return dict(person_id=person_id, name=name, window_days=window_days, subjects=subjects,
+                note="逐科时间线口径：高一全部学科与高二/三语数英用年级百分位（换算为100−前百分比，大为好），"
+                     "高二/三六选科用等级分；作业为考试日前窗口提交率。相关性等完整结论请回看单科 homework-students。")
+
+
 @router.get("/teaching/diagnosis/homework-students")
 @domain_endpoint
 def teaching_student_homework(

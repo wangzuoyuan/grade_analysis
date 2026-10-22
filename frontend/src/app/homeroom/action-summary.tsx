@@ -163,9 +163,22 @@ export interface ActionSectionRow {
   key: 'trend_changes' | 'structure' | 'homework' | 'follow_ups'
   label: string
   value: string
+  /** 摘要卡点击直达目标（2026-10-22 需求①）：页面路径带 ?tab= 或本页锚点。 */
+  href: string
 }
 
 const DASH = '—'
+
+/** 四段摘要卡的跳转目标（2026-10-22 需求①）：趋势→成绩页「重点关注」
+ * 标签（进退步标注在此）；结构→成绩页「段位分布」标签（高/临界/薄弱
+ * 三段阈值口径）；作业→作业跟进「作业管理」标签（预警+按日汇总同屏）；
+ * 待办→本页「本周关注」卡锚点（同页滚动，不换页）。 */
+const ACTION_SECTION_HREFS: Record<ActionSectionRow['key'], string> = {
+  trend_changes: '/homeroom/scores?tab=focus',
+  structure: '/homeroom/scores?tab=duanwei',
+  homework: '/homeroom/homework?tab=overview',
+  follow_ups: '#weekly-focus',
+}
 
 export function actionSectionRows(sections: ActionSummary['sections'] | null): ActionSectionRow[] {
   if (!sections) {
@@ -176,7 +189,7 @@ export function actionSectionRows(sections: ActionSummary['sections'] | null): A
         ['homework', '作业'],
         ['follow_ups', '待办'],
       ] as Array<[ActionSectionRow['key'], string]>
-    ).map(([key, label]) => ({ key, label, value: DASH }))
+    ).map(([key, label]) => ({ key, label, value: DASH, href: '#' }))
   }
   const trend = sections.trend_changes
   const bands = sections.structure.band_counts
@@ -186,21 +199,25 @@ export function actionSectionRows(sections: ActionSummary['sections'] | null): A
     {
       key: 'trend_changes',
       label: '趋势',
+      href: ACTION_SECTION_HREFS.trend_changes,
       value: `进步 ${trend.improving_n} 人 · 退步 ${trend.declining_n} 人（近方向）`,
     },
     {
       key: 'structure',
       label: '结构',
+      href: ACTION_SECTION_HREFS.structure,
       value: `高分段 ${bands.high_score} · 临界 ${bands.critical} · 薄弱 ${bands.weak}`,
     },
     {
       key: 'homework',
       label: '作业',
+      href: ACTION_SECTION_HREFS.homework,
       value: `作业风险 ${homework.risk_n} 人 · 30 天缺交合计 ${homework.missing_30d_total} 次`,
     },
     {
       key: 'follow_ups',
       label: '待办',
+      href: ACTION_SECTION_HREFS.follow_ups,
       value: `未关闭跟进 ${follow.open_n} 项 · 本周关注 ${follow.due_this_week} 项`,
     },
   ]
@@ -330,25 +347,46 @@ export function HomeroomActionSummaryCard() {
               ) : null}
             </div>
 
-            {/* 趋势 / 结构 / 作业 / 待办四段摘要 */}
+            {/* 趋势 / 结构 / 作业 / 待办四段摘要（整卡可点击直达，文案口径冻结不变） */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-              {rows.map((row) => (
-                <div key={row.key} className="rounded-lg border border-slate-100 px-3 py-2.5">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                    {row.key === 'trend_changes' ? (
-                      <TrendingUp className="h-3.5 w-3.5" />
-                    ) : row.key === 'structure' ? (
-                      <Activity className="h-3.5 w-3.5" />
-                    ) : (
-                      <ClipboardList className="h-3.5 w-3.5" />
-                    )}
-                    {row.label}
-                  </div>
-                  <div className="mt-1 text-sm font-medium text-slate-800" title={row.value}>
-                    {row.value}
-                  </div>
-                </div>
-              ))}
+              {rows.map((row) => {
+                const sectionBody = (
+                  <>
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                      {row.key === 'trend_changes' ? (
+                        <TrendingUp className="h-3.5 w-3.5" />
+                      ) : row.key === 'structure' ? (
+                        <Activity className="h-3.5 w-3.5" />
+                      ) : (
+                        <ClipboardList className="h-3.5 w-3.5" />
+                      )}
+                      {row.label}
+                    </div>
+                    <div className="mt-1 text-sm font-medium text-slate-800" title={row.value}>
+                      {row.value}
+                    </div>
+                  </>
+                )
+                // 待办是本页锚点：原生 <a> 同页滚动；其余走 next/link 客户端跳转。
+                // 两种包裹className一致，悬浮反馈 hover:border-slate-200 hover:bg-slate-50。
+                return row.href.startsWith('#') ? (
+                  <a
+                    key={row.key}
+                    href={row.href}
+                    className="block rounded-lg border border-slate-100 px-3 py-2.5 transition-colors hover:border-slate-200 hover:bg-slate-50"
+                  >
+                    {sectionBody}
+                  </a>
+                ) : (
+                  <Link
+                    key={row.key}
+                    href={row.href}
+                    className="block rounded-lg border border-slate-100 px-3 py-2.5 transition-colors hover:border-slate-200 hover:bg-slate-50"
+                  >
+                    {sectionBody}
+                  </Link>
+                )
+              })}
             </div>
 
             <p className="text-[11px] text-slate-400">

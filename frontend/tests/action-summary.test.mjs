@@ -76,6 +76,20 @@ test('P2-C2：趋势/结构/作业/待办四段摘要齐备', () => {
   assert.match(card, /未关闭跟进 \$\{follow\.open_n\} 项 · 本周关注 \$\{follow\.due_this_week\} 项/, '待办摘要值')
 })
 
+test('2026-10-22：四段摘要卡带 href 直达目标（value 文案冻结不变）', () => {
+  // ActionSectionRow 契约补 href：数据态各段直达对应页面标签/锚点；
+  // 数据缺失态占位 '#'（该分支的行本来不渲染，占位仅为类型完整）。
+  assert.match(card, /href: string/, '摘要行类型须声明 href 字段')
+  assert.match(card, /trend_changes: '\/homeroom\/scores\?tab=focus'/, '趋势 → 成绩页重点关注标签')
+  assert.match(card, /structure: '\/homeroom\/scores\?tab=duanwei'/, '结构 → 成绩页段位分布标签')
+  assert.match(card, /homework: '\/homeroom\/homework\?tab=overview'/, '作业 → 作业跟进作业管理标签')
+  assert.match(card, /follow_ups: '#weekly-focus'/, '待办 → 本页本周关注锚点')
+  assert.match(card, /\{ key, label, value: DASH, href: '#' \}/, '数据缺失态 href 占位 #')
+  // 跳转能力不得改动冻结的 value 文案口径（上一个用例逐字断言，此处守护同一函数内两字段并存）
+  assert.match(card, /href: ACTION_SECTION_HREFS\.trend_changes,\s*\n\s*value: `进步 /, '趋势行 href 与冻结 value 并存')
+  assert.match(card, /href: ACTION_SECTION_HREFS\.follow_ups,\s*\n\s*value: `未关闭跟进 /, '待办行 href 与冻结 value 并存')
+})
+
 test('P2-C2：数据缺失态如实显示（不伪造、不估算）', () => {
   assert.match(card, /行动摘要暂不可用（数据缺失）/, '请求失败缺失态')
   assert.match(card, /不做估算填充/, '缺失态不填充承诺')

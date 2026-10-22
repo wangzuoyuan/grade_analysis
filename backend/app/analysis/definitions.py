@@ -76,6 +76,47 @@ ISSUE_WEAK = "薄弱段"
 ISSUE_STABLE_EXCELLENT = "稳定优秀"
 
 
+# ── 展示列序常量与排序助手（2026-10-22 用户拍板的列序规则）──
+# 明细表 / 单场统计 / 学生档案的学科与总分列不再按字母序（旧 sorted()
+# 会把「化学、历史、地理、政治、数学…」排前面），统一按本规范序输出：
+# 学科 = 语文、数学、英语在前，六选科在后按 物理、化学、生物、政治、
+# 历史、地理；总分 = 高一 主三门、五门、九门，高二/高三 +3、主三门、3+3。
+CANONICAL_SUBJECT_ORDER = ["语文", "数学", "英语", "物理", "化学", "生物", "政治", "历史", "地理"]
+
+_SUBJECT_ORDER_INDEX = {name: index for index, name in enumerate(CANONICAL_SUBJECT_ORDER)}
+
+_GRADE_TOTAL_ORDER = {
+    1: ("主三门", "五门", "九门"),
+    2: ("+3", "主三门", "3+3"),
+    3: ("+3", "主三门", "3+3"),
+}
+
+
+def order_subjects(names) -> List[str]:
+    """学科展示列序（唯一口径，2026-10-22 拍板）：语数英在前、六选科
+    在后按规范序排列；未知学科排在已知之后（按名称排序保证确定性）。"""
+    items = list(names)
+    seen = set(items)
+    known = [name for name in CANONICAL_SUBJECT_ORDER if name in seen]
+    unknown = sorted(name for name in items if name not in _SUBJECT_ORDER_INDEX)
+    return known + unknown
+
+
+def order_totals(names, grade) -> List[str]:
+    """总分口径展示列序（唯一口径，2026-10-22 拍板）：grade==1 →
+    主三门、五门、九门；grade in (2, 3) → +3、主三门、3+3；其他/None
+    （年级未知，如 legacy 事实无考试事件）→ 保持既有 sorted() 字母序
+    行为；未知口径排已知之后（按名称排序保证确定性）。"""
+    items = list(names)
+    preferred = _GRADE_TOTAL_ORDER.get(grade)
+    if preferred is None:
+        return sorted(items)
+    seen = set(items)
+    known = [name for name in preferred if name in seen]
+    unknown = sorted(name for name in items if name not in set(preferred))
+    return known + unknown
+
+
 def normalized_percentile(value: Optional[float]) -> Optional[float]:
     """百分位归一化：>1 的按百分数（0–100）处理成 0–1；越界截断。"""
     if value is None:
