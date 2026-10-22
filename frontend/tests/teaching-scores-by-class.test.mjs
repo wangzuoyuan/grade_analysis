@@ -25,14 +25,14 @@ function load(file) {
     if (id === '@/lib/workspace') return { workspaceHref: (url, mode) => `${url}?ws=${mode}` }
     if (id.startsWith('@/') || id.startsWith('.')) {
       const target = id.startsWith('@/') ? id.slice(2) : path.relative(root, path.resolve(path.dirname(resolved), id))
-      return load(target + (['lib/utils','lib/teaching-score-display'].includes(target) ? '.ts' : '.tsx'))
+      return load(target + (['lib/utils','lib/teaching-score-display','components/scores/band-colors'].includes(target) ? '.ts' : '.tsx'))
     }
     return nativeRequire(id)
   })
   return exports
 }
 const { TeachingStudentDetails } = load('components/scores/TeachingStudentDetails.tsx')
-const { TeachingQualityTables, TeachingQualitySupplement } = load('components/scores/TeachingQualityTables.tsx')
+const { TeachingQualityTables } = load('components/scores/TeachingQualityTables.tsx')
 const { percentileTrendValue } = load('lib/teaching-score-display.ts')
 const render = (component, props) => renderToStaticMarkup(React.createElement(component, props))
 const student = {person_id:7,name:'合成甲',class_label:'合成B',score:0,grade_score:40,grade_label:'E',rank:3,xueji_rank:12,grade_percentile:.023,source_domain:'teaching'}
@@ -60,24 +60,72 @@ const cls=(label,kind='administrative',source='official')=>({id:kind+':'+label,c
   metrics:{expected_count:0,actual_count:0,raw_avg:0,grade_avg:55,stddev:0,chinese_avg:91.2,math_avg:0,english_avg:null,main_three_avg:280.7,bands:[{label:'C+',count:0,ratio:.833}]},raw_rank:1,raw_diff:null})
 const comparison={exam:{subject:'物理'},metadata:{data_revision:1},overall:{raw:null,grade:null},warnings:[],classes:[cls('10'),cls('2'),cls('合成A2','teaching'),cls('合成A10','teaching'),cls('样本','teaching','estimated')]}
 
-test('两张完整质量表分组表头、自然序及官方值独立于估算，空教师和零实考不隐藏',()=>{
+test('两张完整质量表分组表头、自然序及官方值独立于估算，空教师和零实考不隐藏；语数英三大门四列已删',()=>{
   const html=render(TeachingQualityTables,{data:comparison,grade:2})
   assert.equal((html.match(/<table /g)??[]).length,2)
-  for(const h of ['行政班质量分析','教学班质量分析','应考','实考','语文','数学','英语','三大门','A+','E'])assert(html.includes(h))
+  for(const h of ['行政班质量分析','教学班质量分析','应考','实考','原始','等级','A+','E'])assert(html.includes(h))
+  assert.doesNotMatch(html,/>语文<|>数学<|>英语<|>三大门<|>280\.7<|>91\.2</,'2026-10-21 用户拍板：两表删除语文/数学/英语/三大门列')
   assert.match(html,/colspan="22"/i)
   assert(html.indexOf('>2</td>')<html.indexOf('>10</td>'))
   assert(html.indexOf('合成A2</td>')<html.indexOf('合成A10</td>'))
-  assert.match(html,/>83\.3%</);assert.match(html,/>280\.7</)
+  assert.match(html,/>83\.3%</)
   assert.doesNotMatch(html,/>123<|>样本<|学生成绩明细|均差/)
-  assert.equal((html.match(/>0<\/td>/g)??[]).length,24)
+  assert.equal((html.match(/>0<\/td>/g)??[]).length,20,'应考/实考/原始/标准差 + C+ 人数共 5 个零 × 4 行；缺失等级人数为“—”')
 })
 
-test('补充对比只保留一处总体、均分、名次与均差，无法核实总体时说明缺失',()=>{
-  const html=render(TeachingQualitySupplement,{data:comparison,basis:'raw'})
-  assert.match(html,/总体均分/);assert.match(html,/覆盖范围尚不能合并/);assert.match(html,/>名次</);assert.match(html,/>均差</)
-  assert.match(html,/学生样本估算/);assert.match(html,/>123</)
-  const available=render(TeachingQualitySupplement,{data:{...comparison,overall:{raw:{value:65,method:'matching_aggregate'}}},basis:'raw'})
-  assert.match(available,/>65</);assert.match(available,/范围匹配的官方汇总/)
+test('补充对比卡与 TeachingQualitySupplement 已整体删除（2026-10-21 用户拍板）',()=>{
+  const compare=readFileSync(path.join(root,'components/scores/TeachingPlatformCompare.tsx'),'utf8')
+  assert.doesNotMatch(compare,/TeachingQualitySupplement|补充对比|setBasis|总体均分|均差|data\.warnings/)
+  assert.match(compare,/return <TeachingQualityTables data=\{data\} grade=\{grade\} \/>/,'考试详情只渲染两张质量表')
+  const tables=readFileSync(path.join(root,'components/scores/TeachingQualityTables.tsx'),'utf8')
+  assert.doesNotMatch(tables,/TeachingQualitySupplement|sourceLabels|chinese_avg|math_avg|english_avg|main_three_avg|averages/)
+})
+
+const bandCls=(label,kind,counts,avg=70)=>({id:kind+':'+label,class_kind:kind,class_label:label,teacher_name:null,class_type:null,source:'official',raw_avg:avg,grade_avg:null,
+  metrics:{expected_count:40,actual_count:40,raw_avg:avg,stddev:5,bands:Object.entries(counts).map(([l,count])=>({label:l,count,ratio:count/40}))},raw_rank:1})
+const banded={...comparison,classes:[
+  bandCls('1','administrative',{'A+':1,A:8,'B+':10}),
+  bandCls('合成A2','teaching',{A:3,'B+':8}),
+  bandCls('合成A10','teaching',{'A+':2,A:5,'B+':7},60),
+]}
+
+test('质量表卡内各班各等级人数堆叠条：每班一行、宽度按人数占比、图例只含非空等级、多班附合计行（均分按实考加权）',()=>{
+  const html=render(TeachingQualityTables,{data:banded,grade:2})
+  // 行政班 1 行（单班不出合计）+ 教学班 2 行 + 合计 = 4 条轨道
+  assert.equal((html.match(/rounded-full bg-slate-100/g)??[]).length,4)
+  assert.match(html,/title="1（19 人）"/);assert.match(html,/title="合成A2（11 人）"/);assert.match(html,/title="合计（25 人）"/)
+  assert.match(html,/width:32%/,'合计行 A 等级 8/25');assert.match(html,/width:60%/,'合计行 B+ 15/25')
+  assert.match(html,/width:72\.7272/,'合成A2 行 B+ 8/11')
+  assert.doesNotMatch(html,/width:0%/,'零人数等级不占段')
+  // 图例：两张卡各 A+/A/B+ 三项（B、B-…E 全零不进图例）
+  assert.equal((html.match(/h-2 w-2 rounded-sm/g)??[]).length,6)
+  assert.doesNotMatch(html,/>B-<\/span>|>E<\/span>/)
+  // 右侧均分：班级行取原始均分，合计行按实考人数加权 (70×40+60×40)/80=65
+  assert.match(html,/>均 70<\/span>/);assert.match(html,/>均 65<\/span>/)
+  assert.doesNotMatch(html,/人 · /,'悬浮内容不在静态标记里（Radix Tooltip 关闭态不渲染）')
+  // 表格仍在堆叠条下方
+  assert(html.indexOf('rounded-full bg-slate-100')<html.indexOf('<table '))
+})
+
+test('堆叠条交互契约：Radix 悬浮 150ms、同等级跨行联动高亮、白色细分隔线、Viridis 按等级总数取色',()=>{
+  const tables=readFileSync(path.join(root,'components/scores/TeachingQualityTables.tsx'),'utf8')
+  assert.match(tables,/<TooltipProvider delayDuration=\{150\}>/)
+  assert.match(tables,/<TooltipTrigger asChild>\s*<div\s+className=\{cn\(/)
+  assert.match(tables,/\[&>\*\+\*\]:border-l \[&>\*\+\*\]:border-white\/90/)
+  assert.match(tables,/hoverBand != null && hoverBand !== i && 'opacity-25'/)
+  assert.match(tables,/hoverBand === i && 'ring-1 ring-inset ring-slate-900\/50'/)
+  assert.match(tables,/onMouseEnter=\{\(\) => setHoverBand\(i\)\}/);assert.match(tables,/onMouseLeave=\{\(\) => setHoverBand\(null\)\}/)
+  assert.match(tables,/bandBarColor\(i, labels\.length\)/,'颜色按等级在全序列中的位置取，A+ 恒为亮端')
+  assert.doesNotMatch(tables,/INFERNO_ANCHORS/,'教学侧维持 Viridis')
+  assert.match(tables,/toFixed\(1\)\}%/)
+})
+
+test('等级人数全空或未导入时不出堆叠条',()=>{
+  const html=render(TeachingQualityTables,{data:comparison,grade:2})
+  assert.doesNotMatch(html,/rounded-full bg-slate-100|h-2 w-2 rounded-sm/)
+  const noBands=render(TeachingQualityTables,{data:{...comparison,classes:comparison.classes.map(c=>({...c,metrics:{...c.metrics,bands:undefined}}))},grade:2})
+  assert.doesNotMatch(noBands,/rounded-full bg-slate-100/)
+  assert.match(noBands,/colspan="22"/i)
 })
 
 test('高一质量表保留原分数段与单科指标',()=>{
@@ -105,5 +153,5 @@ test('成绩页去除分班计算与重复对比，对比页不再读取或显�
   assert.match(page,/<TeachingStudentDetails rows=\{students\} grade=\{examGrade\}/)
   assert.doesNotMatch(page,/classGroups|fetchTeachingClassCompare|ClassComparePanel/)
   const compare=readFileSync(path.join(root,'components/scores/TeachingPlatformCompare.tsx'),'utf8')
-  assert.doesNotMatch(compare,/platformStudents|学生成绩明细/)
+  assert.doesNotMatch(compare,/platformStudents|学生成绩明细|TeachingQualitySupplement|补充对比/)
 })

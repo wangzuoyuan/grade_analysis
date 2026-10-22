@@ -5,14 +5,13 @@ import Link from 'next/link'
 import { platformExams, platformCompare, type PlatformExam, type PlatformCompare } from '@/lib/api-v1'
 import { PlatformScope, usePlatformScope } from './PlatformScope'
 import { apiErrorMessage } from '@/components/link/error-text'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { TeachingQualityTables, TeachingQualitySupplement } from './TeachingQualityTables'
+import { TeachingQualityTables } from './TeachingQualityTables'
 
 function ExamDetails({ id, grade }: { id: number; grade: number }) {
   const [data, setData] = useState<PlatformCompare | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [basis, setBasis] = useState<'raw' | 'grade'>('raw')
   useEffect(() => {
     let stale = false
     setData(null); setError(null)
@@ -22,18 +21,7 @@ function ExamDetails({ id, grade }: { id: number; grade: number }) {
   }, [id])
   if (error) return <p role="alert" className="rounded bg-red-50 p-4 text-red-700">{error}</p>
   if (!data) return <p role="status" className="p-8 text-center text-slate-500">正在读取考试快照…</p>
-  return <>
-    <TeachingQualityTables data={data} grade={grade} />
-    <Card className="min-w-0"><CardHeader><div className="flex flex-wrap items-center justify-between gap-3">
-      <CardTitle>补充对比</CardTitle><div className="flex gap-2">
-        <Button size="sm" variant={basis === 'raw' ? 'default' : 'outline'} onClick={() => setBasis('raw')}>原始分</Button>
-        {grade !== 1 && <Button size="sm" variant={basis === 'grade' ? 'default' : 'outline'} onClick={() => setBasis('grade')}>等级分</Button>}
-      </div></div><p className="text-xs text-slate-500">按考试当时快照 · 修订 {data.metadata.data_revision}</p>
-    </CardHeader><CardContent className="space-y-3">
-      <TeachingQualitySupplement data={data} basis={basis} />
-      {data.warnings.length > 0 && <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/50 p-3 text-sm text-amber-800">{data.warnings.map(w => <p key={w}>{w}</p>)}</div>}
-    </CardContent></Card>
-  </>
+  return <TeachingQualityTables data={data} grade={grade} />
 }
 
 export function TeachingPlatformCompare({onLegacy,title='班级对比'}:{onLegacy:()=>void;title?:string}) {
