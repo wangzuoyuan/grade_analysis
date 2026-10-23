@@ -73,6 +73,39 @@ test('平行班汇总紧随本组成绩，实验班汇总紧随实验班，合�
   assert.match(body, /stickyCol/, '冻结格带不透明背景类')
 })
 
+test('2026-10-23 汇总口径：0 = 该班无人选，平均/最高/最低只统计非零班（与学校汇总行一致）', () => {
+  // 复现真实场景：平行班部分班选科列为 0（无人选）。学校表汇总排除 0 班；
+  // 修复前 0 被当真实分计入除数（平均被拉低）且 最低 恒为 0。
+  const makeRow = (class_num, chinese, physics) => ({
+    class_num, class_type: '平行班', teacher_name: '合成教师',
+    subjects: { '语文': chinese, '物理_原始': physics, '物理_等级': physics, '化学_原始': 0 },
+    totals: { '3+3': { '均分': physics } },
+    total_ranks: { '3+3': 1 },
+  })
+  const markup = renderToStaticMarkup(React.createElement(scope.ClassAveragesTable, { data: {
+    exam_name: '合成汇总口径测评', current_class_num: 1,
+    subjects: ['语文', '物理_原始', '物理_等级', '化学_原始'], total_types: ['3+3'],
+    rows: [makeRow(1, 90, 60), makeRow(2, 88, 0), makeRow(3, 92, 80)],
+  } }))
+  const body = markup.match(/<tbody>([\s\S]*?)<\/tbody>/)[1]
+  const rows = [...body.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map(match => match[1])
+  assert.equal(rows.length, 6, '3 数据行 + 3 汇总行')
+  assert.match(rows[3], /colspan="2"[^>]*>平均/i)
+  // 物理/3+3：非零两班 60、80 → 平均 70（修复前 (60+0+80)/3=46.7）
+  assert.match(rows[3], />70<\/td>/, '平均只除以非零班数')
+  // 语文三班全有 → 平均 90（全有值科目不受影响）
+  assert.match(rows[3], />90<\/td>/, '全有值列照常平均')
+  assert.match(rows[4], />80<\/td>/, '最高为非零最高')
+  // 最低 60（修复前 Math.min 含 0 恒为 0）
+  assert.match(rows[5], />60<\/td>/, '最低排除 0 班')
+  assert.doesNotMatch(rows[5], />0<\/td>/, '最低不得再显示 0')
+  // 全组皆 0 的列（无班选）汇总显示 —
+  for (const idx of [3, 4, 5]) {
+    const cells = [...rows[idx].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(match => match[1])
+    assert.ok(cells.includes('—'), `第 ${idx} 行全零列应显示 —`)
+  }
+})
+
 test('2026-10-22 明细表尺寸：限高容器+粘性表头+冻结学号/姓名列+3+3口径脚注', () => {
   const studentsIdx = source.indexOf('学生成绩明细表')
   const studentsTabIdx = source.indexOf('value="students"')

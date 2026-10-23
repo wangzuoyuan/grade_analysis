@@ -280,9 +280,11 @@ function summaryNumber(
   values: (row: HomeroomClassAverageRow) => number | null | undefined,
   kind: '平均' | '最高' | '最低',
 ): number | null {
-  const nums = rows.map(values).filter((value): value is number => typeof value === 'number')
+  // 学校均分表口径：0 = 该班无人选此科，不算成绩——除数与最高/最低都只统计非零班（与学校汇总行一致）
+  const nums = rows
+    .map(values)
+    .filter((value): value is number => typeof value === 'number' && value !== 0)
   if (nums.length === 0) return null
-  if (nums.every((value) => value === 0)) return null
   if (kind === '最高') return Math.max(...nums)
   if (kind === '最低') return Math.min(...nums)
   return Math.round((nums.reduce((sum, value) => sum + value, 0) / nums.length) * 100) / 100
