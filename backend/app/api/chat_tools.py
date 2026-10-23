@@ -2285,8 +2285,10 @@ def _tool_get_homework_student_subjects(db, snapshot: dict, args: dict) -> dict:
     """单个学生逐学科作业×成绩总览（2026-10-22 上线端点
     homeroom_student_homework_subjects 的薄封装，仅班主任域）：全科并列，
     成绩口径按学科自适应（高一全科与高二/三语数英=年级百分位换算、高二/三
-    六选科=等级分），未选修/无成绩事实的学科由 service 跳过。person_id 先
-    过快照成员守卫；跨年由 _year_id_of 解析后传该学年行政班（fix11），
+    六选科=等级分），未选修/无成绩事实的学科由 service 跳过。2026-10-23 起
+    window_mode 默认 between_exams（提交率区间=上一次考试次日至本次考试前，
+    首场自本学期开始）；fixed=考试日前 window_days 天的旧口径。person_id
+    先过快照成员守卫；跨年由 _year_id_of 解析后传该学年行政班（fix11），
     service 在目标学年名册内再校验（越界 404 → 可读错误文本）。"""
     guard = _member_guard(snapshot, args.get("person_id"))
     if guard:
@@ -2294,6 +2296,12 @@ def _tool_get_homework_student_subjects(db, snapshot: dict, args: dict) -> dict:
     year_id, err = _year_id_of(db, snapshot, args)
     if err:
         return err
+    window_mode = (args.get("window_mode") or "between_exams").strip()
+    if window_mode not in ("fixed", "between_exams"):
+        return {
+            "error": "invalid_scope_param",
+            "detail": "window_mode 必须是 fixed 或 between_exams",
+        }
     try:
         window_days = int(args.get("window_days") or 14)
     except (TypeError, ValueError):
@@ -2312,6 +2320,7 @@ def _tool_get_homework_student_subjects(db, snapshot: dict, args: dict) -> dict:
         homeroom_student_homework_subjects,
         person_id=args["person_id"],
         window_days=window_days,
+        window_mode=window_mode,
         academic_year_id=year_id,
         class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11：跨年解析该学年行政班
         db=db,
@@ -2879,9 +2888,11 @@ TOOL_REGISTRY: List[WsToolSpec] = [
             "查询单个学生逐学科的作业×成绩总览（全科并列）：每科一条按考试"
             "次序的时间线（成绩口径按学科自适应：高一全部学科与高二/三语数英"
             "用年级百分位（换算为 100−前百分比，越大越好），高二/三六选科用"
-            "等级分）+ 考前窗口作业提交率；未选修/无成绩事实的学科自动跳过。"
+            "等级分）+ 作业提交率；未选修/无成绩事实的学科自动跳过。提交率"
+            "统计区间默认为上一次考试次日至本次考试前（首场考试自本学期开始），"
+            "window_mode=fixed 可改回考试日前 window_days 天（14 或 30）。"
             "与 get_homework_correlation（单科完整相关性分析）分工：本工具"
-            "一次看全科概览。window_days 限 14 或 30。班主任专属。"
+            "一次看全科概览。班主任专属。"
         ),
         input_schema=_schema_with_year_args(
             {
@@ -2889,9 +2900,13 @@ TOOL_REGISTRY: List[WsToolSpec] = [
                     "type": "integer",
                     "description": "会话范围内学生身份 ID（search_students 获取）",
                 },
+                "window_mode": {
+                    "type": "string",
+                    "description": "可选，between_exams（默认，两次考试之间，首场自本学期开始）或 fixed（考试日前固定天数）",
+                },
                 "window_days": {
                     "type": "integer",
-                    "description": "可选，作业窗口天数（14 或 30），默认 14",
+                    "description": "可选，仅 window_mode=fixed 时生效的窗口天数（14 或 30），默认 14",
                 },
             },
             required=["person_id"],

@@ -23,10 +23,16 @@
 - 公式按 [SciPy Kendall tau-b 定义](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.kendalltau.html)：一致对减不一致对，除以两轴非并列对数乘积的平方根。只展示系数，不输出显著性、置信区间或因果判断。
 - 考试以 `workspace_exam_event` 根事件标识，subject 的真实日期继续决定考前窗口。归并来源不重复计场；同一学科同事件日期冲突仍排除，不伪造日期。旧未绑定记录保留原始平台范围/日期和明确年级约束。
 
-## 单人逐学科总览端点（2026-10-22）
+## 单人逐学科总览端点（2026-10-22；2026-10-23 窗口改考试区间）
 
 `GET /api/v1/homeroom/diagnosis/homework-student-subjects`（仅班主任域，教学域不提供）
 
-参数：`person_id`（必填，须在当前班主任范围内，越界 404）、`window_days=14|30`（非法 422）、`academic_year_id`/`class_id` 可选（与 homework-students 同一作用域解析）。
+参数：`person_id`（必填，须在当前班主任范围内，越界 404）、`window_days=14|30`（非法 422）、`window_mode`（2026-10-23 起，默认 `between_exams`；非法 422）、`academic_year_id`/`class_id` 可选（与 homework-students 同一作用域解析）。
 
-实现：按规范学科序 语文/数学/英语/物理/化学/生物/政治/历史/地理 逐科复用 `student_homework_analysis`（钉 person_id 单人、不设截止考试与年级过滤）；timeline 为空的学科跳过（不占位）。响应 `{person_id, name, window_days, subjects[], note}`，每个学科 `{subject, paired_n, total_n, timeline[]}`；timeline 点为单科 homework-students 同源投影：`exam_key/exam_name/exam_date/grade/basis/raw_score/achievement/percentile/submission_rate/submitted/eligible/pair_reason`（作业三字段取自该场窗口 homework 摘要，无窗口时为 null）。成绩口径由各点 `basis` 自带（上一节按学科规则）。相关性、进步、评价等完整结论仍在单科 homework-students，本端点只做单人跨科总览。
+实现：按规范学科序 语文/数学/英语/物理/化学/生物/政治/历史/地理 逐科复用 `student_homework_analysis`（钉 person_id 单人、不设截止考试与年级过滤）；timeline 为空的学科跳过（不占位）。响应 `{person_id, name, window_days, window_mode, subjects[], note}`，每个学科 `{subject, paired_n, total_n, timeline[]}`；timeline 点为单科 homework-students 同源投影：`exam_key/exam_name/exam_date/grade/basis/raw_score/achievement/percentile/submission_rate/submitted/eligible/pair_reason/window_start/window_end`（作业字段取自该场窗口 homework 摘要，无窗口时为 null）。成绩口径由各点 `basis` 自带（上一节按学科规则）。相关性、进步、评价等完整结论仍在单科 homework-students，本端点只做单人跨科总览。
+
+### 提交率窗口模式（2026-10-23，总览端点默认 between_exams）
+
+- `between_exams`（默认）：每场考试的提交率统计区间为 **上一次考试次日至本次考试前**（`[上一场+1, 考试日)`，同年级相邻场依据该生可读同科时间线，与既有「窗口不重复/不跨缺考场补连」同一来源）；**首场考试（同年级无前场）自本学期开始**至考试前。学期起点取作业学期设置 `ws_homework_semester` 的手工行（含考试日的学期；落在学期之间取最近已开始学期，早于所有学期取最早学期）；同学年无手工行时与作业模块同规则按学年日期二分推导（auto）。无任何学期数据时该场窗口不可计算（`window_start`/`submission_rate` 为 null，`insufficient_homework`）。
+- `fixed`：既有口径不变——`[max(考试日-window_days, 上一场+1), 考试日)`。单科 homework-students（班主任/教学）与 AI get_homework_correlation 仍为 fixed，不受本变更影响。
+- 区间变长后单场窗口可含更多批次，「每窗至少 3 份有效作业」「分母不明批次过半不参与」等门槛与分母规则全部不变。AI 工具 `get_homework_student_subjects` 为本端点薄封装，新增 `window_mode` 参数（默认 between_exams），`window_days` 仅 fixed 模式生效。

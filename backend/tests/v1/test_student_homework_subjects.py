@@ -137,16 +137,20 @@ def overview(client, w, **extra):
 
 
 def test_subjects_overview_shape_order_and_fields(client, world):
-    """单人逐科总览：规范学科序、timeline 字段齐全、空学科（化学）跳过。"""
+    """单人逐科总览：规范学科序、timeline 字段齐全、空学科（化学）跳过。
+    2026-10-23 起默认 window_mode=between_exams：首场窗口自本学期开始
+    （fixture 无 ws_homework_semester 行 → 按学年日期二分推导，上学期
+    起点=2025-09-01）。"""
     w = world()
     r = overview(client, w, person_id=w.pids[0])
     assert r.status_code == 200, r.text
     data = r.json()
-    assert set(data) == {'person_id', 'name', 'window_days', 'subjects', 'note'}
+    assert set(data) == {'person_id', 'name', 'window_days', 'window_mode', 'subjects', 'note'}
     assert data['person_id'] == w.pids[0]
     assert data['name'] == '张三'
     assert data['window_days'] == 14
-    assert data['note']
+    assert data['window_mode'] == 'between_exams'
+    assert '上一次考试' in data['note'] and '本学期' in data['note']
     assert [s['subject'] for s in data['subjects']] == ['语文', '数学', '英语', '物理']
     first = data['subjects'][0]
     assert set(first) == {'subject', 'paired_n', 'total_n', 'timeline'}
@@ -154,16 +158,57 @@ def test_subjects_overview_shape_order_and_fields(client, world):
     point = first['timeline'][0]
     assert set(point) == {'exam_key', 'exam_name', 'exam_date', 'grade', 'basis', 'raw_score',
                           'achievement', 'percentile', 'submission_rate', 'submitted',
-                          'eligible', 'pair_reason'}
+                          'eligible', 'pair_reason', 'window_start', 'window_end'}
     assert point['basis'] == 'grade_percentile' and point['achievement'] == 20
     assert point['exam_name'] == '合成语文测评1' and point['grade'] == 2
     assert point['eligible'] == 10 and point['submitted'] == 3
     assert point['submission_rate'] == 0.3 and point['pair_reason'] is None
+    assert point['window_start'] == '2025-09-01' and point['window_end'] == '2025-09-30'
     physics = next(s for s in data['subjects'] if s['subject'] == '物理')
     assert physics['timeline'][0]['basis'] == 'grade_score'
     # 换人可用：李四名字回传
     other = overview(client, w, person_id=w.pids[1]).json()
     assert other['name'] == '李四'
+
+
+def test_subjects_overview_windows_span_between_exams(client, world):
+    """区间口径：窗口=上一次考试次日至本次考试前；首场自本学期开始
+    （二分推导起点 2025-09-01）。考试每 20 天一场，窗口起点=前一场+1。"""
+    w = world()
+    data = overview(client, w, person_id=w.pids[0]).json()
+    chinese = next(s for s in data['subjects'] if s['subject'] == '语文')
+    assert [p['window_start'] for p in chinese['timeline']] == [
+        '2025-09-01', '2025-10-02', '2025-10-22', '2025-11-11']
+    assert [p['window_end'] for p in chinese['timeline']] == [
+        '2025-09-30', '2025-10-20', '2025-11-09', '2025-11-29']
+
+
+def test_subjects_overview_semester_rows_override_derivation(client, world):
+    """作业学期设置（ws_homework_semester 手工行）优先于二分推导：
+    含首场考试的学期起点成为首场窗口起点。"""
+    from app.db import workspace_models as wm
+    w = world()
+    w.db.add(wm.WsHomeworkSemester(academic_year_id=w.ay, name='合成学期',
+        start_date=date(2025, 9, 15), end_date=date(2026, 1, 31),
+        is_current=1, mode='manual'))
+    w.db.commit()
+    data = overview(client, w, person_id=w.pids[0]).json()
+    chinese = next(s for s in data['subjects'] if s['subject'] == '语文')
+    assert chinese['timeline'][0]['window_start'] == '2025-09-15'
+    # 应交批次都在 9-21 之后，起点后移不减少 eligible
+    assert chinese['timeline'][0]['eligible'] == 10
+
+
+def test_subjects_overview_fixed_mode_keeps_legacy_window(client, world):
+    """window_mode=fixed 保留旧口径：首场=考试日前 window_days 天，
+    后续场=与上一场+1 取晚者（不重复上一场窗口）。"""
+    w = world()
+    data = overview(client, w, person_id=w.pids[0], window_mode='fixed').json()
+    assert data['window_mode'] == 'fixed'
+    assert 'window_days 天' in data['note']
+    chinese = next(s for s in data['subjects'] if s['subject'] == '语文')
+    starts = [p['window_start'] for p in chinese['timeline']]
+    assert starts == ['2025-09-17', '2025-10-07', '2025-10-27', '2025-11-16']
 
 
 def test_subjects_overview_scope_and_param_errors(client, world, v1_seed):
@@ -173,6 +218,7 @@ def test_subjects_overview_scope_and_param_errors(client, world, v1_seed):
     assert overview(client, w, person_id=v1_seed.jia_t_id).status_code == 404
     assert overview(client, w, person_id=w.pids[0], window_days=7).status_code == 422
     assert overview(client, w, person_id=w.pids[0], window_days=30).status_code == 200
+    assert overview(client, w, person_id=w.pids[0], window_mode='bogus').status_code == 422
     assert overview(client, w).status_code == 422
     teaching = client.get('/api/v1/teaching/diagnosis/homework-student-subjects',
                           params={'person_id': w.pids[0]})

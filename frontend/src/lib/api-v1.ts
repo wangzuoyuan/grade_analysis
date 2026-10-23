@@ -2696,7 +2696,8 @@ export function studentHomeworkAnalysis(
 /* ------------------------------------------------------------------ */
 
 /** 逐场观察点：achievement 口径按学科分——语数英/高一=100×(1−百分位)（前%），
- *  六选科（高二/三）=等级分；submission_rate 为 0–1。 */
+ *  六选科（高二/三）=等级分；submission_rate 为 0–1；window_start/window_end
+ *  为该场提交率统计区间（含头不含尾）。 */
 export interface HomeworkSubjectPoint {
   exam_key: string
   exam_name: string
@@ -2710,6 +2711,8 @@ export interface HomeworkSubjectPoint {
   submitted: number | null
   eligible: number | null
   pair_reason: string | null
+  window_start: string | null
+  window_end: string | null
 }
 
 export interface HomeworkSubjectSeries {
@@ -2724,6 +2727,8 @@ export interface StudentHomeworkSubjectsResponse {
   person_id: number
   name: string | null
   window_days: number
+  /** 提交率窗口模式：between_exams（默认，两次考试之间）| fixed（考前 N 天）。 */
+  window_mode: string
   /** 规范学科序（语数英在前），仅含有考试记录的学科。 */
   subjects: HomeworkSubjectSeries[]
   note: string
@@ -2731,7 +2736,12 @@ export interface StudentHomeworkSubjectsResponse {
 
 /** GET /api/v1/homeroom/diagnosis/homework-student-subjects（单生全科，一次请求）。 */
 export function studentHomeworkSubjects(
-  q: { person_id: number; window_days?: 14 | 30; academic_year_id?: string | number },
+  q: {
+    person_id: number
+    window_days?: 14 | 30
+    window_mode?: 'fixed' | 'between_exams'
+    academic_year_id?: string | number
+  },
 ): Promise<StudentHomeworkSubjectsResponse> {
   return request(withQuery(`${API_V1_BASE}/homeroom/diagnosis/homework-student-subjects`, { ...q }))
 }

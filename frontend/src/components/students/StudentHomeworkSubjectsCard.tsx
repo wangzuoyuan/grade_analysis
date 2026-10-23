@@ -4,7 +4,8 @@
  * 个人作业与成绩分析（全科并列卡，班主任学生档案页专用，2026-10-22）。
  *
  * 数据源：GET /api/v1/homeroom/diagnosis/homework-student-subjects（单生全科一次请求），
- * 窗口固定 14 天（考前 14 天作业提交率），随 personId/学年变化重拉并丢弃迟到回包。
+ * 提交率区间 window_mode=between_exams：上一次考试次日至本次考试前（首场考试
+ * 自本学期开始，学期取作业学期设置），随 personId/学年变化重拉并丢弃迟到回包。
  * 每个学科一块：左「考前提交率」迷你折线（0–100%，蓝 #0ea5e9），右「成绩」迷你折线（紫 #8b5cf6）。
  * 成绩口径按学科分：语数英/高一为年级百分位（前%，越小越好；该科全部点同为该口径时
  * Y 域固定 0–100 且 reversed，越靠前画得越高），高二/高三六选科为等级分（自动域）。
@@ -41,6 +42,12 @@ function chartablePoints(s: HomeworkSubjectSeries): HomeworkSubjectPoint[] {
   return s.timeline.filter((p) => p.exam_date != null && p.exam_date !== '')
 }
 
+/** 悬浮标题：考试名 + 该场提交率统计起点（区间口径下说明数据从哪天算起）。 */
+function examSpanLabel(label: unknown, payload?: ReadonlyArray<{ payload?: HomeworkSubjectPoint }>): string {
+  const start = payload?.[0]?.payload?.window_start
+  return `考试：${String(label)}${start ? `，提交率统计自 ${start}` : ''}`
+}
+
 export default function StudentHomeworkSubjectsCard({
   personId,
   academicYearId,
@@ -59,7 +66,7 @@ export default function StudentHomeworkSubjectsCard({
     setData(null)
     setError(null)
     setLoaded(false)
-    studentHomeworkSubjects({ person_id: personId, academic_year_id: academicYearId, window_days: 14 })
+    studentHomeworkSubjects({ person_id: personId, academic_year_id: academicYearId, window_days: 14, window_mode: 'between_exams' })
       .then((r) => {
         if (req !== reqRef.current) return
         setData(r)
@@ -80,7 +87,7 @@ export default function StudentHomeworkSubjectsCard({
           个人作业与成绩分析
         </CardTitle>
         <CardDescription>
-          各学科考前作业提交率与成绩变化并列对比；语数英与高一用年级百分位（前%），高二/高三六选科用等级分
+          各学科作业提交率（上次考试后至本次考试前，首场自开学起）与成绩变化并列对比；语数英与高一用年级百分位（前%），高二/高三六选科用等级分
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -162,7 +169,7 @@ function SubjectBlock({ series }: { series: HomeworkSubjectSeries }) {
                 />
                 <RTooltip
                   formatter={(val: unknown) => [val == null ? DASH : `${Number(val).toFixed(0)}%`, '考前提交率']}
-                  labelFormatter={(label) => `考试：${label}`}
+                  labelFormatter={examSpanLabel}
                 />
                 <Line
                   type="monotone"
@@ -199,7 +206,7 @@ function SubjectBlock({ series }: { series: HomeworkSubjectSeries }) {
                         ? [`前${Number(val).toFixed(1)}%`, '成绩']
                         : [`${Number(val).toFixed(1)} 等级分`, '成绩']
                   }
-                  labelFormatter={(label) => `考试：${label}`}
+                  labelFormatter={examSpanLabel}
                 />
                 <Line
                   type="monotone"

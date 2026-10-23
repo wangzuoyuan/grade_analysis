@@ -222,7 +222,7 @@ test('上传页 P3 遗留：考试名/日期覆盖输入；row_count 标签改�
   assert.match(previewTable, /成绩条目/, 'row_count 标签应为「成绩条目」')
 })
 
-test('档案页「个人作业与成绩分析」全科并列卡：挂作业卡上方、14 天窗口、无学科筛选（2026-10-22）', () => {
+test('档案页「个人作业与成绩分析」全科并列卡：挂作业卡上方、区间窗口（上次考试起，首场自开学）、无学科筛选（2026-10-23）', () => {
   assert.match(
     profileView,
     /import StudentHomeworkSubjectsCard from '@\/components\/students\/StudentHomeworkSubjectsCard'/,
@@ -236,19 +236,29 @@ test('档案页「个人作业与成绩分析」全科并列卡：挂作业卡�
     /<StudentHomeworkSubjectsCard\s+personId=\{Number\(selectedPersonId\)\}\s+academicYearId=\{scopeQ\.academic_year_id\}\s*\/>/,
     '装配参数：person_id + 学年（mode 恒班主任域，不传）',
   )
-  // 数据契约：单生全科一次请求，窗口固定 14 天，迟到回包按请求序号丢弃
+  // 数据契约：单生全科一次请求，提交率区间=上一次考试至本次（首场自本学期开始），
+  // 迟到回包按请求序号丢弃
   assert.match(
     homeworkSubjectsCard,
-    /studentHomeworkSubjects\(\{ person_id: personId, academic_year_id: academicYearId, window_days: 14 \}\)/,
-    '须调用 studentHomeworkSubjects 且 window_days=14',
+    /studentHomeworkSubjects\(\{ person_id: personId, academic_year_id: academicYearId, window_days: 14, window_mode: 'between_exams' \}\)/,
+    '须调用 studentHomeworkSubjects 且 window_mode=between_exams',
   )
   assert.match(homeworkSubjectsCard, /if \(req !== reqRef\.current\) return/, '切换学生后的迟到回包须丢弃')
   assert.match(homeworkSubjectsCard, /个人作业与成绩分析/, '卡片标题')
   assert.match(
     homeworkSubjectsCard,
-    /各学科考前作业提交率与成绩变化并列对比；语数英与高一用年级百分位（前%），高二\/高三六选科用等级分/,
-    '口径描述',
+    /各学科作业提交率（上次考试后至本次考试前，首场自开学起）与成绩变化并列对比；语数英与高一用年级百分位（前%），高二\/高三六选科用等级分/,
+    '口径描述（2026-10-23 区间口径）',
   )
+  assert.match(homeworkSubjectsCard, /function examSpanLabel/, '悬浮标题助手（考试+统计起点）')
+  assert.match(homeworkSubjectsCard, /labelFormatter=\{examSpanLabel\}/, '两个悬浮都带统计起点')
+  assert.match(homeworkSubjectsCard, /window_start/, '使用窗口起点字段')
+  assert.match(
+    apiV1,
+    /window_start: string \| null[\s\S]*?window_end: string \| null/,
+    'API 类型补窗口起止字段',
+  )
+  assert.match(apiV1, /window_mode\?: 'fixed' \| 'between_exams'/, 'API 封装可传 window_mode')
   assert.match(homeworkSubjectsCard, /grid gap-3 md:grid-cols-2 xl:grid-cols-3/, '学科块三列网格')
   assert.match(homeworkSubjectsCard, /配对 \{series\.paired_n\} 场/, '配对场数徽标')
   assert.match(homeworkSubjectsCard, /该生暂无可配对的考试与作业记录/, 'subjects 为空的空态提示')

@@ -4,18 +4,31 @@ See docs/contracts/student-homework-analysis.md for denominators and limits.
 """
 import math
 from collections import Counter
-from datetime import timedelta
+from datetime import date, timedelta
 
 from app.analysis.definitions import normalized_percentile
 from app.api import _queries as q
 from app.api import homework as hw
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
-from app.db.workspace_models import AdministrativeClass, TeachingClass, TeachingExamScope, WorkspaceExamEvent
+from app.db.workspace_models import (
+    AcademicYear,
+    AdministrativeClass,
+    TeachingClass,
+    TeachingExamScope,
+    WorkspaceExamEvent,
+    WsHomeworkSemester,
+)
 from app.diagnosis.correlation import _as_context, _pearson, _spearman
 
 MIN_EXAMS = 4
 MIN_HOMEWORK = 3
 MIN_EVALUATIONS = 3
+
+# 提交率窗口模式：fixed=考试日前 N 天（N=window_days，既有口径）；
+# between_exams=上一次考试次日至本次考试前（首场考试自本学期开始，
+# 学期取作业学期设置 ws_homework_semester，无手工行时与作业模块同样
+# 按学年日期二分推导）。逐科总览端点默认 between_exams（2026-10-23）。
+WINDOW_MODES = ("fixed", "between_exams")
 
 # 成绩口径按学科分（2026-10-22 起，与 app/chat/tools.py 的 metric_note 同一规则）：
 # 高一全部学科用年级百分位；高二/三语数英用年级百分位，六选科用等级分。
@@ -32,6 +45,34 @@ def _number(value):
 
 def _rounded(value):
     return round(value, 4) if value is not None else None
+
+
+def _semester_spans(db, academic_year_id):
+    """本学年的学期区间 [(start, end)]：作业学期设置（手工行）优先，
+    缺表数据时与作业模块同规则按学年日期二分推导（auto）。"""
+    if academic_year_id is None:
+        return []
+    rows = db.query(WsHomeworkSemester).filter(
+        WsHomeworkSemester.academic_year_id == academic_year_id).order_by(WsHomeworkSemester.start_date).all()
+    if rows:
+        return [(r.start_date, r.end_date) for r in rows]
+    ay = db.get(AcademicYear, academic_year_id)
+    if ay is None:
+        return []
+    return [(date.fromisoformat(e.start_date), date.fromisoformat(e.end_date))
+            for e in hw._derived_semester_entries(ay)]
+
+
+def _semester_start(spans, day):
+    """考试所在学期的开始日：落在某学期内取该学期起点；落在学期之间
+    取最近一个已开始的学期；早于所有学期取最早学期起点；无学期数据
+    返回 None（该场窗口不可计算，按既有缺失处理）。"""
+    if day is None:
+        return None
+    started = [s for s, _ in spans if s <= day]
+    if started:
+        return max(started)
+    return min(s for s, _ in spans) if spans else None
 
 
 def _kendall_tau_b(xs, ys):
@@ -216,8 +257,19 @@ def _observation(exam, pid, events, previous_day, same_day):
     elif same_day:
         reason = "same_day_exams"
     window_day = day if not exam["date_conflict"] else None
-    start = max(window_day - timedelta(days=exam["window_days"]), previous_day + timedelta(days=1)) if window_day and previous_day else (
-        window_day - timedelta(days=exam["window_days"]) if window_day else None)
+    if exam.get("window_mode") == "between_exams":
+        # 区间口径：上一次考试次日至本次考试前；首场（同年级无前场）自
+        # 本学期开始。span_start 由调用方按考试日期解析好放在 exam 上
+        # （attention 等复用方不带该键 → 走 fixed 既有口径）。
+        if window_day and previous_day:
+            start = previous_day + timedelta(days=1)
+        elif window_day:
+            start = exam.get("span_start")
+        else:
+            start = None
+    else:
+        start = max(window_day - timedelta(days=exam["window_days"]), previous_day + timedelta(days=1)) if window_day and previous_day else (
+            window_day - timedelta(days=exam["window_days"]) if window_day else None)
     homework = _window(events, pid, start, day) if start is not None else None
     if reason is None and (homework is None or homework["eligible"] < MIN_HOMEWORK):
         reason = "insufficient_homework"
@@ -297,12 +349,15 @@ def _summarize(pid, name, alias, labels, timeline, uncertain_order=False):
 
 
 def student_homework_analysis(db, scope, subject=None, window_days=14,
-                              homework_type=None, person_id=None, end_exam_name=None, grade=None):
+                              homework_type=None, person_id=None, end_exam_name=None, grade=None,
+                              window_mode="fixed"):
     ctx = _as_context(scope)
     if window_days not in (14, 30) or isinstance(window_days, bool):
         raise InvalidScopeParam("window_days 必须是14或30")
     if grade is not None and grade not in (1, 2, 3):
         raise InvalidScopeParam("grade 必须是1、2或3")
+    if window_mode not in WINDOW_MODES:
+        raise InvalidScopeParam("window_mode 必须是 fixed 或 between_exams")
     if ctx.mode == "teaching":
         subject = ctx.subject
     subject = (subject or "").strip()
@@ -330,6 +385,9 @@ def student_homework_analysis(db, scope, subject=None, window_days=14,
         else:
             exams = [e for e in exams if e["date"] is not None and e["date"] <= anchor["date"]]
     events = _homework_events(db, ctx, subject, homework_type)
+    # 区间口径的学期起点按考试日期解析一次（exam dict 为各学生共享对象，
+    # 同一场考试起点一致）；fixed 口径不用。
+    semester_spans = _semester_spans(db, ctx.academic_year_id) if window_mode == "between_exams" else []
     ids = [person_id] if person_id is not None else list(ctx.member_person_ids)
     names = q.names_for(db, ids)
     aliases = q.aliases_for(db, ids, ctx.mode, ctx.academic_year_id)
@@ -346,6 +404,8 @@ def student_homework_analysis(db, scope, subject=None, window_days=14,
         prev_by_grade = {}
         for exam in relevant:
             exam["window_days"] = window_days
+            exam["window_mode"] = window_mode
+            exam["span_start"] = _semester_start(semester_spans, exam["date"])
             previous_day = prev_by_grade.get(exam["grade"])
             timeline.append(_observation(exam, pid, events, previous_day, days[exam["date"]] > 1))
             if exam["date"] is not None and not exam["date_conflict"]:
@@ -353,10 +413,14 @@ def student_homework_analysis(db, scope, subject=None, window_days=14,
         students.append(_summarize(pid, names.get(pid), aliases.get(pid), [c.label for c in own_classes], timeline,
                                    uncertain_order=pid in unordered_people))
     students.sort(key=lambda s: q.roster_sid_sort_key(s["alias"], None, s["name"], s["person_id"]))
+    window_note = ("不含考试当日与考后作业；提交率统计区间为上一次考试次日至本次考试前，"
+                   "首场考试自本学期开始（学期取作业学期设置）。"
+                   if window_mode == "between_exams" else
+                   "不含考试当日与考后作业，窗口不重复使用上一场考前作业。")
     return dict(calc_version="student-homework-v2", mode=ctx.mode, academic_year_id=ctx.academic_year_id,
-                subject=subject, window_days=window_days, end_exam_name=end_exam_name,
+                subject=subject, window_days=window_days, window_mode=window_mode, end_exam_name=end_exam_name,
                 minimum_exams=MIN_EXAMS, minimum_homework=MIN_HOMEWORK, students=students,
                 note="成绩口径按学科分：高一全部学科和高二/三语数英用年级百分位（越小越靠前），计算系数时转换为100−前百分比；"
                      "高二/三六选科（物化生政史地）用等级分。"
-                     "不含考试当日与考后作业，窗口不重复使用上一场考前作业。"
+                     + window_note +
                      "相关性仅描述该学生的统计共变，不构成因果结论或提分保证；时间趋势、考试内容和记录偏差仍可能影响结果。" + cutoff_note)

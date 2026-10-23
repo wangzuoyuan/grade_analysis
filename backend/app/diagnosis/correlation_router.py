@@ -129,6 +129,7 @@ def homeroom_student_homework(
 def homeroom_student_homework_subjects(
     person_id: int,
     window_days: int = 14,
+    window_mode: str = "between_exams",
     academic_year_id: Optional[int] = None,
     class_id: Optional[int] = None,
     db: Session = Depends(get_db),
@@ -137,18 +138,25 @@ def homeroom_student_homework_subjects(
 
     按规范学科序（语文/数学/英语/物理/化学/生物/政治/历史/地理）逐科复用
     student_homework_analysis（钉 person_id 单人、不设截止考试与年级过滤），
-    timeline 为空的学科跳过。成绩口径由各科 timeline 点 basis 字段自带
-    （见 app/diagnosis/student_homework.py CORE_SUBJECTS 按学科规则）；
-    person_id 越界 404、window_days 非 14|30 422 沿用既有领域错误契约。
+    timeline 为空的学科跳过。2026-10-23 起 window_mode 默认 between_exams：
+    提交率统计区间为上一次考试次日至本次考试前（首场自本学期开始，学期取
+    作业学期设置，缺手工行按学年日期二分推导）；window_mode=fixed 保留
+    考试日前 window_days 天的既有口径。成绩口径由各科 timeline 点 basis
+    字段自带（见 app/diagnosis/student_homework.py CORE_SUBJECTS 按学科
+    规则）；person_id 越界 404、window_days 非 14|30 或 window_mode 非法
+    422 沿用既有领域错误契约。
     """
-    from app.diagnosis.student_homework import SUBJECT_ORDER, student_homework_analysis
+    from app.diagnosis.student_homework import SUBJECT_ORDER, WINDOW_MODES, student_homework_analysis
     _check_window_days(window_days)
+    if window_mode not in WINDOW_MODES:
+        raise InvalidScopeParam("window_mode 必须是 fixed 或 between_exams")
     ctx = _homeroom_ctx(db, academic_year_id, class_id, None)
     subjects = []
     name = None
     for subject in SUBJECT_ORDER:
         students = student_homework_analysis(db, ctx, subject, window_days,
-            person_id=person_id, end_exam_name=None, grade=None)["students"]
+            person_id=person_id, end_exam_name=None, grade=None,
+            window_mode=window_mode)["students"]
         if not students:
             continue
         name = name or students[0]["name"]
@@ -170,11 +178,18 @@ def homeroom_student_homework_subjects(
                 "submitted": (p["homework"] or {}).get("submitted"),
                 "eligible": (p["homework"] or {}).get("eligible"),
                 "pair_reason": p["pair_reason"],
+                "window_start": p.get("window_start"),
+                "window_end": p.get("window_end"),
             } for p in students[0]["timeline"]],
         })
-    return dict(person_id=person_id, name=name, window_days=window_days, subjects=subjects,
+    window_note = ("提交率统计区间为上一次考试次日至本次考试前（首场自本学期开始），不含考试当日与考后。"
+                   if window_mode == "between_exams" else
+                   "提交率为考试日前 window_days 天窗口，不含考试当日与考后。")
+    return dict(person_id=person_id, name=name, window_days=window_days, window_mode=window_mode,
+                subjects=subjects,
                 note="逐科时间线口径：高一全部学科与高二/三语数英用年级百分位（换算为100−前百分比，大为好），"
-                     "高二/三六选科用等级分；作业为考试日前窗口提交率。相关性等完整结论请回看单科 homework-students。")
+                     "高二/三六选科用等级分；" + window_note +
+                     "相关性等完整结论请回看单科 homework-students。")
 
 
 @router.get("/teaching/diagnosis/homework-students")
