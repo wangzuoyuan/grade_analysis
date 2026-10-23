@@ -105,6 +105,10 @@ const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e
  *  仅作初次进入的初始值（Tabs 非受控 defaultValue），页内切换照旧，非法值回退班级均分表。 */
 const SCORES_TABS = new Set(['averages', 'students', 'bands', 'duanwei', 'frequency', 'range', 'focus'])
 
+/** 段位分布口径排除项（2026-10-23 用户裁决）：+3 为选修三科等级分之和，没有名次数据、
+ *  选中恒「段位不可计算」，不再进入口径下拉；主三门/3+3 照常提供。 */
+const DUANWEI_EXCLUDED_TOTALS = new Set<string>(['+3'])
+
 function TrendChart({
   title,
   series,
@@ -789,9 +793,13 @@ export function HomeroomScores() {
       })
   }, [selectedExam, scopeQ, rankBandsMetric, rankBandsNonce])
 
-  // 段位分布指标选项：仅各总分口径（单科行无名次，后端恒 409 不再提供）
+  // 段位分布指标选项：仅各总分口径（单科行无名次，后端恒 409 不再提供）；
+  // +3 已被 DUANWEI_EXCLUDED_TOTALS 排除（2026-10-23），主三门/3+3 保留
   const duanweiOptions = useMemo(
-    () => (stats?.totals ?? []).map((t) => ({ value: `__total__${t.total_type}`, label: `总分（${t.total_type}）` })),
+    () =>
+      (stats?.totals ?? [])
+        .filter((t) => !DUANWEI_EXCLUDED_TOTALS.has(t.total_type))
+        .map((t) => ({ value: `__total__${t.total_type}`, label: `总分（${t.total_type}）` })),
     [stats],
   )
   const activeDuanwei =
@@ -1657,7 +1665,7 @@ export function HomeroomScores() {
                       <div>
                         <CardTitle>段位分布</CardTitle>
                         <CardDescription>
-                          按成绩明细表名次计算（学籍名次优先）；段位阈值沿用分析配置。仅统计学校明细表学籍=1（闵中学籍）学生，学籍随最近一次导入更新。
+                          按成绩明细表名次计算（学籍名次优先）；段位阈值沿用分析配置。仅统计学校明细表学籍=1（闵中学籍）学生，学籍随最近一次导入更新。悬浮分段条可查看段内学生名单。
                         </CardDescription>
                       </div>
                       {duanweiOptions.length > 0 ? (
@@ -1702,28 +1710,49 @@ export function HomeroomScores() {
                           当前口径暂无段位数据（该场可能全部缺考或尚未导入）。
                         </p>
                       ) : (
-                        <ul className="space-y-2">
-                          {duanweiBands.bands.map((b) => {
-                            const pct = Math.round((b.count / duanweiMaxCount) * 100)
-                            const totalPeople = duanweiBands.bands.reduce((sum, x) => sum + x.count, 0)
-                            return (
-                              <li key={b.label} className="flex items-center gap-3">
-                                <span className="w-40 shrink-0 truncate text-xs text-slate-500" title={b.label}>
-                                  {b.label}
-                                </span>
-                                <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-100">
+                        /* 2026-10-23：悬浮分段条浮出段内学生名单（names 按名次升序，与 students 同序） */
+                        <TooltipProvider delayDuration={150}>
+                          <ul className="space-y-2">
+                            {duanweiBands.bands.map((b) => {
+                              const pct = Math.round((b.count / duanweiMaxCount) * 100)
+                              const totalPeople = duanweiBands.bands.reduce((sum, x) => sum + x.count, 0)
+                              const namesLabel = (b.names ?? []).filter(Boolean).join('、')
+                              const track = (
+                                <div className="h-3 flex-1 cursor-default overflow-hidden rounded-full bg-slate-100">
                                   <div
                                     className="h-full rounded-full bg-gradient-to-r from-[#1f7fd6] to-[#35b9e9]"
                                     style={{ width: `${String(pct)}%` }}
                                   />
                                 </div>
-                                <span className="w-24 shrink-0 text-right text-xs tabular-nums text-slate-600">
-                                  {String(b.count)} 人{totalPeople > 0 ? ` · ${((b.count / totalPeople) * 100).toFixed(1)}%` : ''}
-                                </span>
-                              </li>
-                            )
-                          })}
-                        </ul>
+                              )
+                              return (
+                                <li key={b.label} className="flex items-center gap-3">
+                                  <span className="w-40 shrink-0 truncate text-xs text-slate-500" title={b.label}>
+                                    {b.label}
+                                  </span>
+                                  {b.count > 0 ? (
+                                    <UITooltip>
+                                      <TooltipTrigger asChild>{track}</TooltipTrigger>
+                                      <TooltipContent sideOffset={6} className="max-w-[320px] whitespace-normal">
+                                        <p className="font-medium">
+                                          {b.label} · {String(b.count)} 人
+                                        </p>
+                                        {namesLabel ? (
+                                          <p className="mt-1 leading-relaxed text-slate-600">{namesLabel}</p>
+                                        ) : null}
+                                      </TooltipContent>
+                                    </UITooltip>
+                                  ) : (
+                                    track
+                                  )}
+                                  <span className="w-24 shrink-0 text-right text-xs tabular-nums text-slate-600">
+                                    {String(b.count)} 人{totalPeople > 0 ? ` · ${((b.count / totalPeople) * 100).toFixed(1)}%` : ''}
+                                  </span>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        </TooltipProvider>
                       )}
                     </CardContent>
                   </Card>

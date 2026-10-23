@@ -128,3 +128,29 @@ test('排名分布图表学籍口径脚注（2026-10-20：总分仅学籍=1，�
   // 频次/区间：总分过滤、单科保留
   assert.match(homeroomScores, /总分口径仅统计学校明细表学籍=1（闵中学籍）学生，单科口径统计全部学生/, '频次/区间卡脚注')
 })
+
+test('段位分布口径收窄 + 悬浮学生名单（2026-10-23）', () => {
+  // 下拉去掉 +3（选修等级分之和，无名次数据、选中恒「段位不可计算」）；主三门/3+3 照常提供
+  assert.match(
+    homeroomScores,
+    /DUANWEI_EXCLUDED_TOTALS = new Set<string>\(\['\+3'\]\)/,
+    '排除集合恰含 +3 一项（不得误伤 3+3）',
+  )
+  assert.match(
+    homeroomScores,
+    /\.filter\(\(t\) => !DUANWEI_EXCLUDED_TOTALS\.has\(t\.total_type\)\)/,
+    '口径选项推导必须过滤排除集合',
+  )
+  assert.match(homeroomScores, /悬浮分段条可查看段内学生名单/, '卡片说明须提示悬浮交互')
+  // 悬浮名单：TooltipProvider 包段位条；count>0 才包浮层；姓名「、」连接、超宽换行
+  const ulIdx = homeroomScores.indexOf('duanweiBands.bands.map')
+  assert.ok(ulIdx > 0, '应能定位段位条渲染块')
+  const duanweiCtx = homeroomScores.slice(ulIdx - 500, ulIdx + 2400)
+  assert.match(duanweiCtx, /TooltipProvider delayDuration=\{150\}/, '段位条外包 TooltipProvider（house 模式）')
+  assert.match(duanweiCtx, /TooltipTrigger asChild/, '灰色轨道为触发元素')
+  assert.match(duanweiCtx, /b\.count > 0 \?/, 'count=0 的段不出浮层')
+  assert.match(duanweiCtx, /names \?\? \[\]\)\.filter\(Boolean\)\.join\('、'\)/, '段内姓名「、」连接（旧后端无 names 时静默降级）')
+  assert.match(duanweiCtx, /max-w-\[320px\] whitespace-normal/, '长名单必须换行不得撑破浮层')
+  // api 类型：names 可选（旧后端兼容）
+  assert.match(apiV1, /export interface HomeroomBand \{[\s\S]*?names\?: string\[\]\n\}/, 'HomeroomBand 须带可选 names')
+})

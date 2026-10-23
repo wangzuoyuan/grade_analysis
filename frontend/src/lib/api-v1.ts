@@ -743,11 +743,14 @@ export interface HomeroomBandsQuery extends AnalysisScopeQuery {
   subject?: string
 }
 
-/** 单个段位；students 为该段位 person_id 清单（前端仅用 count 画条形）。 */
+/** 单个段位；students 为该段位 person_id 清单（前端仅用 count 画条形）。
+ *  names 为段内学生姓名（按名次升序、与 students 一一对应，2026-10-23 起后端返回，
+ *  悬浮分段条时展示）；旧后端无此字段，故可选。 */
 export interface HomeroomBand {
   label: string
   count: number
   students: PersonId[]
+  names?: string[]
 }
 
 /** GET /api/v1/homeroom/analysis/bands 的响应。 */

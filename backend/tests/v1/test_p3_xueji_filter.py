@@ -119,6 +119,12 @@ def test_bands_and_distribution_count_only_xueji1(client, xueji_seed, v1_seed):
     assert counts["高分段"] == 1  # 仅甲（乙=3、丙=4 不计）
     assert sum(counts.values()) == 1
 
+    # 2026-10-23：每段附 names（与 students 一一对应、按名次升序）——前端悬浮名单
+    top = body["bands"][0]
+    assert top["students"] == [s.jia_h_id]
+    assert top["names"] == ["秦甲"]
+    assert all(b["students"] == [] and b["names"] == [] for b in body["bands"][1:])
+
     # 排名分段（顶部柱状图）：40 名一档，只有甲的 41-80 档计 1
     r = _q(client, f"{API}/homeroom/analysis/exams/{quote(EXAM)}/rank-distribution",
            academic_year_id=s.ay_id, class_id=s.h6_id)

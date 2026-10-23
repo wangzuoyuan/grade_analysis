@@ -1372,17 +1372,30 @@ def homeroom_bands(
         ),
         (f"薄弱段（{config['weak_min']}名起）", "weak"),
     ]
-    bands = [
-        {
-            "label": label,
-            "count": len(students),
-            "students": students,
-        }
-        for label, key in definitions
-        for students in [
-            [person_id for person_id, _rank in ranked if flags_by_person[person_id][key]]
-        ]
-    ]
+    # 2026-10-23：每段附 names（按名次升序、与 students 一一对应），供前端悬浮展示名单
+    names = q.names_for(db, [person_id for person_id, _rank in ranked])
+    bands = []
+    for label, key in definitions:
+        members = sorted(
+            (
+                (person_id, rank)
+                for person_id, rank in ranked
+                if flags_by_person[person_id][key]
+            ),
+            key=lambda item: item[1],
+        )
+        bands.append(
+            {
+                "label": label,
+                "count": len(members),
+                "students": [person_id for person_id, _rank in members],
+                "names": [
+                    name
+                    for name in (names.get(person_id) for person_id, _rank in members)
+                    if name
+                ],
+            }
+        )
     return BandsResponse(
         metadata=_analysis_metadata(
             ctx,

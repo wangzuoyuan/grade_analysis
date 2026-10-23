@@ -273,11 +273,16 @@ class TrendsResponse(BaseModel):
 
 
 class BandEntry(BaseModel):
-    """段位分布行：students 为落在该段的人；分母只计非 NULL 分数。"""
+    """段位分布行：students 为落在该段的人；分母只计非 NULL 分数。
+
+    2026-10-23：新增 names（段内学生姓名，按名次升序、与 students 一一对应，
+    供前端悬浮展示名单；display_name 缺失者跳过）。
+    """
 
     label: str
     count: int = 0
     students: List[int] = Field(default_factory=list)
+    names: List[str] = Field(default_factory=list)
 
 
 class BandsResponse(BaseModel):
