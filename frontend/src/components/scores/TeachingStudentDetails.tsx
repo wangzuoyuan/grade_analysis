@@ -11,7 +11,8 @@ export function TeachingStudentDetails({ rows, grade }: { rows: TeachingStudentR
   const showGrade = grade !== 1
   return <Table wrapperClassName="overflow-visible" className="whitespace-nowrap" aria-label="学生成绩明细">
     <TableHeader><TableRow>
-      <TableHead className="sticky left-0 z-20 w-20 bg-white">姓名</TableHead><TableHead className="sticky left-20 z-20 w-24 bg-white">班级</TableHead><TableHead className="sticky top-0 z-20 bg-white text-right">原始分</TableHead>
+      {/* 冻结列表头 z 须高于滑动表头（同排 th 统一 z-20 时按 DOM 序绘制，排最前的冻结格会被后画的滑动格盖住） */}
+      <TableHead className="sticky left-0 z-30 w-20 bg-white">姓名</TableHead><TableHead className="sticky left-20 z-30 w-24 bg-white">班级</TableHead><TableHead className="sticky top-0 z-20 bg-white text-right">原始分</TableHead>
       {showGrade && <><TableHead className="sticky top-0 z-20 bg-white text-right">等级分</TableHead><TableHead className="sticky top-0 z-20 bg-white">等级</TableHead></>}
       {showPercentile && <><TableHead className="sticky top-0 z-20 bg-white text-right">学籍排名</TableHead><TableHead className="sticky top-0 z-20 bg-white text-right">年级百分比</TableHead></>}
       <TableHead className="sticky top-0 z-20 bg-white text-right">范围内名次</TableHead>

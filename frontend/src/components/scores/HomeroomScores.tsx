@@ -380,9 +380,10 @@ function ClassAveragesTable({ data }: { data: HomeroomClassAveragesResponse | nu
           <Table wrapperClassName="overflow-visible" className={cn('min-w-max', tableStyles.table)}>
             <TableHeader>
               <TableRow className="bg-slate-100">
-                {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；此处只负责冻结列 left 偏移 */}
-                <TableHead rowSpan={2} className="sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs">班级类型</TableHead>
-                <TableHead rowSpan={2} className="sticky left-24 w-16 whitespace-nowrap border-r text-center text-xs">班级</TableHead>
+                {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；冻结列 left 偏移在此，
+                    freezeCol 把冻结格 z 抬到滑动表头之上（z 相同按 DOM 序绘制会被盖住） */}
+                <TableHead rowSpan={2} className={cn('sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>班级类型</TableHead>
+                <TableHead rowSpan={2} className={cn('sticky left-24 w-16 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>班级</TableHead>
                 <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班主任</TableHead>
                 {subjectGroups.map((g) => g.paired ? (
                   <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
@@ -1172,11 +1173,12 @@ export function HomeroomScores() {
                       <Table wrapperClassName="overflow-visible" className={cn('min-w-max', tableStyles.table)}>
                         <TableHeader>
                           <TableRow className="bg-slate-100">
-                            {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；此处只负责冻结列 left 偏移 */}
-                            <TableHead rowSpan={2} className="sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs">学号</TableHead>
+                            {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；冻结列 left 偏移在此，
+                                freezeCol 把冻结格 z 抬到滑动表头之上（z 相同按 DOM 序绘制会被盖住） */}
+                            <TableHead rowSpan={2} className={cn('sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>学号</TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学籍</TableHead>
-                            <TableHead rowSpan={2} className="sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs">姓名</TableHead>
+                            <TableHead rowSpan={2} className={cn('sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>姓名</TableHead>
                             {subjectColumnGroups(subjectCols).map((g) => g.paired ? (
                               <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
                             ) : (

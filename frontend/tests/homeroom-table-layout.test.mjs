@@ -24,7 +24,7 @@ const tags = {
 const scope = {
   React, Fragment: React.Fragment,
   cn: (...args) => args.filter(Boolean).join(' '),
-  tableStyles: Object.fromEntries(['table', 'classType', 'classNumber', 'currentClassNumber', 'summaryGroup', 'summaryLabel', 'stickyCol'].map(key => [key, key])),
+  tableStyles: Object.fromEntries(['table', 'classType', 'classNumber', 'currentClassNumber', 'summaryGroup', 'summaryLabel', 'stickyCol', 'freezeCol'].map(key => [key, key])),
   formatScore: value => value == null ? '—' : Number.isInteger(value) ? String(value) : value.toFixed(1),
   ...tags,
 }
@@ -116,10 +116,32 @@ test('2026-10-22 明细表尺寸：限高容器+粘性表头+冻结学号/姓名
   assert.match(source.slice(studentsTabIdx, containerIdx + 400), /wrapperClassName="overflow-visible"/, '内层 Table 包装须 overflow-visible（否则 sticky 被内层滚动容器截胡）')
   // 冻结学号（w-24）/姓名（left-24，紧贴学号列右缘）两列：表头 + 数据格
   // （表头吸顶由 module.css 注入，JSX 侧只断言冻结列的 left 偏移与列宽）
-  assert.match(source, /sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs">学号/, '学号表头冻结最左')
-  assert.match(source, /sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs">姓名/, '姓名表头冻结在学号右侧')
+  assert.match(source, /sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs', tableStyles\.freezeCol\)}>学号/, '学号表头冻结最左（freezeCol 抬 z）')
+  assert.match(source, /sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs', tableStyles\.freezeCol\)}>姓名/, '姓名表头冻结在学号右侧（freezeCol 抬 z）')
   assert.match(source, /sticky left-0 z-10 w-24 whitespace-nowrap border-r text-xs tabular-nums/, '学号数据格冻结')
   assert.match(source, /sticky left-24 z-10 w-20 whitespace-nowrap border-r text-sm font-medium/, '姓名数据格冻结')
   // +3 口径脚注
   assert.match(source, /\+3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加。/, '+3 口径脚注必须在场')
+})
+
+test('2026-10-23 冻结表头 z 层级：冻结格必须高于同排滑动表头（否则被后画的滑动格盖住，横向滚动看似错位）', () => {
+  // 根因：module.css 给同排所有表头格统一 z（一级 30 / 二级 20），z 相同时按 DOM
+  // 顺序绘制，冻结列排最前先画、被后画的滑动表头格（不透明底色）整块盖住。
+  // 表体不受影响：冻结 td 有 z-10，滑动 td 无 z。
+  assert.match(tableCss, /thead tr:first-child th\.freezeCol\s*\{\s*z-index: 40;/, '冻结表头格 z=40，高于一级滑动 30 与二级滑动 20')
+  // 均分表：班级类型/班级 两个冻结表头挂 freezeCol（渲染态 class 含 freezeCol）
+  const avg = renderToStaticMarkup(React.createElement(scope.ClassAveragesTable, { data: {
+    exam_name: '合成z层级测评', current_class_num: 1,
+    subjects: ['语文'], total_types: ['3+3'],
+    rows: [{ class_num: 1, class_type: '平行班', teacher_name: '合成教师', subjects: { '语文': 90 }, totals: { '3+3': { '均分': 90 } }, total_ranks: { '3+3': 1 } }],
+  } }))
+  assert.match(avg, /class="[^"]*freezeCol[^"]*"[^>]*>班级类型</, '均分表 班级类型 冻结表头挂 freezeCol')
+  assert.match(avg, /class="[^"]*freezeCol[^"]*"[^>]*>班级</, '均分表 班级 冻结表头挂 freezeCol')
+  // 明细表：学号/姓名 两个冻结表头挂 freezeCol
+  assert.equal((source.match(/tableStyles\.freezeCol/g) ?? []).length, 4, '两张表共 4 个冻结表头格挂 freezeCol（类型/班级/学号/姓名）')
+  // 教学侧学生明细表（无 module css，Tailwind 工具类）：冻结 th z-30 高于滑动 th z-20
+  const teachingSource = readFileSync(new URL('../src/components/scores/TeachingStudentDetails.tsx', import.meta.url), 'utf8')
+  assert.match(teachingSource, /sticky left-0 z-30 w-20 bg-white">姓名/, '教学学生表 姓名冻结表头 z=30')
+  assert.match(teachingSource, /sticky left-20 z-30 w-24 bg-white">班级/, '教学学生表 班级冻结表头 z=30')
+  assert.match(teachingSource, /sticky top-0 z-20 bg-white/, '教学学生表 滑动表头维持 z=20（低于冻结列）')
 })

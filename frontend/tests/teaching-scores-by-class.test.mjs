@@ -47,6 +47,9 @@ test('合并学生明细使用后端顺序和名次，零值、姓名链接及�
   assert.match(html,/>0<\/td>/)
   assert.match(html,/>3<\/td>/,'直接呈现给定的后端名次')
   assert.match(html,/>—<\/td>/)
+  // 2026-10-23 冻结表头 z 层级：冻结列 z-30 必须高于滑动表头 z-20（z 相同按 DOM 序绘制会被盖住）
+  assert.match(html,/class="[^"]*sticky left-0 z-30[^"]*"[^>]*>姓名</)
+  assert.match(html,/class="[^"]*sticky left-20 z-30[^"]*"[^>]*>班级</)
 })
 
 test('高一显示来源学籍排名与百分比，未知年级显示指标并集，HTML 转义',()=>{
