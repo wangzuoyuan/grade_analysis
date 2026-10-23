@@ -10,7 +10,9 @@
  *
  * 计量红线（契约 §2.3）：均分缺值显示「—」不转 0；总分口径名次直接用后端
  * 官方排名（全零口径后端返回空 → 显示「—」不编造）；单科口径名次前端按
- * 各班均分降序、同分同名次计算；较年级均差 = 本班值 − 各班非空值简单平均。
+ * 各班均分降序、同分同名次计算；较年级均差 = 本班值 − 年级平均。学校均分表
+ * 口径：选科列 0 = 该班无人选，不算成绩——年级平均、均差、单科名次都只
+ * 统计非零班（2026-10-23 与学校汇总行对齐）。
  * 迟到回包按资源分离的序号丢弃（F11）。
  */
 
@@ -109,15 +111,19 @@ interface CompareRow {
 type SortKey = 'class_num' | 'value' | 'diff' | 'rank'
 type SortDir = 'asc' | 'desc'
 
-/** 单科口径名次：各班均分降序、同分同名次（min-rank）；缺值排后、
- * 全零口径（来源未提供）名次一律 null，不制造并列第一。 */
+/** 单科口径名次：各班均分降序、同分同名次（min-rank）；缺值与 0（该班无人选，
+ * 学校表口径不算成绩）都不参与名次（null）；无有效班时不制造并列第一。 */
 function deriveSubjectRanks(
   rows: HomeroomClassAverageRow[],
   metric: string,
 ): Map<number, number | null> {
-  const valueOf = (row: HomeroomClassAverageRow) => row.subjects[metric] ?? null
+  // 0 = 该班无人选此科：与缺值同等对待，不当作最低分参与排名
+  const valueOf = (row: HomeroomClassAverageRow) => {
+    const v = row.subjects[metric] ?? null
+    return v === 0 ? null : v
+  }
   const nums = rows.map(valueOf).filter((v): v is number => v != null)
-  const unavailable = nums.length === 0 || nums.every((v) => v === 0)
+  const unavailable = nums.length === 0
   const sorted = [...rows].sort((a, b) => {
     const av = valueOf(a)
     const bv = valueOf(b)
@@ -252,13 +258,13 @@ export function HomeroomCompare() {
     if (averages == null || activeMetric == null) return []
     const key = metricKey(activeMetric)
     const valueOf = (row: HomeroomClassAverageRow) => metricValueOf(row, activeMetric)
-    const nums = averages.rows.map(valueOf).filter((v): v is number => v != null)
-    // 全零口径视为来源未提供：不作差（年级均分 null）、不编造名次
-    const allZero = nums.length === 0 || nums.every((v) => v === 0)
-    // 年级均分 = 各班该口径非空值的简单平均
-    const gradeAvg = allZero
-      ? null
-      : nums.reduce((sum, v) => sum + v, 0) / nums.length
+    // 年级均分只统计有效班：0 = 该班无人选（学校表口径不算成绩），与缺值一样
+    // 不计入除数；全零口径即来源未提供 → 年级均分 null，不作差、不编造名次
+    const gradeNums = averages.rows
+      .map(valueOf)
+      .filter((v): v is number => v != null && v !== 0)
+    const gradeAvg =
+      gradeNums.length === 0 ? null : gradeNums.reduce((sum, v) => sum + v, 0) / gradeNums.length
     const subjectRanks = isTotalMetric(activeMetric)
       ? null
       : deriveSubjectRanks(averages.rows, key)
@@ -271,7 +277,7 @@ export function HomeroomCompare() {
       return {
         row,
         value,
-        diff: value != null && gradeAvg != null ? value - gradeAvg : null,
+        diff: value != null && value !== 0 && gradeAvg != null ? value - gradeAvg : null,
         rank,
         isCurrent: currentClassNum != null && row.class_num === currentClassNum,
       }
@@ -540,7 +546,7 @@ export function HomeroomCompare() {
                 班级排名表
               </CardTitle>
               <CardDescription>
-                总分口径名次来自班级均分表官方排名；单科名次按各班均分降序、同分同名次计算。
+                总分口径名次来自班级均分表官方排名；单科名次按各班均分降序、同分同名次计算；无人选（0）的班不参与均差与名次。
               </CardDescription>
             </CardHeader>
             <CardContent>

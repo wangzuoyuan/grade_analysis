@@ -4,6 +4,8 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import vm from 'node:vm'
+import ts from 'typescript'
 
 const apiV1 = readFileSync(new URL('../src/lib/api-v1.ts', import.meta.url), 'utf8')
 const sidebar = readFileSync(new URL('../src/components/layout/Sidebar.tsx', import.meta.url), 'utf8')
@@ -81,4 +83,44 @@ test('/compare 在 homeroom 模式直达 /homeroom/compare，teaching 模式渲�
   assert.doesNotMatch(comparePage, /fetchTeachingClassCompare/, '本页不再发起样本班对比取数')
   assert.doesNotMatch(comparePage, /listExams\('teaching'/, '本页不再拉教学域考试清单')
   assert.doesNotMatch(comparePage, /WorkspaceSwitcher/, 'homeroom 分支不再渲染切换指引卡')
+})
+
+// 2026-10-23 汇总口径对齐学校表：选科列 0 = 该班无人选，不算成绩——
+// 年级平均（均差分母）、单科名次都只统计非零班（与班级均分表汇总行同一拍板）。
+test('较年级均差与单科名次排除 0（无人选）班：年级平均只除非零班、无人选班无均差无名次', () => {
+  // 源码契约：年级平均分母过滤 0；无人选班（值 0）不作差；排名把 0 当缺值
+  assert.match(
+    component,
+    /filter\(\(v\): v is number => v != null && v !== 0\)/,
+    '年级均分除数须过滤 0（无人选）',
+  )
+  assert.match(component, /value != null && value !== 0 && gradeAvg != null/, '值为 0 的班不得计算均差')
+  assert.match(component, /return v === 0 \? null : v/, '单科名次须把 0 与缺值同等对待')
+  assert.match(component, /无人选（0）的班不参与均差与名次/, '排名表说明须注明口径')
+
+  // 行为验证：执行真实 deriveSubjectRanks——0（无人选）与缺值都不参与名次
+  const ast = ts.createSourceFile('HomeroomCompare.tsx', component, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const fn = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'deriveSubjectRanks')
+  assert.ok(fn, '应能定位 deriveSubjectRanks 函数')
+  const code = ts.transpileModule(fn.getText(ast), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+  }).outputText
+  const scope = {}
+  vm.runInNewContext(code, scope)
+  const deriveSubjectRanks = scope.deriveSubjectRanks
+  const makeRow = (class_num, value) => ({ class_num, subjects: value == null ? {} : { 物理_原始: value } })
+  // 五班：两班 60（同分）、一班 80、两班无人选（0 与缺值）——修复前 0 班会排进名次末位
+  const ranks = deriveSubjectRanks(
+    [makeRow(1, 60), makeRow(2, 60), makeRow(3, 80), makeRow(4, 0), makeRow(5, null)],
+    '物理_原始',
+  )
+  assert.equal(ranks.get(3), 1, '80 分班第 1')
+  assert.equal(ranks.get(1), 2, '60 分班并列第 2')
+  assert.equal(ranks.get(2), 2, '同分同名次')
+  assert.equal(ranks.get(4), null, '0（无人选）班不得有名次')
+  assert.equal(ranks.get(5), null, '缺值班不得有名次')
+  // 全组皆 0 / 皆缺值：来源未提供，名次一律 null
+  const emptyRanks = deriveSubjectRanks([makeRow(1, 0), makeRow(2, 0)], '物理_原始')
+  assert.equal(emptyRanks.get(1), null, '全零口径不得制造名次')
+  assert.equal(emptyRanks.get(2), null, '全零口径不得制造名次')
 })
