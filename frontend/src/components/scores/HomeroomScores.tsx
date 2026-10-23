@@ -5,7 +5,7 @@
  *
  * 数据全部来自 /api/v1：shared/exams（考试清单）、homeroom/analysis/*（stats/students/bands/trends）。
  * 计量红线（契约 §2.3）：缺考（score NULL）一律显示「—」不转 0；
- * 明细按显示学号升序，班名次独立按成绩计算；趋势按学年分段展示，不跨年连线；迟到回包按资源分离的序号丢弃（F11：任一资源重拉
+ * 明细默认按显示学号升序，可单独按原始分/等级分/总分降序；班名次独立按成绩计算；趋势按学年分段展示，不跨年连线；迟到回包按资源分离的序号丢弃（F11：任一资源重拉
  * 绝不使其他资源的合法回包失效），bands 在总分具备年级名次时计算，
  * 无名次口径的 409 呈现「不可计算」提示卡（F10）。
  */
@@ -86,7 +86,8 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import { displayStudentId } from '@/lib/student-id'
-import { compareStudentIds } from '@/lib/student-order'
+import { sortHomeroomStudents, studentSubjectGroups, type StudentScoreSort } from '@/lib/homeroom-score-sort'
+import { ScoreSortButton } from './ScoreSortButton'
 import {
   Tooltip as UITooltip,
   TooltipContent,
@@ -660,6 +661,7 @@ export function HomeroomScores() {
   const [students, setStudents] = useState<HomeroomStudentRow[] | null>(null)
   const [classAverages, setClassAverages] = useState<HomeroomClassAveragesResponse | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
+  const [studentSort, setStudentSort] = useState<StudentScoreSort>({ kind: 'id' })
 
   // 名次段分布（2026-10-19：读导入的名次段表 3+3/主三门，替代按学生名次现算的旧段位卡）
   const [rankBands, setRankBands] = useState<HomeroomRankBandsResponse | null>(null)
@@ -754,6 +756,7 @@ export function HomeroomScores() {
     setStudents(null)
     setClassAverages(null)
     setDataError(null)
+    setStudentSort({ kind: 'id' })
     setExpandedPerson(null)
     setTrends(null)
     setTrendsError(null)
@@ -963,8 +966,16 @@ export function HomeroomScores() {
       })
   }, [expandedPerson, scopeQ, trendsNonce])
 
-  // 行序按显示学号升序；成绩名次独立计算，无学号者按姓名拼音排在末尾。
-  const sortedStudents = useMemo(() => (students ?? []).slice().sort(compareStudentIds), [students])
+  // 学号为默认序；每次仅按一个显示成绩字段排序，不改接口数组或成绩名次。
+  const sortedStudents = useMemo(() => sortHomeroomStudents(students ?? [], studentSort), [students, studentSort])
+  const studentGroups = useMemo(
+    () => studentSubjectGroups(subjectCols, students ?? [], classAverages?.grade),
+    [subjectCols, students, classAverages?.grade],
+  )
+  const isStudentSort = (kind: StudentScoreSort['kind'], key?: string) =>
+    studentSort.kind === kind && (studentSort.kind === 'id' || studentSort.key === key)
+  const studentSortLabel = studentSort.kind === 'id' ? '学号 · 升序' :
+    `${studentSort.key}${studentSort.kind === 'totals' ? '总分' : studentSort.kind === 'grade_scores' ? '等级分' : '原始分'} · 从高到低`
 
   // 班名次（2026-10-19 明细表新列）：按各总分口径对本班有总分学生计算，
   // 同分同名次（1,2,2,4 语义）、缺考不参与不编造；仅为浏览名次。
@@ -1165,7 +1176,17 @@ export function HomeroomScores() {
                   +3总分 + 主三门/3+3(总分/百分位/校名次/班名次)；行点击展开趋势 */}
               <Card>
                 <CardHeader>
-                  <CardTitle>学生成绩明细表</CardTitle>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <CardTitle>学生成绩明细表</CardTitle>
+                    <div className="flex flex-wrap items-center gap-3 text-sm print:hidden">
+                      <p role="status" aria-live="polite" className="text-slate-500">
+                        当前排序：<span className="font-medium text-brand-700">{studentSortLabel}</span>
+                      </p>
+                      <Button variant="outline" size="sm" disabled={studentSort.kind === 'id'} onClick={() => setStudentSort({ kind: 'id' })}>
+                        恢复学号升序
+                      </Button>
+                    </div>
+                  </div>
                   <CardDescription>
                     {stats ? `${selectedExamLabel} · 范围 ${String(stats.cohort_size)} 人 · ` : ''}
                     缺考显示「—」；班名次按本班同口径总分计算（同分同名次），校名次来自导入明细；点击行可展开跨学年趋势。
@@ -1197,17 +1218,23 @@ export function HomeroomScores() {
                           <TableRow className="bg-slate-100">
                             {/* 两级表头的吸顶（top/z/行高）由 module.css 统一注入；冻结列 left 偏移在此，
                                 freezeCol 把冻结格 z 抬到滑动表头之上（z 相同按 DOM 序绘制会被盖住） */}
-                            <TableHead rowSpan={2} className={cn('sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>学号</TableHead>
+                            <TableHead rowSpan={2} aria-sort={studentSort.kind === 'id' ? 'ascending' : 'none'} className={cn('sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol, studentSort.kind === 'id' && tableStyles.sortedHead)}>
+                              <ScoreSortButton label="学号" active={studentSort.kind === 'id'} ascending onClick={() => setStudentSort({ kind: 'id' })}>学号</ScoreSortButton>
+                            </TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学籍</TableHead>
                             <TableHead rowSpan={2} className={cn('sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>姓名</TableHead>
-                            {subjectColumnGroups(subjectCols).map((g) => g.paired ? (
+                            {studentGroups.map((g) => g.paired ? (
                               <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
                             ) : (
-                              <TableHead key={g.subject} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
+                              <TableHead key={g.subject} rowSpan={2} aria-sort={isStudentSort('scores', g.subject) ? 'descending' : 'none'} className={cn('whitespace-nowrap border-r text-center text-xs', isStudentSort('scores', g.subject) && tableStyles.sortedHead)}>
+                                <ScoreSortButton label={`${g.subject}原始分`} active={isStudentSort('scores', g.subject)} onClick={() => setStudentSort({ kind: 'scores', key: g.subject })}>{g.subject}</ScoreSortButton>
+                              </TableHead>
                             ))}
                             {totalCols.filter((tt) => !rankTotalCols.includes(tt)).map((tt) => (
-                              <TableHead key={tt} rowSpan={2} className="whitespace-nowrap border-r text-center text-xs font-semibold">{tt}总分</TableHead>
+                              <TableHead key={tt} rowSpan={2} aria-sort={isStudentSort('totals', tt) ? 'descending' : 'none'} className={cn('whitespace-nowrap border-r text-center text-xs font-semibold', isStudentSort('totals', tt) && tableStyles.sortedHead)}>
+                                <ScoreSortButton label={`${tt}总分`} active={isStudentSort('totals', tt)} onClick={() => setStudentSort({ kind: 'totals', key: tt })}>{tt}总分</ScoreSortButton>
+                              </TableHead>
                             ))}
                             {rankTotalCols.map((tt) => (
                               <TableHead key={tt} colSpan={4} className="whitespace-nowrap border-r text-center text-xs font-semibold">{tt}总分</TableHead>
@@ -1215,12 +1242,18 @@ export function HomeroomScores() {
                             <TableHead rowSpan={2} className="w-10 print:hidden" aria-label="趋势" />
                           </TableRow>
                           <TableRow className="bg-slate-50">
-                            {subjectColumnGroups(subjectCols).flatMap((g) => g.paired ? [
-                              <TableHead key={`${g.subject}-raw`} className="whitespace-nowrap text-center text-xs">原始</TableHead>,
-                              <TableHead key={`${g.subject}-graded`} className="whitespace-nowrap border-r text-center text-xs">等级</TableHead>,
+                            {studentGroups.flatMap((g) => g.paired ? [
+                              <TableHead key={`${g.subject}-raw`} aria-sort={isStudentSort('scores', g.subject) ? 'descending' : 'none'} className={cn('whitespace-nowrap text-center text-xs', isStudentSort('scores', g.subject) && tableStyles.sortedHead)}>
+                                <ScoreSortButton label={`${g.subject}原始分`} active={isStudentSort('scores', g.subject)} onClick={() => setStudentSort({ kind: 'scores', key: g.subject })}>原始分</ScoreSortButton>
+                              </TableHead>,
+                              <TableHead key={`${g.subject}-graded`} aria-sort={isStudentSort('grade_scores', g.subject) ? 'descending' : 'none'} className={cn('whitespace-nowrap border-r text-center text-xs', isStudentSort('grade_scores', g.subject) && tableStyles.sortedHead)}>
+                                <ScoreSortButton label={`${g.subject}等级分`} active={isStudentSort('grade_scores', g.subject)} onClick={() => setStudentSort({ kind: 'grade_scores', key: g.subject })}>等级分</ScoreSortButton>
+                              </TableHead>,
                             ] : [])}
                             {rankTotalCols.flatMap((tt) => [
-                              <TableHead key={`${tt}-score`} className="whitespace-nowrap text-center text-xs">总分</TableHead>,
+                              <TableHead key={`${tt}-score`} aria-sort={isStudentSort('totals', tt) ? 'descending' : 'none'} className={cn('whitespace-nowrap text-center text-xs', isStudentSort('totals', tt) && tableStyles.sortedHead)}>
+                                <ScoreSortButton label={`${tt}总分`} active={isStudentSort('totals', tt)} onClick={() => setStudentSort({ kind: 'totals', key: tt })}>总分</ScoreSortButton>
+                              </TableHead>,
                               <TableHead key={`${tt}-pct`} className="whitespace-nowrap text-center text-xs">百分位</TableHead>,
                               <TableHead key={`${tt}-school`} className="whitespace-nowrap text-center text-xs">校名次</TableHead>,
                               <TableHead key={`${tt}-class`} className="whitespace-nowrap border-r text-center text-xs">班名次</TableHead>,
@@ -1254,7 +1287,7 @@ export function HomeroomScores() {
                                   <TableCell className={cn('sticky left-24 z-10 w-20 whitespace-nowrap border-r text-sm font-medium text-slate-900', tableStyles.stickyCol)}>
                                     {s.name ?? '（未命名）'}
                                   </TableCell>
-                                  {subjectColumnGroups(subjectCols).flatMap((g) => {
+                                  {studentGroups.flatMap((g) => {
                                     if (!g.paired) {
                                       const v = s.scores?.[g.subject] ?? null
                                       return [
@@ -1263,6 +1296,7 @@ export function HomeroomScores() {
                                           className={cn(
                                             'whitespace-nowrap border-r text-right tabular-nums text-sm',
                                             v == null ? 'text-slate-300' : 'text-slate-900',
+                                            isStudentSort('scores', g.subject) && tableStyles.sortedCell,
                                           )}
                                         >
                                           {v == null ? '—' : formatScore(v)}
@@ -1272,10 +1306,10 @@ export function HomeroomScores() {
                                     const raw = s.scores?.[g.subject] ?? null
                                     const graded = s.grade_scores?.[g.subject] ?? null
                                     return [
-                                      <TableCell key={`${g.subject}-raw`} className="whitespace-nowrap text-right tabular-nums text-sm">
+                                      <TableCell key={`${g.subject}-raw`} className={cn('whitespace-nowrap text-right tabular-nums text-sm', isStudentSort('scores', g.subject) && tableStyles.sortedCell)}>
                                         {raw == null ? <span className="text-slate-300">—</span> : formatScore(raw)}
                                       </TableCell>,
-                                      <TableCell key={`${g.subject}-graded`} className="whitespace-nowrap border-r text-right tabular-nums text-sm">
+                                      <TableCell key={`${g.subject}-graded`} className={cn('whitespace-nowrap border-r text-right tabular-nums text-sm', isStudentSort('grade_scores', g.subject) && tableStyles.sortedCell)}>
                                         {graded == null ? <span className="text-slate-300">—</span> : formatScore(graded)}
                                       </TableCell>,
                                     ]
@@ -1288,6 +1322,7 @@ export function HomeroomScores() {
                                         className={cn(
                                           'whitespace-nowrap border-r text-right tabular-nums text-sm font-medium',
                                           v == null ? 'text-slate-300' : 'text-slate-900',
+                                          isStudentSort('totals', tt) && tableStyles.sortedCell,
                                         )}
                                       >
                                         {v == null ? '—' : formatScore(v)}
@@ -1300,7 +1335,7 @@ export function HomeroomScores() {
                                     const schoolRank = s.ranks?.[tt] ?? null
                                     const classRank = classRanksByTotal[tt]?.get(key) ?? null
                                     return [
-                                      <TableCell key={`${tt}-score`} className={cn('whitespace-nowrap text-right tabular-nums text-sm font-medium', v == null ? 'text-slate-300' : 'text-slate-900')}>
+                                      <TableCell key={`${tt}-score`} className={cn('whitespace-nowrap text-right tabular-nums text-sm font-medium', v == null ? 'text-slate-300' : 'text-slate-900', isStudentSort('totals', tt) && tableStyles.sortedCell)}>
                                         {v == null ? '—' : formatScore(v)}
                                       </TableCell>,
                                       <TableCell key={`${tt}-pct`} className="whitespace-nowrap text-right tabular-nums text-xs">
@@ -1328,7 +1363,7 @@ export function HomeroomScores() {
                                     <TableCell
                                       colSpan={
                                         4 +
-                                        subjectColumnGroups(subjectCols).reduce((n, g) => n + (g.paired ? 2 : 1), 0) +
+                                        studentGroups.reduce((n, g) => n + (g.paired ? 2 : 1), 0) +
                                         (totalCols.length - rankTotalCols.length) +
                                         rankTotalCols.length * 4 +
                                         1
@@ -1356,10 +1391,15 @@ export function HomeroomScores() {
                       </Table>
                     </div>
                   )}
-                  {/* 2026-10-22：+3 口径脚注（学校导出口径说明） */}
-                  <p className="mt-2 text-xs text-slate-400">
-                    +3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加。
+                  <p className="mt-3 text-xs text-slate-500">
+                    点击科目或总分表头可从高到低排序；同分按学号升序，缺考置底，排序不改变班名次、校名次。
                   </p>
+                  {/* 2026-10-22：+3 口径脚注（学校导出口径说明） */}
+                  {totalCols.includes('+3') ? (
+                    <p className="mt-2 text-xs text-slate-400">
+                      +3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加。等级分缺失时显示「—」，不以原始分替代。
+                    </p>
+                  ) : null}
                 </CardContent>
               </Card>
                 </TabsContent>

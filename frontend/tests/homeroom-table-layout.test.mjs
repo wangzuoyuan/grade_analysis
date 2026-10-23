@@ -113,10 +113,10 @@ test('2026-10-22 明细表尺寸：限高容器+粘性表头+冻结学号/姓名
   // 明细表容器限高 + 内层 Table 包装交还滚动容器（sticky 绑定外层）
   const containerIdx = source.indexOf('max-h-[70vh] overflow-auto rounded-lg border border-slate-200', studentsTabIdx)
   assert.ok(containerIdx > 0, '明细表容器应限高 70vh 双轴滚动')
-  assert.match(source.slice(studentsTabIdx, containerIdx + 400), /wrapperClassName="overflow-visible"/, '内层 Table 包装须 overflow-visible（否则 sticky 被内层滚动容器截胡）')
+  assert.match(source.slice(studentsTabIdx, containerIdx + 650), /wrapperClassName="overflow-visible"/, '内层 Table 包装须 overflow-visible（否则 sticky 被内层滚动容器截胡）')
   // 冻结学号（w-24）/姓名（left-24，紧贴学号列右缘）两列：表头 + 数据格
   // （表头吸顶由 module.css 注入，JSX 侧只断言冻结列的 left 偏移与列宽）
-  assert.match(source, /sticky left-0 w-24 whitespace-nowrap border-r text-center text-xs', tableStyles\.freezeCol\)}>学号/, '学号表头冻结最左（freezeCol 抬 z）')
+  assert.match(source, /sticky left-0 w-24[^\n]+tableStyles\.freezeCol,[^\n]+\)}>\s*<ScoreSortButton[^\n]+>学号/, '学号表头冻结最左并支持排序')
   assert.match(source, /sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs', tableStyles\.freezeCol\)}>姓名/, '姓名表头冻结在学号右侧（freezeCol 抬 z）')
   assert.match(source, /sticky left-0 z-10 w-24 whitespace-nowrap border-r text-xs tabular-nums/, '学号数据格冻结')
   assert.match(source, /sticky left-24 z-10 w-20 whitespace-nowrap border-r text-sm font-medium/, '姓名数据格冻结')

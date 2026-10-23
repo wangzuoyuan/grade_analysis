@@ -25,6 +25,15 @@
   padding: 0 10px;
 }
 
+.table thead th.sortedHead {
+  background: #1f7fd6;
+  color: #ffffff;
+}
+
+.table td.sortedCell {
+  background: rgba(31, 127, 214, 0.08);
+}
+
 /* 两级粘性表头（配合容器 max-h 双轴滚动）：第一行吸顶 0、第二行吸在 2rem。
    两行 th 固定 2rem 行高保证第二行偏移对齐（rowSpan 跨两行的表头格自然拉伸到 4rem）。
    top/z-index/行高统一由这里注入，JSX 侧 th 只负责冻结列的 left 偏移。 */
