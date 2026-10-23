@@ -5,7 +5,7 @@
 执行路径，设计约束：
 
 - 单一注册源（P0-A2）：tools/list 与 tools/call 只认
-  app/api/chat_tools.py 的 TOOL_REGISTRY（24 个 WsToolSpec，与应用内 AI
+  app/api/chat_tools.py 的 TOOL_REGISTRY（28 个 WsToolSpec，与应用内 AI
   完全同一注册表，目录以注册表实际内容为准）。每个 MCP 调用必传 mode
   （homeroom|teaching），服务端以 mode + scope 参数重新解析
   WorkspaceContext（绝不信任客户端成员/学科），会话落
@@ -37,7 +37,7 @@
 - MCP_BEARER_TOKEN：启用时必填；空白/弱占位符/短于 32 字符 → 启动失败。
 - MCP_ALLOWED_HOSTS / MCP_ALLOWED_ORIGINS：逗号分隔；缺省 localhost 系列。
 - MCP_LEGACY_TOOLS：默认 false。true 时旧 20 工具以 deprecated 兼容入口
-  追加进 tools/list（追加在 24 个新工具之后），并可经旧路径调用；false
+  追加进 tools/list（追加在 28 个新工具之后），并可经旧路径调用；false
   （默认）时旧工具不可见也不可调用——绝不作为默认暴露路径。
 """
 
@@ -253,7 +253,7 @@ def legacy_tool_catalog() -> list[dict[str, Any]]:
 
 
 def mcp_tool_catalog() -> list[dict[str, Any]]:
-    """tools/list 的完整目录：默认 = ws_tool_catalog()（24 个新注册表
+    """tools/list 的完整目录：默认 = ws_tool_catalog()（28 个新注册表
     工具，与应用内 AI 同一注册表）；仅当 MCP_LEGACY_TOOLS=1 时追加
     legacy_tool_catalog()（deprecated 兼容入口，绝不进入默认暴露路径）。"""
     catalog = ws_tool_catalog()

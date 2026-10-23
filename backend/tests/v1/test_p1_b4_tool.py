@@ -48,11 +48,12 @@ def _run(db, snapshot, name, args=None):
 def test_registry_has_diagnosis_summary_as_25th_tool():
     from app.api.chat_tools import TOOL_REGISTRY
 
-    assert len(TOOL_REGISTRY) == 25
-    # 第 25 个：注册表末位、名称唯一
-    assert TOOL_REGISTRY[-1].name == TOOL_NAME
+    # 2026-10-23 AI 覆盖补齐后注册表共 28 个；get_diagnosis_summary 仍为
+    # 第 25 个（其后追加 get_rank_bands 等 3 个新工具），名称唯一
+    assert len(TOOL_REGISTRY) == 28
+    assert TOOL_REGISTRY[24].name == TOOL_NAME
     assert [spec.name for spec in TOOL_REGISTRY].count(TOOL_NAME) == 1
-    spec = TOOL_REGISTRY[-1]
+    spec = next(s for s in TOOL_REGISTRY if s.name == TOOL_NAME)
     # 双域可用（班主任=全科+总分；教学=任教学科，缺总体指标由 service
     # 返回 not_computable，工具层不裁剪域）
     assert spec.domains == ("homeroom", "teaching")
@@ -85,16 +86,18 @@ def test_domain_projection_includes_diagnosis_summary():
 
 def test_mcp_catalog_contains_25th_tool_same_source():
     """契约 §6.3：新工具自动进入 MCP 目录（P0-A2 注册表机制）——
-    目录第 25 项与应用内注册表同名同源（description/schema 同一来源）。"""
+    目录中的 get_diagnosis_summary 条目与应用内注册表同名同源
+    （description/schema 同一来源）。"""
     from app.api.chat_tools import TOOL_NAMES, TOOL_REGISTRY
     from app.mcp_server import validate_required_tools, ws_tool_catalog
 
     catalog = ws_tool_catalog()
     assert [t["name"] for t in catalog] == list(TOOL_NAMES)
-    assert len(catalog) == 25
-    assert catalog[-1]["name"] == TOOL_NAME
+    # 2026-10-23 AI 覆盖补齐后目录共 28 个；本工具仍在第 25 位
+    assert len(catalog) == 28
+    assert catalog[24]["name"] == TOOL_NAME
     spec = next(s for s in TOOL_REGISTRY if s.name == TOOL_NAME)
-    entry = catalog[-1]
+    entry = catalog[24]
     # 同名同源：description = 注册表原文 + MCP 调用说明；schema = 注册表
     # schema 注入必填 mode，person_id/academic_year_id 原样保留
     assert entry["description"].startswith(spec.description)

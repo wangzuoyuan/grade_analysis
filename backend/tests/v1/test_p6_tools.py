@@ -1,8 +1,11 @@
 """P6 只读工具注册表测试（契约 docs/contracts/p6-ai-mcp.md §2/§0.1；A01）。
 
 - 注册表 = P6 契约 24 工具（既有 9 + 新增 15）+ P1-B4 诊断摘要
-  get_diagnosis_summary（共 25）；domains 声明与域投影
-  （teaching 会话不含班主任专属工具；homeroom 会话不含教学班对比工具）
+  get_diagnosis_summary（共 25）+ 2026-10-23 AI 覆盖补齐 3 工具
+  （get_rank_bands / get_teaching_score_bands /
+  get_homework_student_subjects，共 28）；domains 声明与域投影
+  （teaching 会话不含班主任专属工具；homeroom 会话不含教学班对比与
+  分数段分析两个 teaching 专属工具）
 - 未知 / 越权 / 越界（person/学科）→ 模型可读错误文本，不抛栈
 - A01：工具 vs /api/v1 端点同源同果（关键数值断言，同一 service 层），
   新增 15 工具逐个纳入
@@ -46,6 +49,10 @@ EXPECTED_TOOLS = {
     "get_exam_students",
     # P1-B4 诊断摘要（第 25 个工具，契约 docs/diagnosis-roadmap/p1-contracts.md §6.3）
     "get_diagnosis_summary",
+    # 2026-10-23 AI 覆盖补齐（第 26-28 个工具）
+    "get_rank_bands",
+    "get_teaching_score_bands",
+    "get_homework_student_subjects",
 }
 
 # 班主任专属工具（teaching 会话不可见）
@@ -60,6 +67,8 @@ HOMEROOM_ONLY_TOOLS = {
     "get_rank_distribution",
     "get_score_bands",
     "get_exam_students",
+    "get_rank_bands",
+    "get_homework_student_subjects",
 }
 
 
@@ -88,13 +97,15 @@ def test_registry_matches_contract(v1_seed):
     from app.api.chat_tools import TOOL_REGISTRY, tools_for_domain
 
     assert {spec.name for spec in TOOL_REGISTRY} == EXPECTED_TOOLS
-    assert len(TOOL_REGISTRY) == 25  # P1-B4 起含 get_diagnosis_summary
+    assert len(TOOL_REGISTRY) == 28  # P1-B4 + 2026-10-23 覆盖补齐 3 工具
     for spec in TOOL_REGISTRY:
         assert spec.domains, spec.name
         assert set(spec.domains) <= {"homeroom", "teaching"}
     by_name = {spec.name: spec for spec in TOOL_REGISTRY}
-    # 教学班对比是 teaching 专属工具；班主任专属工具 domains=("homeroom",)
+    # 教学班对比与分数段分析是 teaching 专属工具；班主任专属工具
+    # domains=("homeroom",)
     assert by_name["get_class_comparison"].domains == ("teaching",)
+    assert by_name["get_teaching_score_bands"].domains == ("teaching",)
     for name in HOMEROOM_ONLY_TOOLS:
         assert by_name[name].domains == ("homeroom",), name
     homeroom_tools = {t["name"] for t in tools_for_domain("homeroom")}
@@ -103,13 +114,19 @@ def test_registry_matches_contract(v1_seed):
     # teaching = 全集 − 班主任专属 {get_class_averages, get_weekly_focus,
     #   get_exam_focus, get_student_trends, get_rank_metrics,
     #   get_rank_frequency, get_rank_range, get_rank_distribution,
-    #   get_score_bands, get_exam_students}
-    # homeroom = teaching − {get_class_comparison}（教学班对比工具唯一
-    #   teaching 专属）
+    #   get_score_bands, get_exam_students, get_rank_bands,
+    #   get_homework_student_subjects}
+    # homeroom = teaching − {get_class_comparison, get_teaching_score_bands}
+    #   （这两个工具唯一 teaching 专属）
     assert teaching_tools == EXPECTED_TOOLS - HOMEROOM_ONLY_TOOLS
-    assert homeroom_tools == EXPECTED_TOOLS - {"get_class_comparison"}
+    assert homeroom_tools == EXPECTED_TOOLS - {
+        "get_class_comparison",
+        "get_teaching_score_bands",
+    }
     assert "get_class_comparison" in teaching_tools
     assert "get_class_comparison" not in homeroom_tools
+    assert "get_teaching_score_bands" in teaching_tools
+    assert "get_teaching_score_bands" not in homeroom_tools
     # 新增班主任专属工具确实不在 teaching 会话出现
     assert not (HOMEROOM_ONLY_TOOLS & teaching_tools)
     assert HOMEROOM_ONLY_TOOLS <= homeroom_tools
@@ -1018,6 +1035,11 @@ def test_tools_are_readonly_row_counts_unchanged(v1_seed):
         _run(db, snap_h, "get_student_notes", {"person_id": v1_seed.jia_h_id})
         _run(db, snap_h, "get_academic_years", {})
         _run(db, snap_h, "get_exam_students", {"exam_name": EXAM_E1})
+        # 2026-10-23 覆盖补齐 3 工具（种子无名次段/无作业数据：合法空态）
+        _run(db, snap_h, "get_rank_bands", {"exam_name": EXAM_E1})
+        _run(db, snap_t, "get_teaching_score_bands", {"exam_name": EXAM_E1})
+        _run(db, snap_h, "get_homework_student_subjects",
+             {"person_id": v1_seed.jia_h_id})
         # 双域新工具 teaching 会话同样只读
         _run(db, snap_t, "get_homework_warnings", {})
         _run(db, snap_t, "get_homework_assignments", {})

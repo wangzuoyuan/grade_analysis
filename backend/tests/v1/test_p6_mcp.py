@@ -6,7 +6,7 @@
 - 同源性（A01/P0-A2）：同一 scope 下 MCP 调用结果 == 应用内
   execute_session_tool 结果（teaching/homeroom 两域代表工具 + 域投影）
 - P0-A2：tools/list = chat_tools 注册表全量工具（mode 必填注入；P1-B4 起含
-  第 25 个 get_diagnosis_summary）；
+  第 25 个 get_diagnosis_summary，2026-10-23 AI 覆盖补齐至 28 个）；
   旧 20 工具退出主链（默认不可见不可调用，仅 MCP_LEGACY_TOOLS=1 显式
   开启时以 deprecated 兼容入口出现）
 """
@@ -22,7 +22,7 @@ EXAM_E1 = "2025期中"
 
 # P0-A2：MCP 默认目录 = chat_tools.TOOL_REGISTRY 全量工具（与应用内 AI
 # 同一注册表，顺序即注册顺序；tests/test_mcp.py 冻结同一清单；P1-B4 起
-# 含第 25 个 get_diagnosis_summary）。
+# 含第 25 个 get_diagnosis_summary，2026-10-23 AI 覆盖补齐至 28 个）。
 EXPECTED_TOOL_ORDER = (
     "search_students",
     "get_student_profile",
@@ -50,6 +50,10 @@ EXPECTED_TOOL_ORDER = (
     "get_exam_students",
     # P1-B4 诊断摘要（第 25 个工具，契约 docs/diagnosis-roadmap/p1-contracts.md §6.3）
     "get_diagnosis_summary",
+    # 2026-10-23 AI 覆盖补齐（第 26-28 个工具）
+    "get_rank_bands",
+    "get_teaching_score_bands",
+    "get_homework_student_subjects",
 )
 
 # 旧 MCP 工具（chat/tools.py 旧注册表）：默认退出主链

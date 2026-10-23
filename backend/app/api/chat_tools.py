@@ -1826,7 +1826,11 @@ def _tool_get_homework_warnings(db, snapshot: dict, args: dict) -> dict:
 def _tool_get_homework_assignments(db, snapshot: dict, args: dict) -> dict:
     """作业批次分页列表（assigned_date 降序，返回含 assignment_id，配合
     get_homework_assignment_detail 查逐人明细）；schema 暴露 from/to，
-    handler 映射为 service 的 from_date/to_date。"""
+    handler 映射为 service 的 from_date/to_date。跨年按 _year_id_of 解析
+    （2026-10-23 补齐：academic_year_id/year_offset，同学年行为不变）。"""
+    year_id, err = _year_id_of(db, snapshot, args)
+    if err:
+        return err
     range_from, err = _optional_iso_date(args, "from")
     if err:
         return err
@@ -1847,12 +1851,20 @@ def _tool_get_homework_assignments(db, snapshot: dict, args: dict) -> dict:
         homework_assignments_list,
         mode=snapshot["mode"],
         class_id=(
-            snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
+            # fix11：跨年解析该学年行政班（同学年即快照班，行为不变）
+            _homeroom_year_class(db, snapshot, year_id)
+            if snapshot["mode"] == "homeroom"
+            else None
         ),
+        # Q01：teaching 单班会话钉住该班（绝不缺省成全部所教班并集）；跨年
+        # 时本学年班 id 绝不传给其他学年 → None（service 按该学年班集合解析）
         teaching_class_id=(
-            _single_class_id(snapshot) if snapshot["mode"] == "teaching" else None
+            _single_class_id(snapshot)
+            if snapshot["mode"] == "teaching"
+            and year_id == snapshot["academic_year_id"]
+            else None
         ),
-        academic_year_id=snapshot["academic_year_id"],
+        academic_year_id=year_id,
         subject=subject,
         homework_type=(args.get("homework_type") or "").strip() or None,
         from_date=range_from.isoformat() if range_from else None,
@@ -1865,8 +1877,12 @@ def _tool_get_homework_assignments(db, snapshot: dict, args: dict) -> dict:
 
 def _tool_get_homework_assignment_detail(db, snapshot: dict, args: dict) -> dict:
     """单批次逐人明细；归属校验由 service 的 _load_accessible_assignment
-    承担（越界 404 → 统一转模型可读错误文本）。"""
+    承担（越界 404 → 统一转模型可读错误文本）。跨年按 _year_id_of 解析
+    （2026-10-23 补齐：批次 id 属特定学年，指错学年自然 404 越界文本）。"""
     assignment_id, err = _int_or_error(args.get("assignment_id"), "assignment_id")
+    if err:
+        return err
+    year_id, err = _year_id_of(db, snapshot, args)
     if err:
         return err
     from app.api.homework import homework_assignment_detail
@@ -1876,12 +1892,19 @@ def _tool_get_homework_assignment_detail(db, snapshot: dict, args: dict) -> dict
         assignment_id=assignment_id,
         mode=snapshot["mode"],
         class_id=(
-            snapshot["class_ids"][0] if snapshot["mode"] == "homeroom" else None
+            # fix11：跨年解析该学年行政班（同学年即快照班，行为不变）
+            _homeroom_year_class(db, snapshot, year_id)
+            if snapshot["mode"] == "homeroom"
+            else None
         ),
+        # Q01：teaching 单班会话钉住该班；跨年时本学年班 id 绝不传给其他学年
         teaching_class_id=(
-            _single_class_id(snapshot) if snapshot["mode"] == "teaching" else None
+            _single_class_id(snapshot)
+            if snapshot["mode"] == "teaching"
+            and year_id == snapshot["academic_year_id"]
+            else None
         ),
-        academic_year_id=snapshot["academic_year_id"],
+        academic_year_id=year_id,
         db=db,
     )
     return _dump(result)
@@ -2047,9 +2070,10 @@ def _tool_get_academic_years(db, snapshot: dict, args: dict) -> dict:
 
 
 def _tool_get_exam_students(db, snapshot: dict, args: dict) -> dict:
-    """单场考试逐人分科+总分矩阵（含跨域冲突注记）——“全班这次考多少分”
-    的宽表视角。与 get_scores_table 分工：后者逐人分数行（教学域单科），
-    本工具班主任域分科矩阵并附名次注记列。"""
+    """单场考试逐人分科+总分矩阵——“全班这次考多少分”的宽表视角。
+    与 get_scores_table 分工：后者逐人分数行（教学域单科），本工具班主任
+    域分科矩阵，每人一行含选科等级分、年级百分位、学籍与各总分口径名次
+    （跨域冲突注记已随 Q10 规范值链路于 2026-10-20 退役）。"""
     year_id, err = _exam_year_id_of(db, snapshot, args)
     if err:
         return err
@@ -2069,7 +2093,7 @@ def _tool_get_exam_students(db, snapshot: dict, args: dict) -> dict:
     data = _dump(result)
     subject = (args.get("subject") or "").strip()
     if subject and "error" not in data:
-        # 按学科收窄视图（投影与冲突裁决已在 service 内执行，仅收窄展示）
+        # 按学科收窄视图（可读数据范围已在 service 内裁决，这里仅收窄展示）
         for student in data.get("students", []):
             student["scores"] = {
                 key: value
@@ -2178,6 +2202,119 @@ def _tool_get_diagnosis_summary(db, snapshot: dict, args: dict) -> dict:
             for row in rows
         ],
     }
+
+
+# ────────────────── 2026-10-23 AI 覆盖补齐：三个近期端点的薄封装 ──────────────────
+
+
+def _tool_get_rank_bands(db, snapshot: dict, args: dict) -> dict:
+    """全年级名次段表（读随考试导入的《总分名次段表》，2026-10-20 上线端点
+    homeroom_rank_bands 的薄封装）：各班与全年级在各名次段的人数，不从
+    学生名次现算——与 get_rank_distribution（本班学生名次每 40 名一档现算）
+    数据来源不同。total_type 透传（缺省/非法口径由 service 回退该场默认
+    口径，available_total_types 列出可选）。"""
+    year_id, err = _exam_year_id_of(db, snapshot, args)
+    if err:
+        return err
+    exam_name, resolved, err = _resolve_exam_name(db, snapshot, args, year_id)
+    if err:
+        return err
+    from app.api.analysis import homeroom_rank_bands
+
+    result = _call_service(
+        homeroom_rank_bands,
+        exam_name=exam_name,
+        total_type=(args.get("total_type") or "").strip() or None,
+        academic_year_id=year_id,
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11：跨年解析该学年本人班
+        term_id=None,
+        db=db,
+    )
+    data = _dump(result)
+    if resolved:
+        data["exam_resolved"] = resolved
+    return data
+
+
+def _tool_get_teaching_score_bands(db, snapshot: dict, args: dict) -> dict:
+    """任教学科分数段分析（2026-10-18 上线端点 teaching_exam_score_bands 的
+    薄封装）：当前范围每个教学班一列 + 合并列，5/10/20 分一段（左闭右开）。
+    不暴露 teaching_class_id——Q01 钉班：同学年单班会话显式传该班、并集
+    会话传 None（合并列语义）、跨年绝不把本学年班 id 传给其他学年（service
+    按该学年任教学科班集合解析）；band_width 透传（非法值由 service 422，
+    错误文本经 execute_session_tool 统一转给模型）。"""
+    year_id, err = _exam_year_id_of(db, snapshot, args)
+    if err:
+        return err
+    exam_name, resolved, err = _resolve_exam_name(db, snapshot, args, year_id)
+    if err:
+        return err
+    from app.api.analysis import teaching_exam_score_bands
+
+    band_width = args.get("band_width")
+    result = _call_service(
+        teaching_exam_score_bands,
+        exam_name=exam_name,
+        band_width=(
+            # 非整数/缺省交回 service 默认 10；整数非法值（如 7）由 service
+            # 422 白名单拒绝（SCORE_BAND_WIDTHS = {5,10,20}）
+            band_width
+            if isinstance(band_width, int) and not isinstance(band_width, bool)
+            else 10
+        ),
+        teaching_class_id=(
+            # Q01：单班会话钉住该班（绝不缺省成全部所教班并集）；跨年时本
+            # 学年班 id 绝不传给其他学年 → None（service 解析该学年班集合）
+            _single_class_id(snapshot)
+            if year_id == snapshot["academic_year_id"]
+            else None
+        ),
+        academic_year_id=year_id,
+        term_id=None,
+        db=db,
+    )
+    data = _dump(result)
+    if resolved:
+        data["exam_resolved"] = resolved
+    return data
+
+
+def _tool_get_homework_student_subjects(db, snapshot: dict, args: dict) -> dict:
+    """单个学生逐学科作业×成绩总览（2026-10-22 上线端点
+    homeroom_student_homework_subjects 的薄封装，仅班主任域）：全科并列，
+    成绩口径按学科自适应（高一全科与高二/三语数英=年级百分位换算、高二/三
+    六选科=等级分），未选修/无成绩事实的学科由 service 跳过。person_id 先
+    过快照成员守卫；跨年由 _year_id_of 解析后传该学年行政班（fix11），
+    service 在目标学年名册内再校验（越界 404 → 可读错误文本）。"""
+    guard = _member_guard(snapshot, args.get("person_id"))
+    if guard:
+        return guard
+    year_id, err = _year_id_of(db, snapshot, args)
+    if err:
+        return err
+    try:
+        window_days = int(args.get("window_days") or 14)
+    except (TypeError, ValueError):
+        return {
+            "error": "invalid_scope_param",
+            "detail": "window_days 必须是 14 或 30",
+        }
+    if window_days not in (14, 30):
+        return {
+            "error": "invalid_scope_param",
+            "detail": "window_days 必须是 14 或 30",
+        }
+    from app.diagnosis.correlation_router import homeroom_student_homework_subjects
+
+    result = _call_service(
+        homeroom_student_homework_subjects,
+        person_id=args["person_id"],
+        window_days=window_days,
+        academic_year_id=year_id,
+        class_id=_homeroom_year_class(db, snapshot, year_id),  # fix11：跨年解析该学年行政班
+        db=db,
+    )
+    return _dump(result)
 
 
 # ────────────────────── 注册表（domains 声明 + 域投影） ──────────────────────
@@ -2386,8 +2523,12 @@ TOOL_REGISTRY: List[WsToolSpec] = [
         name="get_class_averages",
         description=(
             "查询单场考试的官方全年级班级均分表（随考试导入的班级均分事实，"
-            "非本班成绩反推）：各班各科/各总分口径均分、总分名次、本班班号；"
-            "口径由该场考试实际导入内容动态生成。班主任专属。"
+            "非本班成绩反推）：各班各科/各总分口径均分、总分指标包（均分/"
+            "及格率/高分率/低分率/标准差，文件未提供的指标为 null）与 "
+            "total_ranks 排名（平行班/实验班按班型分组各排的名次，不是全"
+            "年级名次）、本班班号；口径由该场考试实际导入内容动态生成。"
+            "选科均分为 0 表示该班无人选该科，不是真实分数，不得计入平均、"
+            "比较或当最低分。班主任专属。"
         ),
         input_schema=_schema_with_year_args(
             {"exam_name": {"type": "string", "description": _EXAM_NAME_DESC}},
@@ -2567,9 +2708,8 @@ TOOL_REGISTRY: List[WsToolSpec] = [
             "assignment_id）；可用 subject/homework_type/from/to/limit 过滤。"
             "拿到 assignment_id 后可用 get_homework_assignment_detail 查逐人明细。"
         ),
-        input_schema={
-            "type": "object",
-            "properties": {
+        input_schema=_schema_with_year_args(
+            {
                 "subject": {
                     "type": "string",
                     "description": "可选，按学科过滤（teaching 会话仅接受任教学科）",
@@ -2581,8 +2721,8 @@ TOOL_REGISTRY: List[WsToolSpec] = [
                 "from": {"type": "string", "description": "起始日期 YYYY-MM-DD"},
                 "to": {"type": "string", "description": "结束日期 YYYY-MM-DD"},
                 "limit": {"type": "integer", "description": "可选，返回条数（默认 100）"},
-            },
-        },
+            }
+        ),
         domains=("homeroom", "teaching"),
         handler=_tool_get_homework_assignments,
     ),
@@ -2592,16 +2732,15 @@ TOOL_REGISTRY: List[WsToolSpec] = [
             "查询单个作业批次的逐人明细（应交名单与每人的收交状态/评价/"
             "出勤异常/忘带标记）；assignment_id 来自 get_homework_assignments。"
         ),
-        input_schema={
-            "type": "object",
-            "properties": {
+        input_schema=_schema_with_year_args(
+            {
                 "assignment_id": {
                     "type": "integer",
                     "description": "作业批次 ID（get_homework_assignments 返回）",
                 }
             },
-            "required": ["assignment_id"],
-        },
+            required=["assignment_id"],
+        ),
         domains=("homeroom", "teaching"),
         handler=_tool_get_homework_assignment_detail,
     ),
@@ -2639,9 +2778,10 @@ TOOL_REGISTRY: List[WsToolSpec] = [
     WsToolSpec(
         name="get_exam_students",
         description=(
-            "查询单场考试全班逐人「分科+总分」矩阵（每人各科分数与各总分"
-            "口径一行的宽表，含跨域冲突注记）；与 get_scores_table 分工："
-            "后者逐人分数行，本工具班主任分科矩阵含名次注记。班主任专属。"
+            "查询单场考试全班逐人「分科+总分」矩阵（每人各科分数、选科等级"
+            "分、年级百分位、学籍与各总分口径名次一行的宽表）；与 "
+            "get_scores_table 分工：后者逐人分数行，本工具班主任分科矩阵含"
+            "名次与百分位。班主任专属。"
         ),
         input_schema=_schema_with_year_args(
             {
@@ -2667,21 +2807,88 @@ TOOL_REGISTRY: List[WsToolSpec] = [
             "返回班级每生类型汇总与班级级特征，适合回答「班里有哪些学生需要重点"
             "关注」「某某属于什么类型」。"
         ),
-        input_schema={
-            "type": "object",
-            "properties": {
+        input_schema=_schema_with_year_args(
+            {
                 "person_id": {
                     "type": "integer",
                     "description": "可选，会话范围内学生身份 ID；缺省=班级汇总",
-                },
-                "academic_year_id": {
-                    "type": "integer",
-                    "description": "可选，学年 ID；缺省当前学年",
-                },
-            },
-        },
+                }
+            }
+        ),
         domains=("homeroom", "teaching"),
         handler=_tool_get_diagnosis_summary,
+    ),
+    # ────────────────── 2026-10-23 AI 覆盖补齐（第 26-28 个工具） ──────────────────
+    WsToolSpec(
+        name="get_rank_bands",
+        description=(
+            "查询单场考试的全年级名次段表（读随考试导入的《总分名次段表》，"
+            "不从学生名次现算）：各班与全年级在各名次段的人数，可切换总分"
+            "口径；与 get_rank_distribution（按本班学生名次现算、每40名一档）"
+            "数据来源不同，问「全年级各班名次段人数」用本工具。班主任专属。"
+        ),
+        input_schema=_schema_with_year_args(
+            {
+                "exam_name": {"type": "string", "description": _EXAM_NAME_DESC},
+                "total_type": {
+                    "type": "string",
+                    "description": (
+                        "可选，总分口径（如 3+3总分/主三门总分）；缺省用该场"
+                        "默认口径，返回的 available_total_types 列出可选"
+                    ),
+                },
+            },
+            required=["exam_name"],
+        ),
+        domains=("homeroom",),
+        handler=_tool_get_rank_bands,
+    ),
+    WsToolSpec(
+        name="get_teaching_score_bands",
+        description=(
+            "查询单场考试任教学科的分数段分析（原始分，5/10/20 分一段，"
+            "左闭右开）：每个教学班一列 + 当前范围合并列，含本段/累计人数与"
+            "比例、有效人数/最高/最低/均分/标准差；仅本人教学班口径，不含"
+            "年级或官方列。任课教师专属。"
+        ),
+        input_schema=_schema_with_year_args(
+            {
+                "exam_name": {"type": "string", "description": _EXAM_NAME_DESC},
+                "band_width": {
+                    "type": "integer",
+                    "description": "可选，段宽（5/10/20），默认 10",
+                },
+            },
+            required=["exam_name"],
+        ),
+        domains=("teaching",),
+        handler=_tool_get_teaching_score_bands,
+    ),
+    WsToolSpec(
+        name="get_homework_student_subjects",
+        description=(
+            "查询单个学生逐学科的作业×成绩总览（全科并列）：每科一条按考试"
+            "次序的时间线（成绩口径按学科自适应：高一全部学科与高二/三语数英"
+            "用年级百分位（换算为 100−前百分比，越大越好），高二/三六选科用"
+            "等级分）+ 考前窗口作业提交率；未选修/无成绩事实的学科自动跳过。"
+            "与 get_homework_correlation（单科完整相关性分析）分工：本工具"
+            "一次看全科概览。window_days 限 14 或 30。班主任专属。"
+        ),
+        input_schema=_schema_with_year_args(
+            {
+                "person_id": {
+                    "type": "integer",
+                    "description": "会话范围内学生身份 ID（search_students 获取）",
+                },
+                "window_days": {
+                    "type": "integer",
+                    "description": "可选，作业窗口天数（14 或 30），默认 14",
+                },
+            },
+            required=["person_id"],
+        ),
+        domains=("homeroom",),
+        handler=_tool_get_homework_student_subjects,
     ),
 ]
 

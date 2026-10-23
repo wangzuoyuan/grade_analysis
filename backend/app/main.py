@@ -266,7 +266,10 @@ def run_legacy_startup_migrations() -> dict:
 
 from app.ingest.router import router as ingest_router  # noqa
 from app.analysis.router import router as analysis_router  # noqa
-from app.chat.session import router as chat_router  # noqa
+# 旧版 AI 聊天 HTTP 端点（POST /api/chat、GET /api/chat/config，
+# app/chat/session.py）已于 2026-10-23 下线：读已冻结 legacy 旧库、口径过时，
+# 前端唯一入口是 /api/v1/chat。app/chat/tools.py 与 app/chat/config.py 保留
+# （新版 chat 与 MCP 旧工具兼容路径仍在用）。
 from app.homework.router import router as homework_router  # noqa
 from app.notes.router import router as notes_router  # noqa
 from app.backup.router import router as backup_router  # noqa
@@ -278,7 +281,6 @@ from app.api import create_api_router  # noqa
 app.include_router(auth_router, prefix="/api")
 app.include_router(ingest_router, prefix="/api")
 app.include_router(analysis_router, prefix="/api")
-app.include_router(chat_router, prefix="/api")
 app.include_router(homework_router, prefix="/api")
 app.include_router(notes_router, prefix="/api")
 app.include_router(backup_router, prefix="/api")

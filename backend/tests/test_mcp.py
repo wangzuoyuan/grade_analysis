@@ -72,6 +72,10 @@ EXPECTED_TOOL_ORDER = (
     "get_exam_students",
     # P1-B4 诊断摘要（第 25 个工具，契约 docs/diagnosis-roadmap/p1-contracts.md §6.3）
     "get_diagnosis_summary",
+    # 2026-10-23 AI 覆盖补齐（第 26-28 个工具）：名次段表 / 教学分数段 / 作业全科卡
+    "get_rank_bands",
+    "get_teaching_score_bands",
+    "get_homework_student_subjects",
 )
 EXPECTED_TOOLS = set(EXPECTED_TOOL_ORDER)
 
@@ -843,25 +847,20 @@ def test_bare_mcp_path_redirects_to_canonical(client):
     assert r.headers["location"].endswith("/mcp/")
 
 
-# ─────────────────────── 现有聊天助手不受影响 ───────────────────────
+# ─────────────── 旧版聊天 HTTP 端点已下线（防复活守卫） ───────────────
 
-def test_chat_config_and_chat_endpoint_unchanged(mcp_app, monkeypatch):
+def test_legacy_chat_endpoints_offline(mcp_app, monkeypatch):
+    """旧版 POST /api/chat 与 GET /api/chat/config 已于 2026-10-23 随
+    app/chat/session.py 一并下线（读已冻结 legacy 旧库、口径过时），两个
+    端点均须 404；新版唯一入口 /api/v1/chat 与 MCP 改造互不影响。
+    （旧 session.build_tools_list 的三键投影契约由下方
+    test_public_tools_exactly_registry_projection 以 tools.TOOLS 继续覆盖。）"""
     _clear_proxy_env(monkeypatch)
     with TestClient(mcp_app) as c:
         r = c.get("/api/chat/config")
-        assert r.status_code == 200
-        assert "provider" in r.json()
-        # 未绑定班级作用域时 /api/chat 维持既有 409 拒绝（不触达 LLM）。
+        assert r.status_code == 404
         r2 = c.post("/api/chat", json={"messages": [], "context": {}})
-        assert r2.status_code in (200, 400, 409, 422)
-
-
-def test_session_build_tools_list_is_public_projection():
-    from app.chat.session import build_tools_list
-    tools = build_tools_list()
-    assert len(tools) == 20
-    for t in tools:
-        assert list(t.keys()) == ["name", "description", "input_schema"]
+        assert r2.status_code == 404
 
 
 # ───────────────── TOOLS 恰为 TOOL_REGISTRY 三键投影 ─────────────────

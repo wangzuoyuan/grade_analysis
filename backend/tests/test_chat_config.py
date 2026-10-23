@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from app.chat.config import DEFAULT_MODEL, get_chat_config
-from app.chat.session import block_to_message_content, build_system_prompt
 
 
 def test_chat_config_reads_dotenv_file(tmp_path: Path, monkeypatch):
@@ -111,25 +110,3 @@ def test_chat_config_keeps_hash_inside_quoted_value(tmp_path: Path, monkeypatch)
     config = get_chat_config(env_file)
 
     assert config.api_key == "abc # 123"
-
-
-def test_chat_ignores_non_display_content_blocks():
-    class Block:
-        type = "thinking"
-
-    assert block_to_message_content(Block()) == {}
-
-
-def test_system_prompt_includes_page_context():
-    prompt = build_system_prompt({"student_id": "7240115", "page": {"pathname": "/student/7240115"}})
-
-    assert "当前页面上下文" in prompt
-    assert "7240115" in prompt
-
-
-def test_system_prompt_defines_plus_three_subject_scope():
-    prompt = build_system_prompt()
-
-    assert "加三学科" in prompt
-    for subject in ["物理", "化学", "生物", "政治", "历史", "地理"]:
-        assert subject in prompt

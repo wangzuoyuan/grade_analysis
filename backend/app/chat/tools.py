@@ -2108,8 +2108,9 @@ def _project_provider_tool(entry: dict) -> dict:
     }
 
 
-# 公开工具清单：聊天助手（session.build_tools_list / to_openai_tools）使用。
-# 内容由 TOOL_REGISTRY 投影而来；不要在此列表上添加 MCP 专用字段。
+# 公开工具清单：旧 H 版聊天会话曾消费；2026-10-23 起 POST /api/chat 下线，
+# 新链路（api/chat_tools.TOOL_REGISTRY）不再经此列表，仅保留投影供
+# MCP 旧工具兼容路径参考。不要在此列表上添加 MCP 专用字段。
 TOOLS = [_project_provider_tool(e) for e in TOOL_REGISTRY]
 
 

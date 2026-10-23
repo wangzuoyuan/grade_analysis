@@ -183,8 +183,11 @@ def _exam_exists_in_domain(
     db: Session, data_domain: str, academic_year_id: int, exam_name: str
 ) -> bool:
     """该域该学年是否存在该考试（不限班级）：完全不存在 → 调用方 404；
-    存在但本班无行由调用方按 200 空态处理。"""
-    return (
+    存在但本班无行由调用方按 200 空态处理。
+    homeroom 域 2026-10-23 起对齐 exam_events 可见性（成绩事实之外，
+    班级均分表/名次段表导入也算该考试存在）：纯导入考试此前被误判
+    「考试不存在」404，AI 工具的精确名解析走同一扇门、同样被拒。"""
+    if (
         q.filter_exam(db.query(ScoreFact.id), db, ScoreFact, exam_name)
         .filter(
             ScoreFact.data_domain == data_domain,
@@ -193,7 +196,23 @@ def _exam_exists_in_domain(
         .limit(1)
         .first()
         is not None
-    )
+    ):
+        return True
+    if data_domain != "homeroom":
+        return False
+    for model in (WorkspaceClassAverage, WorkspaceRankBand):
+        if (
+            q.filter_exam(db.query(model.id), db, model, exam_name)
+            .filter(
+                model.data_domain == "homeroom",
+                model.academic_year_id == academic_year_id,
+            )
+            .limit(1)
+            .first()
+            is not None
+        ):
+            return True
+    return False
 
 
 def _exam_exists_for_teaching(
@@ -827,7 +846,10 @@ def homeroom_rank_frequency(
         exams=exam_rows,
         bins=bins,
         students=students,
-        metric_note="单科按年级百分位五等分；选考科目按精确等级分统计；总分按学籍/年级名次每40名一档统计。",
+        metric_note=(
+            "单科按年级百分位五等分；选考科目按精确等级分统计；"
+            "总分按学籍/年级名次每40名一档统计，仅统计学校明细表学籍=1（闵中学籍）学生。"
+        ),
     )
 
 
@@ -908,7 +930,8 @@ def homeroom_rank_range(
         students=students,
         metric_note=(
             "只按真实学籍/年级名次筛选；名次不可得的学生不进名单"
-            "（不按百分位推算名次），可靠百分位见排名频次的百分位分箱。"
+            "（不按百分位推算名次），可靠百分位见排名频次的百分位分箱；"
+            "总分口径仅统计学校明细表学籍=1（闵中学籍）学生。"
         ),
     )
 

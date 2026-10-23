@@ -7,8 +7,8 @@
 - §3 模型配置探测（无 key 409 workspace_not_configured，不半开；流内
   首帧输出错误事件并终止，会话保持可重试）
 
-SSE 帧格式沿用 H 版（app/chat/session.py）的 data JSON 帧循环模式，本
-模块独立实现、不 import 旧 session 模块的全局状态：
+SSE 帧格式沿用旧 H 版（POST /api/chat，该端点已于 2026-10-23 下线）的
+data JSON 帧循环模式，本模块独立实现：
   {"type":"text","delta"} | {"type":"tool_call",call_id,name,input}
   | {"type":"tool_result",call_id,name,output}
   | {"type":"tool_error",call_id,name,error}
@@ -191,7 +191,11 @@ def build_system_prompt(snapshot: dict, time_anchor: Optional[dict] = None) -> s
         + "1. 引用任何数字必须先经工具查询，绝不凭空编造；工具报错或越界时如实告知，不得改用猜测值。\n"
         + "2. 学生名单不预置：需要定位学生时先用 search_students 查询 person_id。\n"
         + "3. 只分析当前会话范围内的班级与学生；跨范围请求一律拒绝并说明原因。\n"
-        + "4. 缺考为空值（null），绝不转 0；排名只在本班人群内解释。\n"
+        + "4. 数字口径：\n"
+        "   a) 缺考为空值（null），绝不转 0；排名只在本班人群内解释。\n"
+        "   b) 年级百分位（percentile / grade_percentile，0–1）=「年级前百分之几」，越小越靠前，不得当作越大越好；需要「越大越好」的口径用 100 − 百分位×100 换算。\n"
+        "   c) 排名分布/排名频次/名次区间/段位分布的总分口径只统计学校明细表学籍=1（闵中学籍）学生，回答这类人数时带上这条口径。\n"
+        "   d) 班级均分表（get_class_averages）里选科均分为 0 表示该班无人选该科，不是真实分数，不得计入平均、比较或当最低分；total_ranks 是班型内排名（平行班/实验班分组各排），不是全年级名次。\n"
         + "5. 分析作业与成绩的关系（如“缺交多的学生成绩是否更差”）用 "
         "get_homework_correlation（皮尔逊相关，仅描述统计关联、不构成因果，"
         "回答时必须带上这条口径）。\n"

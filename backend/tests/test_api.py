@@ -45,12 +45,11 @@ def test_list_exams(client):
     assert response.status_code == 200
     assert "exams" in response.json()
 
-def test_chat_config_endpoint(client):
+def test_legacy_chat_config_endpoint_offline(client):
+    """旧版 GET /api/chat/config 已于 2026-10-23 随 app/chat/session.py 下线
+    （读已冻结 legacy 旧库、口径过时），须 404；新版 AI 聊天唯一入口为 /api/v1/chat。"""
     response = client.get("/api/chat/config")
-    assert response.status_code == 200
-    data = response.json()
-    assert {"provider", "model", "configured", "base_url_configured"} <= set(data)
-    assert "api_key" not in data
+    assert response.status_code == 404
 
 def test_exam_not_found(client):
     """Step 6: 考试不存在返回404"""

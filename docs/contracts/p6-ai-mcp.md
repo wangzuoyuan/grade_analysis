@@ -2,6 +2,20 @@
 
 v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 
+**2026-10-23 AI 覆盖补齐（v2.1）**：注册表 25→28——新增 `get_rank_bands`
+（homeroom，读随考试导入的名次段表）、`get_teaching_score_bands`（teaching，
+任教学科分数段分析）、`get_homework_student_subjects`（homeroom，单人全科
+作业×成绩总览）三个薄封装，并补登既有工具 `get_diagnosis_summary`（P1-B4，
+此前漏出表格）；口径描述修正——`get_class_averages` 写明「选科均分 0=无人选、
+不得计入平均/比较/当最低分」与「total_ranks=班型内排名」，`get_exam_students`
+删跨域冲突注记（Q10 已退役）改为百分位宽表口径；系统提示词规则 4 扩为
+「数字口径」四子项（见 §2 表后注）；`get_diagnosis_summary /
+get_homework_assignments / get_homework_assignment_detail` 的 input_schema 补
+`year_offset`（§2.1 时间语义）；考试存在性门 `_exam_exists_in_domain`（homeroom）
+对齐 exam_events 可见性——班级均分表/名次段表导入也算考试存在，纯导入考试的
+精确名解析与走该门的读端点不再误判「考试不存在」（原 404 改判 200 合法空态）；旧 `POST /api/chat` 与 `GET /api/chat/config`
+HTTP 端点下线（404，主守卫 tests/test_mcp.py，冒烟 tests/v1/test_p6_ai_coverage.py）。
+
 依 `docs/planning/03-architecture.md` §6、`05-acceptance.md`（A01/A02）与
 `docs/baseline/api-diff.md`（B8/E1）起草；实现不得自行偏离。基础约定沿用 p1-api.md §0。
 
@@ -15,7 +29,10 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
   全科/总分工具，homeroom 会话看不到单科教学班对比工具之外的 teaching 专属工具）。
 - 同一查询经页面 / API / AI 工具 / MCP 四路径必须同源同果：全部走 /api/v1 的同一 service 层
   （A01），工具不得另写查询逻辑绕过投影门。
-- 旧 /api/chat 与 mcp_server.py（读旧表）保留不动，P7 前不删。
+- 旧 `/api/chat` HTTP 端点（POST /api/chat、GET /api/chat/config）已于 2026-10-23 下线
+  （404，读已冻结 legacy 旧库、口径过时）；`app/chat/tools.py`/`config.py` 模块与
+  mcp_server.py 的旧工具 MCP 兼容路径（读旧表）保留至 P7。新版 AI 聊天唯一入口
+  = `/api/v1/chat`（本契约）+ MCP（§4）。
 
 ## 0.1 v2 增补（Q01/Q02/Q03/Q09）
 
@@ -31,8 +48,8 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
   (user/assistant)、content、tool_events JSON、created_at）；messages 端点组装
   `历史（合理截断，默认最近 20 条）+ 本次输入` 请求模型；GET /chat/sessions/{id}/messages
   返回历史（刷新恢复不依赖浏览器）；范围漂移后历史禁止复用（409 语义不变，历史保留只读）。
-- **Q09 tools/list 暴露**：MCP tools/list 必须发布 ws 四工具（名称/描述/输入 schema，含 mode
-  必填与范围参数说明）；更新 tests/test_mcp.py 冻结断言；发现→调用全流程客户端测试。
+- **Q09 tools/list 暴露**：MCP tools/list 必须发布 §2 注册表全量只读工具（2026-10-23
+  起为 28 个；首版曾为四工具子集）；更新 tests/test_mcp.py 冻结断言；发现→调用全流程客户端测试。
 
 ## 1. 会话与鉴权
 
@@ -50,7 +67,7 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 
 ## 2. 工具注册（公共注册表 + 域投影）
 
-只读工具清单（首批，全部薄封装 /api/v1 service）：
+只读工具清单（28 个，全部薄封装 /api/v1 service）：
 
 | 工具 | 可用域 | 数据源 |
 |---|---|---|
@@ -61,9 +78,9 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 | get_scores_table(exam_name, subject?) | 两域 | scores service（经 gated 投影门） |
 | get_homework_summary(from, to) | 两域 | homework dashboard service |
 | get_homework_student(person_id) | 两域 | 学生事件流 service |
-| get_homework_correlation(exam_name, person_id?, subject?, homework_type?, total_type?) | 两域 | 指定学生必须传 person_id，薄封装 student_homework_analysis，与逐人页面同源；高一百分位、高二三等级分。未传 person_id 兼容旧班级相关，不得用班级系数推断个人 |
+| get_homework_correlation(exam_name, person_id?, subject?, homework_type?, total_type?) | 两域 | 指定学生必须传 person_id，薄封装 student_homework_analysis，与逐人页面同源；成绩口径按学科自适应：高一全科与高二/三语数英用年级百分位、高二/三六选科用等级分（student-homework-v2）。未传 person_id 兼容旧班级相关，不得用班级系数推断个人 |
 | get_class_comparison(exam_name) | teaching | class-compare service |
-| get_class_averages(exam_name) | homeroom | 官方全年级班级均分表（workspace_class_average 导入事实，ADR-025，非本班成绩反推） |
+| get_class_averages(exam_name) | homeroom | 官方全年级班级均分表（workspace_class_average 导入事实，ADR-025，非本班成绩反推）；total_ranks=班型内排名（平行班/实验班分组各排，非全年级名次）；选科均分 0=该班无人选该科，不是真实分数，不得计入平均/比较/当最低分 |
 | get_weekly_focus() | homeroom | 本周关注四维信号加权（连续缺交/缺交激增/考试关注/谈话待办；天然当前） |
 | get_exam_focus(exam_name) | homeroom | 单场考试重点关注（进退步/波动/偏科/临界） |
 | get_student_trends(person_id) | homeroom | 跨学年分段趋势（响应按学年分组） |
@@ -73,11 +90,15 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 | get_rank_distribution(exam_name) | homeroom | 单场考试年级名次分布（每 40 名一档） |
 | get_score_bands(exam_name, subject, metric?) | homeroom | 高分/临界/薄弱段位名单（阈值口径为年级名次；无名次数据 409 不做分数镜像） |
 | get_homework_warnings(subject?, min_missing?, min_streak?, from?, to?) | 两域 | 作业缺交/连续缺交/负面/忘带预警（默认区间=当前学期） |
-| get_homework_assignments(subject?, homework_type?, from?, to?, limit?) | 两域 | 作业批次分页列表（含 assignment_id） |
-| get_homework_assignment_detail(assignment_id) | 两域 | 单批次逐人明细（归属校验 service 侧） |
+| get_homework_assignments(subject?, homework_type?, from?, to?, limit?) | 两域 | 作业批次分页列表（含 assignment_id；支持 year_offset/academic_year_id 跨学年） |
+| get_homework_assignment_detail(assignment_id) | 两域 | 单批次逐人明细（归属校验 service 侧；支持 year_offset/academic_year_id，批次 id 属特定学年，指错学年自然 404 越界文本） |
 | get_student_notes(person_id, 学年/学期参数) | 两域 | 成长/谈话档案（仅教师手动记录；学期参数按 ws_homework_semester 起止日期在工具层过滤档案 date） |
 | get_academic_years() | 两域 | 学年+学期目录（is_current/year_offset/term_offset 标注；学期源=ws_homework_semester，挂不上学年目录的学期进顶层 unmatched_semesters；时间语义锚点） |
-| get_exam_students(exam_name, subject?) | homeroom | 单场逐人分科+总分矩阵（宽表含冲突注记；与 get_scores_table 分工） |
+| get_exam_students(exam_name, subject?) | homeroom | 单场逐人分科+总分矩阵（宽表含选科等级分、年级百分位、学籍与各总分口径名次；跨域冲突注记已随 Q10 于 2026-10-20 退役；与 get_scores_table 分工） |
+| get_diagnosis_summary(person_id?) | 两域 | 诊断学情摘要（P1-B4，口径版本 p1-v1）：传 person_id 返回该生六类特征（当前水平/趋势/稳定性/偏科/作业行为/教师关注）+ 类型判定（主类型/次标签/证据）；缺省=班级每生类型汇总；与学生页诊断卡、班主任首页类型分布卡同一 service |
+| get_rank_bands(exam_name, total_type?) | homeroom | 全年级名次段表（读随考试导入的《总分名次段表》，不从学生名次现算；available_total_types 列可选口径；与 get_rank_distribution 现算口径分工） |
+| get_teaching_score_bands(exam_name, band_width?) | teaching | 任教学科分数段分析（原始分 5/10/20 分一段、左闭右开）：每教学班一列+合并列，含本段/累计与人数/最值/均分/σ；仅本人教学班口径，不含年级或官方列 |
+| get_homework_student_subjects(person_id, window_days?) | homeroom | 单个学生逐学科作业×成绩总览（全科并列）：每科按考试次序的时间线（口径按学科自适应：高一全科与高二/三语数英=年级百分位换算、高二/三六选科=等级分）+ 考前窗口提交率；无成绩事实学科自动跳过；window_days 限 14/30 |
 
 - 每工具声明 `domains: [...]`；会话构建时按 scope.data_domain 投影注册表；未知/越权工具调用 →
   工具层直接返回错误文本（模型不可见异常栈）。
@@ -91,6 +112,13 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
   的 `exam_names`（逗号分隔多场）逐项解析，任一项多命中/零命中报错并注明「第 N 项『X』」，
   含模糊项时响应顶层 `exam_resolved` 注记逐项解析结果（逗号连接，与入参同序）。
 - 系统提示按域生成（homeroom 全科班主任视角 / teaching 单科教师视角），不含成员明单（按需查）；
+  **规则 4「数字口径」**（2026-10-23 扩为四子项，chat.py build_system_prompt）：
+  a) 缺考为 null 绝不转 0，排名只在本班人群内解释；b) 年级百分位（0–1）=「年级前
+  百分之几」，越小越靠前，需要越大越好的口径用 100 − 百分位×100 换算；c) 排名分布/
+  排名频次/名次区间/段位分布的总分口径只统计学校明细表学籍=1（闵中学籍）学生，
+  回答这类人数须带口径；d) 班级均分表选科均分 0=无人选（不计入平均/比较/最低分）、
+  total_ranks=班型内排名（非全年级名次）。相关 metric_note（rank_frequency/
+  rank_range/rank_distribution）同步带学籍口径文案。
   规则含第 7 条「自主分析」（恒定注入）：没有专门工具的分析问题（进步/退步对比、排序、分布、
   两场考试对比等）先用 get_scores_table / get_exam_students / get_homework_assignments 等
   拿全量真实数据再自行计算，**不以"没有对应工具"为由拒绝回答**；计算纪律：缺考 null 不当 0
@@ -156,8 +184,8 @@ v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 
 - `MCP_ENABLED` 挂载沿用现状；新增模式参数：每个 MCP 工具调用必传 `mode`（缺省 422）；服务端
   以 mode + 会话 scope 重新解析，再走 §2 同一注册表（即 MCP 与 AI 聊天同工具同结果）。
-- MCP 工具清单 = §2 注册表的稳定子集（首版：search_students / get_student_profile /
-  get_exam_stats / get_scores_table）；写操作工具一律不注册。
+- MCP 工具清单 = §2 注册表全量只读工具（28 个，2026-10-23 起与 AI 聊天同目录；
+  首版曾为四工具子集）；写操作工具一律不注册。
 - scope 快照机制同聊天（MCP 会话同样存 chat_session，type='mcp'）。
 
 ## 5. 验收映射
@@ -167,7 +195,9 @@ A02（切换工作台/撤销关联后旧上下文失效）→ 快照漂移 409 �
 跨学年时间语义（year_offset/term_offset 二选一、缺省快照学年、teaching 跨年不扩学科）→
 test_p6_time_semantics.py 专项 + 既有工具同源测试；
 homeroom 跨年班级服务端解析（换届后新班 id 不再配旧学年、跨年诊断不 422、跨年搜索
-成员口径、无班/歧义可读错误）→ test_fix11_chat_cross_year.py 专项。
+成员口径、无班/歧义可读错误）→ test_fix11_chat_cross_year.py 专项；
+2026-10-23 覆盖补齐（口径文案四锚点、三新工具注册与域投影、A01 同源、旧端点下线冒烟）
+→ tests/v1/test_p6_ai_coverage.py 专项。
 
 ## 6. 前端（P6-FE 波次）
 
