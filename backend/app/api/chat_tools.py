@@ -1678,7 +1678,9 @@ def _tool_get_rank_frequency(db, snapshot: dict, args: dict) -> dict:
 
 
 def _tool_get_rank_range(db, snapshot: dict, args: dict) -> dict:
-    """年级名次区间筛选（如 主三门 1–100 名名单）。"""
+    """按指标类型筛选区间名单：总分=名次区间（如 主三门 1–100 名）；
+    语数英/高一全科=年级前百分位区间（0–100，越小越靠前）；
+    选考科目=等级分区间（40–70）。"""
     year_id, err = _exam_year_id_of(db, snapshot, args)
     if err:
         return err
@@ -2618,9 +2620,10 @@ TOOL_REGISTRY: List[WsToolSpec] = [
     WsToolSpec(
         name="get_rank_range",
         description=(
-            "筛选举年名次落在 [rank_min, rank_max] 区间的学生（如 主三门 "
-            "1–100 名名单），含班内名次换算。metric 先用 get_rank_metrics 查。"
-            "班主任专属。"
+            "按指标类型筛选区间学生名单：总分=名次区间（如 主三门 1–100 名）；"
+            "语数英与高一各学科=年级前百分位区间（0–100，越小越靠前）；"
+            "选考科目=等级分区间（40–70）。含班内名次换算。"
+            "metric 先用 get_rank_metrics 查。班主任专属。"
         ),
         input_schema=_schema_with_year_args(
             {
@@ -2629,8 +2632,14 @@ TOOL_REGISTRY: List[WsToolSpec] = [
                     "type": "string",
                     "description": "指标（get_rank_metrics 返回的 value）",
                 },
-                "rank_min": {"type": "integer", "description": "可选，名次下限（默认 1）"},
-                "rank_max": {"type": "integer", "description": "可选，名次上限（默认 100）"},
+                "rank_min": {
+                    "type": "integer",
+                    "description": "可选，区间下限，单位随指标（名次/前%/等级分，默认 1）",
+                },
+                "rank_max": {
+                    "type": "integer",
+                    "description": "可选，区间上限，单位随指标（名次/前%/等级分，默认 100）",
+                },
             },
             required=["exam_name", "metric"],
         ),

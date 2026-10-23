@@ -853,6 +853,25 @@ def homeroom_rank_frequency(
     )
 
 
+# 排名区间筛选的口径说明（metric_note）随指标类型下发：总分=名次、
+# 单科=年级前%、选考=等级分；总分文案保留「学籍=1」锚点（AI 覆盖契约
+# 测试依赖该词）。
+_RANK_RANGE_NOTES = {
+    "total_rank": (
+        "总分按学籍/年级名次筛选；名次不可得的学生不进名单"
+        "（不按百分位推算名次）；仅统计学校明细表学籍=1（闵中学籍）学生。"
+    ),
+    "subject_percentile": (
+        "单科按年级排名百分位（前%）筛选，数值越小越靠前；"
+        "百分位缺失的学生不进名单；统计全部学生（不按学籍过滤）。"
+    ),
+    "subject_grade_score": (
+        "选考科目按等级分（40–70）筛选，数值越大越靠前；"
+        "等级分缺失的学生不进名单；统计全部学生（不按学籍过滤）。"
+    ),
+}
+
+
 @router.get(
     "/homeroom/analysis/exams/{exam_name}/rank-range",
     response_model=HomeroomRankRangeResponse,
@@ -868,10 +887,6 @@ def homeroom_rank_range(
     term_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ) -> HomeroomRankRangeResponse:
-    if rank_min < 1 or rank_max < rank_min:
-        raise InvalidScopeParam(
-            "invalid rank range", details={"rank_min": rank_min, "rank_max": rank_max}
-        )
     ctx = _resolve_homeroom_ctx(
         db, current_teacher_id(db), academic_year_id, class_id, term_id
     )
@@ -880,6 +895,21 @@ def homeroom_rank_range(
             "exam not found in homeroom domain", details={"exam_name": exam_name}
         )
     meta = _rank_metric_meta(_homeroom_grade(db, ctx), metric, "range")
+    # 区间单位随指标口径（2026-10-23 用户拍板）：总分=名次（≥1）、单科
+    # 百分位=年级前%（0–100）、选考=等级分（40–70）；越界或下界大于上界
+    # 均 422。
+    if meta["kind"] == "total_rank":
+        bounds_valid = rank_min >= 1 and rank_max >= rank_min
+    elif meta["kind"] == "subject_percentile":
+        bounds_valid = 0 <= rank_min <= rank_max <= 100
+    else:
+        grade_lo = min(defs.GRADE_SCORE_VALUES)
+        grade_hi = max(defs.GRADE_SCORE_VALUES)
+        bounds_valid = grade_lo <= rank_min <= rank_max <= grade_hi
+    if not bounds_valid:
+        raise InvalidScopeParam(
+            "invalid rank range", details={"rank_min": rank_min, "rank_max": rank_max}
+        )
     member_ids = _exam_member_ids(db, ctx, exam_name)
     # 2026-10-20 用户裁决：总分名次口径仅统计学校明细表学籍=1（闵中学籍）
     # 学生；单科口径保留全部学生。
@@ -896,12 +926,25 @@ def homeroom_rank_range(
         else:
             if fact.subject != meta["key"]:
                 continue
-        # P0-A1 名次语义（共享口径）：只认真实学籍/年级名次；名次不可得
-        # 即缺失（该生不进名单），绝不按「百分位 × 人数」推算名次。
+        # P0-A1 不编造原则（共享口径）：筛选依据值（名次/百分位/等级分）
+        # 缺失即该生不进名单，绝不按其他字段推算。year_rank 对单科口径
+        # 仅作展示（fact 带真实校名次时照填，可为 None）。
         year_rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
         scores.append((entry.person_id, fact.score))
-        if year_rank is not None and rank_min <= year_rank <= rank_max:
-            matched.append((entry.person_id, fact.score, year_rank))
+        if meta["kind"] == "total_rank":
+            if year_rank is not None and rank_min <= year_rank <= rank_max:
+                matched.append((entry.person_id, fact.score, year_rank, year_rank))
+        elif meta["kind"] == "subject_percentile":
+            percentile = defs.normalized_percentile(fact.grade_percentile)
+            pct = round(percentile * 100, 1) if percentile is not None else None
+            if pct is not None and rank_min <= pct <= rank_max:
+                matched.append((entry.person_id, fact.score, year_rank, pct))
+        else:
+            grade_score = _grade_score_of(fact)
+            if grade_score is not None and rank_min <= grade_score <= rank_max:
+                matched.append(
+                    (entry.person_id, fact.score, year_rank, int(round(grade_score)))
+                )
     class_ranks = _rank_map(scores)
     names = q.names_for(db, member_ids)
     aliases = q.aliases_for(db, member_ids, "homeroom", ctx.academic_year_id)
@@ -913,10 +956,25 @@ def homeroom_rank_range(
             score=score,
             class_rank=class_ranks.get(person_id),
             year_rank=year_rank,
+            metric_value=metric_value,
         )
-        for person_id, score, year_rank in matched
+        for person_id, score, year_rank, metric_value in matched
     ]
-    students.sort(key=lambda student: (student.year_rank or 10**9, student.name or ""))
+    if meta["kind"] == "subject_percentile":
+        # 前%越小越靠前，升序=从优到劣
+        students.sort(
+            key=lambda student: (
+                student.metric_value if student.metric_value is not None else 10**9,
+                student.name or "",
+            )
+        )
+    elif meta["kind"] == "subject_grade_score":
+        # 等级分越大越靠前，降序=从优到劣
+        students.sort(
+            key=lambda student: (-(student.metric_value or 0), student.name or "")
+        )
+    else:
+        students.sort(key=lambda student: (student.year_rank or 10**9, student.name or ""))
     return HomeroomRankRangeResponse(
         metadata=_analysis_metadata(
             ctx, "exam", fact_revisions=[entry.fact.data_revision for entry in entries]
@@ -928,11 +986,7 @@ def homeroom_rank_range(
         rank_min=rank_min,
         rank_max=rank_max,
         students=students,
-        metric_note=(
-            "只按真实学籍/年级名次筛选；名次不可得的学生不进名单"
-            "（不按百分位推算名次），可靠百分位见排名频次的百分位分箱；"
-            "总分口径仅统计学校明细表学籍=1（闵中学籍）学生。"
-        ),
+        metric_note=_RANK_RANGE_NOTES[meta["kind"]],
     )
 
 

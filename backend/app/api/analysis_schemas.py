@@ -215,6 +215,9 @@ class HomeroomRankRangeStudent(BaseModel):
     score: Optional[float] = None
     class_rank: Optional[int] = None
     year_rank: Optional[int] = None
+    # 筛选依据值，单位随 metric_kind：total_rank=名次、
+    # subject_percentile=年级前%（0–100 一位小数）、subject_grade_score=等级分。
+    metric_value: Optional[float] = None
 
 
 class HomeroomRankRangeResponse(BaseModel):

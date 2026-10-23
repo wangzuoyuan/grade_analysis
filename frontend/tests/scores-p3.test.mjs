@@ -251,3 +251,26 @@ test('预览表列宽固定：考试归属下拉不溢出卡片、警告列不�
   assert.match(previewTable, /<TableCell className="text-xs text-slate-600">\s*<span className="whitespace-nowrap">\{examCell/, '考试列单元格不得整体 nowrap（卡片内文案须可换行），考试名单行由 span 保证')
   assert.match(previewTable, /flex flex-wrap items-center gap-1\.5/, '解析与警告徽章行须允许换行')
 })
+
+test('排名区间筛选按指标类型自适应（2026-10-23 拍板）', () => {
+  // 区间单位随指标 kind：总分=名次、语数英/高一全科=年级前%（0–100）、
+  // 加三学科=等级分（40–70）；跨类型切换须重置区间默认值，末列随 kind 换表头与取值。
+  assert.match(homeroomScores, /const RANGE_KIND_BOUNDS = \{/, '应有指标类型的区间单位配置')
+  for (const label of ['起始名次', '起始百分位（前%）', '起始等级分']) {
+    assert.match(homeroomScores, new RegExp(label), `应有「${label}」输入标签`)
+  }
+  assert.match(homeroomScores, /defMin: 0, defMax: 100/, '百分位默认区间 0–100')
+  assert.match(homeroomScores, /defMin: 40, defMax: 70/, '等级分默认区间 40–70')
+  // 跨类型切换重置：onValueChange 里对比新旧 kind 并写默认区间
+  assert.match(homeroomScores, /nextKind !== rangeKind/, '切换指标跨类型须检测 kind 变化')
+  assert.match(homeroomScores, /setRangeMin\(next\.defMin\)/, '跨类型切换须重置区间下限')
+  assert.match(homeroomScores, /setRangeMax\(next\.defMax\)/, '跨类型切换须重置区间上限')
+  // 末列自适应：百分位显示 metric_value 带 %、等级分显示 metric_value、总分显示 year_rank
+  assert.match(homeroomScores, /rangeKind === 'subject_percentile' \? '年级前%' : rangeKind === 'subject_grade_score' \? '等级分' : '年级名次'/, '末列表头须随指标类型切换')
+  assert.match(homeroomScores, /`\$\{student\.metric_value\}%`/, '百分位取值须显示为「前X%」')
+  assert.match(homeroomScores, /\? \(student\.metric_value \?\? '—'\)/, '等级分取值须读 metric_value')
+  // api 类型：students[] 须含 metric_value（单位随 metric_kind）
+  assert.match(apiV1, /metric_value\?: number \| null/, 'HomeroomRankRangeResponse.students 须含 metric_value')
+  // 三口径说明进卡片描述
+  assert.match(homeroomScores, /按指标类型筛选/, '卡片描述须说明按指标类型筛选')
+})

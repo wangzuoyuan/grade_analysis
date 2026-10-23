@@ -274,8 +274,9 @@ def grade_score_bin(value: Optional[float]) -> Optional[str]:
 
 def metric_options(grade: int, mode: str = "frequency") -> List[Dict[str, str]]:
     """排名指标选项（唯一口径）：单科按年级百分位、选考等级分、总分按
-    学籍/年级名次。高一多科 + 主三门/五门；高二/三语数英 + 选考等级分
-    （频次模式）+ 主三门/3+3。"""
+    学籍/年级名次。高一 全科 + 主三门/五门/九门；高二/三 语数英 + 选考
+    等级分 + 主三门/3+3；frequency 与 range 同一份清单（mode 仅作
+    API 兼容参数保留，不再分流任何选项）。"""
     options: List[Dict[str, str]] = []
     if grade == 1:
         options.extend(
@@ -284,7 +285,7 @@ def metric_options(grade: int, mode: str = "frequency") -> List[Dict[str, str]]:
         )
         options.extend(
             {"value": f"total:{total_type}", "label": f"{total_type}总分", "kind": "total_rank"}
-            for total_type in ["主三门", "五门"]
+            for total_type in ["主三门", "五门", "九门"]
         )
         return options
 
@@ -292,11 +293,10 @@ def metric_options(grade: int, mode: str = "frequency") -> List[Dict[str, str]]:
         {"value": f"subject:{subject}", "label": subject, "kind": "subject_percentile"}
         for subject in BASE_SUBJECTS
     )
-    if mode == "frequency":
-        options.extend(
-            {"value": f"subject_grade:{subject}", "label": f"{subject}等级分", "kind": "subject_grade_score"}
-            for subject in ELECTIVE_SUBJECTS
-        )
+    options.extend(
+        {"value": f"subject_grade:{subject}", "label": f"{subject}等级分", "kind": "subject_grade_score"}
+        for subject in ELECTIVE_SUBJECTS
+    )
     options.extend(
         {"value": f"total:{total_type}", "label": f"{total_type}总分", "kind": "total_rank"}
         for total_type in ["主三门", "3+3"]

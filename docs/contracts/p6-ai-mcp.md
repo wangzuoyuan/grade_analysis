@@ -2,6 +2,13 @@
 
 v2 依评审意见 Q01–Q03/Q09 修订；v1 其余条款继续有效。
 
+**2026-10-23 排名区间按指标类型分口径（v2.2）**：`get_rank_range` 与其封装的
+`/api/v1/homeroom/analysis/exams/{exam}/rank-range` 同步——指标清单按年级扩全
+（高一补九门总分、高二/三 range 补六选科等级分指标），rank_min/rank_max 单位随
+metric_kind（总分=名次、语数英/高一全科=年级前% 0–100、选考=等级分 40–70），
+响应 students[] 增 `metric_value`；工具描述与参数说明同步（详见
+p3-imports-analysis.md §2.1 v2.7）。
+
 **2026-10-23 AI 覆盖补齐（v2.1）**：注册表 25→28——新增 `get_rank_bands`
 （homeroom，读随考试导入的名次段表）、`get_teaching_score_bands`（teaching，
 任教学科分数段分析）、`get_homework_student_subjects`（homeroom，单人全科
@@ -86,7 +93,7 @@ HTTP 端点下线（404，主守卫 tests/test_mcp.py，冒烟 tests/v1/test_p6_
 | get_student_trends(person_id) | homeroom | 跨学年分段趋势（响应按学年分组） |
 | get_rank_metrics() | homeroom | 可用名次指标发现（frequency 模式） |
 | get_rank_frequency(metric, exam_names) | homeroom | 名次/百分位/等第频次统计（exam_names 逗号分隔多场考试） |
-| get_rank_range(exam_name, metric, rank_min?, rank_max?) | homeroom | 年级名次区间筛选名单 |
+| get_rank_range(exam_name, metric, rank_min?, rank_max?) | homeroom | 区间筛选名单（单位随指标：总分=名次、语数英/高一全科=年级前%（越小越靠前）、选考=等级分 40–70；响应含 metric_value；v2.7 2026-10-23） |
 | get_rank_distribution(exam_name) | homeroom | 单场考试年级名次分布（每 40 名一档） |
 | get_score_bands(exam_name, subject, metric?) | homeroom | 高分/临界/薄弱段位名单（阈值口径为年级名次；无名次数据 409 不做分数镜像） |
 | get_homework_warnings(subject?, min_missing?, min_streak?, from?, to?) | 两域 | 作业缺交/连续缺交/负面/忘带预警（默认区间=当前学期） |

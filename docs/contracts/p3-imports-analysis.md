@@ -213,6 +213,17 @@
 - `GET exams/{exam_name}/rank-distribution`（v2.4）与 `GET rank-frequency`、
   `GET exams/{exam_name}/rank-range` 的 **total_rank 口径**同受学籍=1 过滤（频次/区间的
   单科百分位/等级分口径保留全部学生）；班主任工作台全域生效，教学侧不动。
+- `GET rank-metrics?mode=` 与 `GET exams/{exam_name}/rank-range`（**v2.7，2026-10-23 用户
+  拍板**）：指标清单按年级扩全且 frequency 与 range 同一份清单——高一=九学科
+  （subject_percentile）+ 主三门/五门/九门总分；高二/三=语数英（subject_percentile）+
+  六选科「{学科}等级分」（subject_grade_score，range 模式新增）+ 主三门/3+3 总分。
+  rank-range 的 rank_min/rank_max **单位随 metric_kind**：total_rank=名次（≥1，学籍=1 过滤）、
+  subject_percentile=年级前%（0–100，越小越靠前）、subject_grade_score=等级分（40–70），
+  越界或下界大于上界 422；students[] 每行新增 `metric_value`（筛选依据值：名次/前%一位
+  小数/等级分），单科口径 year_rank 仅在该科 fact 带真实名次时填；排序=总分名次升序/
+  前%升序/等级分降序；metric_note 按口径三套文案。前端区间输入的标签/钳制/默认值
+  （名次 1–100、前% 0–100、等级分 40–70）与表格末列（年级名次/年级前%/等级分）随 kind
+  自适应，跨类型切换指标时重置区间为该类型默认值。
 - `GET exams/{exam_name}/rank-bands?total_type=`（v2.3，2026-10-19 名次段分布）→ `{metadata,
   exam_name, grade, total_type, available_total_types, current_class_num, classes:
   [{class_num, teacher_name, total, bands: [{label, lo, hi, count}]}], grade_bands}`。

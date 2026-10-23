@@ -101,6 +101,15 @@ import tableStyles from './homeroom-tables.module.css'
 
 const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e05a68', '#64748b', '#0d9488', '#c2410c']
 
+/** 排名区间输入的单位/钳制/默认值随指标类型（2026-10-23 拍板，与后端
+ *  rank-range 的区间校验同口径）：总分=名次、语数英/高一全科=年级前%
+ *  （0–100，越小越靠前）、加三学科=等级分（40–70）。 */
+const RANGE_KIND_BOUNDS = {
+  total_rank: { minLabel: '起始名次', maxLabel: '结束名次', lo: 1, hi: Number.POSITIVE_INFINITY, defMin: 1, defMax: 100 },
+  subject_percentile: { minLabel: '起始百分位（前%）', maxLabel: '结束百分位（前%）', lo: 0, hi: 100, defMin: 0, defMax: 100 },
+  subject_grade_score: { minLabel: '起始等级分', maxLabel: '结束等级分', lo: 40, hi: 70, defMin: 40, defMax: 70 },
+} as const
+
 /** ?tab= 直达白名单（2026-10-22）：仪表盘摘要卡等外链按 tab 锚点进入对应分析板块；
  *  仅作初次进入的初始值（Tabs 非受控 defaultValue），页内切换照旧，非法值回退班级均分表。 */
 const SCORES_TABS = new Set(['averages', 'students', 'bands', 'duanwei', 'frequency', 'range', 'focus'])
@@ -683,6 +692,11 @@ export function HomeroomScores() {
   const [frequencyError, setFrequencyError] = useState<string | null>(null)
   const [rangeMin, setRangeMin] = useState(1)
   const [rangeMax, setRangeMax] = useState(100)
+  // 区间单位随选中指标的 kind（指标清单来自后端 rank-metrics，高一为
+  // 全科百分位 + 主三门/五门/九门总分，高二/三为语数英 + 六选科等级分 +
+  // 主三门/3+3 总分）。
+  const rangeKind = rangeMetrics.find((metric) => metric.value === rangeMetric)?.kind ?? 'total_rank'
+  const rangeBounds = RANGE_KIND_BOUNDS[rangeKind]
   const [rankRange, setRankRange] = useState<HomeroomRankRangeResponse | null>(null)
   const [rankRangeError, setRankRangeError] = useState<string | null>(null)
 
@@ -1455,14 +1469,27 @@ export function HomeroomScores() {
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2"><Search className="h-4 w-4 text-brand-500" />排名区间筛选</CardTitle>
                       <CardDescription>
-                        筛出当前考试指定年级名次区间的学生，并同时显示本班名次。总分口径仅统计学校明细表学籍=1（闵中学籍）学生，单科口径统计全部学生。
+                        按指标类型筛选：总分按学籍/年级名次（仅统计学校明细表学籍=1（闵中学籍）学生）；语数英与高一各学科按年级排名百分位（前%，越小越靠前）；加三学科按等级分（40–70）。同时显示本班名次；筛选依据值缺失的学生不进名单。
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-5">
                       <div className="grid gap-3 sm:grid-cols-3">
                         <div>
                           <p className="mb-1.5 text-xs font-medium text-slate-500">指标</p>
-                          <Select value={rangeMetric ?? undefined} onValueChange={setRangeMetric}>
+                          <Select
+                            value={rangeMetric ?? undefined}
+                            onValueChange={(value) => {
+                              // 跨类型切换（名次/前%/等级分）时区间单位变了，
+                              // 沿用旧数值会立刻 422，重置为该类型默认区间。
+                              const nextKind = rangeMetrics.find((metric) => metric.value === value)?.kind ?? 'total_rank'
+                              if (nextKind !== rangeKind) {
+                                const next = RANGE_KIND_BOUNDS[nextKind]
+                                setRangeMin(next.defMin)
+                                setRangeMax(next.defMax)
+                              }
+                              setRangeMetric(value)
+                            }}
+                          >
                             <SelectTrigger aria-label="排名区间指标"><SelectValue placeholder="选择指标" /></SelectTrigger>
                             <SelectContent>
                               {rangeMetrics.map((metric) => (
@@ -1472,12 +1499,12 @@ export function HomeroomScores() {
                           </Select>
                         </div>
                         <label className="text-xs font-medium text-slate-500">
-                          起始名次
-                          <Input className="mt-1.5" inputMode="numeric" value={rangeMin} onChange={(event) => setRangeMin(Math.max(1, Number(event.target.value) || 1))} />
+                          {rangeBounds.minLabel}
+                          <Input className="mt-1.5" inputMode="numeric" value={rangeMin} onChange={(event) => setRangeMin(Math.min(rangeBounds.hi, Math.max(rangeBounds.lo, Number(event.target.value) || rangeBounds.lo)))} />
                         </label>
                         <label className="text-xs font-medium text-slate-500">
-                          结束名次
-                          <Input className="mt-1.5" inputMode="numeric" value={rangeMax} onChange={(event) => setRangeMax(Math.max(rangeMin, Number(event.target.value) || rangeMin))} />
+                          {rangeBounds.maxLabel}
+                          <Input className="mt-1.5" inputMode="numeric" value={rangeMax} onChange={(event) => setRangeMax(Math.min(rangeBounds.hi, Math.max(rangeMin, Number(event.target.value) || rangeMin)))} />
                         </label>
                       </div>
                       {rankRangeError ? (
@@ -1495,7 +1522,7 @@ export function HomeroomScores() {
                                 <TableHead>别名</TableHead>
                                 <TableHead className="text-right">成绩</TableHead>
                                 <TableHead className="text-right">班级名次</TableHead>
-                                <TableHead className="text-right">年级名次</TableHead>
+                                <TableHead className="text-right">{rangeKind === 'subject_percentile' ? '年级前%' : rangeKind === 'subject_grade_score' ? '等级分' : '年级名次'}</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -1505,7 +1532,13 @@ export function HomeroomScores() {
                                   <TableCell className="text-xs text-slate-500">{student.alias ?? '—'}</TableCell>
                                   <TableCell className="text-right tabular-nums">{formatScore(student.score)}</TableCell>
                                   <TableCell className="text-right tabular-nums">{student.class_rank ?? '—'}</TableCell>
-                                  <TableCell className="text-right font-medium tabular-nums">{student.year_rank ?? '—'}</TableCell>
+                                  <TableCell className="text-right font-medium tabular-nums">
+                                    {rangeKind === 'subject_percentile'
+                                      ? (student.metric_value != null ? `${student.metric_value}%` : '—')
+                                      : rangeKind === 'subject_grade_score'
+                                        ? (student.metric_value ?? '—')
+                                        : (student.year_rank ?? '—')}
+                                  </TableCell>
                                 </TableRow>
                               ))}
                             </TableBody>

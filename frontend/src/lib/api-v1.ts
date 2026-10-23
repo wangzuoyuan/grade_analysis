@@ -723,6 +723,9 @@ export interface HomeroomRankRangeResponse {
     score: number | null
     class_rank: number | null
     year_rank: number | null
+    // 筛选依据值，单位随 metric_kind：total_rank=名次、
+    // subject_percentile=年级前%（0–100 一位小数）、subject_grade_score=等级分。
+    metric_value?: number | null
   }>
   metric_note: string
 }

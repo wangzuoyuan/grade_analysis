@@ -166,9 +166,9 @@ def test_rank_range_filters_total_but_not_subject(client, xueji_seed, v1_seed):
     assert r.status_code == 200, r.text
     assert [st["name"] for st in r.json()["students"]] == ["秦甲"]
 
-    # 单科口径 1-100 名区间：全部学生（不过滤）
+    # 单科口径（2026-10-23 起按年级前%筛选）0-100%：全部学生（不过滤）
     r = _q(client, f"{API}/homeroom/analysis/exams/{quote(EXAM)}/rank-range",
-           metric="subject:语文", rank_min=1, rank_max=100,
+           metric="subject:语文", rank_min=0, rank_max=100,
            academic_year_id=s.ay_id, class_id=s.h6_id)
     assert r.status_code == 200, r.text
     names = sorted(st["name"] for st in r.json()["students"])

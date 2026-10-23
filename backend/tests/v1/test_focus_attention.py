@@ -225,8 +225,9 @@ def test_legacy_exam_detail_rank_sections(client, v1_seed, db_session):
     # 高一沿用旧页三总分图例；高二/高三为主三门与 3+3。
     assert _distribution_total_types(1) == ("主三门", "五门", "九门")
     assert _distribution_total_types(2) == ("主三门", "3+3")
-    # 高一排名频次沿用旧页的主三门/五门指标。
+    # 2026-10-23 拍板：高一指标清单补九门总分（frequency 与 range 同一份）。
     assert [row["value"] for row in _rank_metric_options(1, "frequency") if row["kind"] == "total_rank"] == [
         "total:主三门",
         "total:五门",
+        "total:九门",
     ]

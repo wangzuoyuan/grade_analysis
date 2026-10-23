@@ -167,9 +167,10 @@ def test_compute_student_trend_unified_criteria(db_session):
 # ────────────────── 2. 新路径：名次缺失语义（rank-range） ──────────────────
 
 
-def test_rank_range_subject_metric_requires_real_rank(client, v1_seed, db_session):
-    """单科 rank-range（高二语数英走百分位指标）：无真实年级名次 →
-    名次不可得，不进名单、不按百分位推算；写入真实 grade_rank 后才可筛。"""
+def test_rank_range_subject_metric_filters_by_percentile(client, v1_seed, db_session):
+    """单科 rank-range（2026-10-23 拍板：语数英与高一各科按年级前%筛选）：
+    百分位落在区间 → 命中且 metric_value=前%；百分位缺失 → 不进名单，
+    绝不按其他字段推算或反推名次。"""
     from app.db import workspace_models as wm
 
     def chinese_fact(person_id):
@@ -185,7 +186,9 @@ def test_rank_range_subject_metric_requires_real_rank(client, v1_seed, db_sessio
             .one()
         )
 
-    # 百分位仍在（可靠信号保留），但没有真实名次
+    # 甲 前8%、乙 前55%、丙 无百分位；均无真实名次（该口径不参与）
+    fact_jia = chinese_fact(v1_seed.jia_h_id)
+    fact_jia.grade_percentile = 0.08
     fact_yi = chinese_fact(v1_seed.yi_h_id)
     fact_yi.grade_percentile = 0.55
     fact_yi.grade_rank = None
@@ -194,26 +197,115 @@ def test_rank_range_subject_metric_requires_real_rank(client, v1_seed, db_sessio
     params = {"academic_year_id": v1_seed.ay_id, "class_id": v1_seed.h6_id}
     response = client.get(
         f"{API}/homeroom/analysis/exams/{EXAM_E1}/rank-range",
-        params={**params, "metric": "subject:语文", "rank_min": 1, "rank_max": 10},
+        params={**params, "metric": "subject:语文", "rank_min": 0, "rank_max": 30},
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    # 只有百分位 → 不允许推算名次，名单为空且说明文案标注缺失语义
-    assert body["students"] == []
-    assert "不按百分位推算名次" in body["metric_note"]
+    # 甲 前8% 在区间内；乙 前55% 超上限；丙 无百分位不进名单
+    assert [row["person_id"] for row in body["students"]] == [v1_seed.jia_h_id]
+    assert body["students"][0]["metric_value"] == 8.0
+    assert body["students"][0]["year_rank"] is None
+    assert "年级排名百分位（前%）" in body["metric_note"]
 
-    # 写入真实年级名次 → 该生进入名单，year_rank 用真实值
-    fact_yi.grade_rank = 5
-    db_session.commit()
+    # 放宽到 0–100 → 甲乙都进（丙仍不进），前%升序=从优到劣
     response = client.get(
         f"{API}/homeroom/analysis/exams/{EXAM_E1}/rank-range",
-        params={**params, "metric": "subject:语文", "rank_min": 1, "rank_max": 10},
+        params={**params, "metric": "subject:语文", "rank_min": 0, "rank_max": 100},
     )
     assert response.status_code == 200, response.text
     students = response.json()["students"]
-    assert [row["person_id"] for row in students] == [v1_seed.yi_h_id]
-    assert students[0]["year_rank"] == 5
-    assert students[0]["score"] == 76.0  # 班内 min-rank 分母里的真实分
+    assert [row["person_id"] for row in students] == [v1_seed.jia_h_id, v1_seed.yi_h_id]
+    assert [row["metric_value"] for row in students] == [8.0, 55.0]
+
+    # 百分位区间越界（0–100 之外）→ 422
+    for bad_min, bad_max in ((-1, 50), (0, 101), (60, 30)):
+        response = client.get(
+            f"{API}/homeroom/analysis/exams/{EXAM_E1}/rank-range",
+            params={
+                **params,
+                "metric": "subject:语文",
+                "rank_min": bad_min,
+                "rank_max": bad_max,
+            },
+        )
+        assert response.status_code == 422, (bad_min, bad_max, response.text)
+
+
+def test_rank_range_grade_score_metric_filters_and_bounds(client, v1_seed, db_session):
+    """选考 rank-range（2026-10-23 拍板：加三学科按等级分筛选）：等级分在
+    40–70 区间内命中（高在前）；缺失不进名单；区间越界 422。"""
+    from app.db import workspace_models as wm
+
+    physics = {
+        fact.identity_id: fact
+        for fact in db_session.query(wm.ScoreFact)
+        .filter(
+            wm.ScoreFact.data_domain == "homeroom",
+            wm.ScoreFact.exam_name == EXAM_E1,
+            wm.ScoreFact.subject == "物理",
+            wm.ScoreFact.total_type.is_(None),
+        )
+        .all()
+    }
+    physics[v1_seed.jia_h_id].grade_score = 70
+    physics[v1_seed.yi_h_id].grade_score = 58
+    physics[v1_seed.bing_h_id].grade_score = 40
+    db_session.commit()
+
+    params = {"academic_year_id": v1_seed.ay_id, "class_id": v1_seed.h6_id}
+    response = client.get(
+        f"{API}/homeroom/analysis/exams/{EXAM_E1}/rank-range",
+        params={**params, "metric": "subject_grade:物理", "rank_min": 58, "rank_max": 70},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # 甲 70、乙 58 命中且等级分高在前；丙 40 低于下限不进
+    assert [row["person_id"] for row in body["students"]] == [
+        v1_seed.jia_h_id,
+        v1_seed.yi_h_id,
+    ]
+    assert [row["metric_value"] for row in body["students"]] == [70, 58]
+    assert "等级分" in body["metric_note"]
+
+    # 等级分区间越界（合法域 40–70）→ 422
+    response = client.get(
+        f"{API}/homeroom/analysis/exams/{EXAM_E1}/rank-range",
+        params={**params, "metric": "subject_grade:物理", "rank_min": 39, "rank_max": 71},
+    )
+    assert response.status_code == 422, response.text
+
+
+def test_rank_metric_options_grade_lists():
+    """指标清单（2026-10-23 拍板）：range 与 frequency 同一份——高二/三
+    range 也提供选考等级分指标；高一两模式都含九门总分。"""
+    from app.analysis import definitions as defs
+
+    for mode in ("frequency", "range"):
+        options = defs.metric_options(2, mode)
+        assert [row["value"] for row in options if row["kind"] == "subject_grade_score"] == [
+            f"subject_grade:{subject}" for subject in defs.ELECTIVE_SUBJECTS
+        ]
+        assert [row["value"] for row in options if row["kind"] == "subject_percentile"] == [
+            "subject:语文",
+            "subject:数学",
+            "subject:英语",
+        ]
+        assert [row["value"] for row in options if row["kind"] == "total_rank"] == [
+            "total:主三门",
+            "total:3+3",
+        ]
+        # range 模式现在可直接解析选考等级分指标（此前 ValueError）
+        assert defs.metric_meta(2, "subject_grade:物理", mode)["kind"] == "subject_grade_score"
+
+    for mode in ("frequency", "range"):
+        assert [row["value"] for row in defs.metric_options(1, mode) if row["kind"] == "total_rank"] == [
+            "total:主三门",
+            "total:五门",
+            "total:九门",
+        ]
+    # 高一单科指标仍是全科百分位口径
+    grade1_subjects = [row for row in defs.metric_options(1, "range") if row["kind"] == "subject_percentile"]
+    assert [row["value"].split(":", 1)[1] for row in grade1_subjects] == defs.ALL_SUBJECTS
 
 
 def test_rank_range_total_metric_uses_real_rank_only(client, v1_seed, db_session):
