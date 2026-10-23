@@ -162,6 +162,12 @@ test('班主任考试详情恢复旧版六板块与顶部排名分段图', () =>
   assert.match(homeroomScores, /高一展示主三门、五门、九门/, '高一须展示三个总分口径')
   assert.match(homeroomScores, /高二、高三展示主三门与 3\+3/, '高二高三须展示两个总分口径')
   assert.match(homeroomScores, /frequencyExamNames/, '排名频次须支持多选考试')
+  // 2026-10-23 排名频次表头冻结：限高滚动容器在本层、内层 Table 包装 overflow-visible（sticky 才能绑到外层）、表头格 sticky 吸顶
+  assert.match(
+    homeroomScores,
+    /2026-10-23 表头冻结[\s\S]*?<Table wrapperClassName="overflow-visible">[\s\S]*?sticky top-0 z-20 whitespace-nowrap">学生/,
+    '排名频次表头须冻结吸顶（限高滚动 + overflow-visible 包装 + sticky 表头）',
+  )
   assert.match(homeroomScores, /rangeMin/, '排名区间须支持起止名次')
   assert.match(apiV1, /fetchHomeroomClassAverages/, '班级均分表须读取专用端点')
   assert.match(homeroomScores, /全年级班级均分表/, '须展示全年级各班均分宽表')

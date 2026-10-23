@@ -1404,16 +1404,20 @@ export function HomeroomScores() {
                       ) : frequency.students.length === 0 ? (
                         <p className="py-8 text-center text-sm text-slate-500">所选考试与指标暂无可统计数据</p>
                       ) : (
-                        <div className="overflow-x-auto">
-                          <Table>
+                        <div className="max-h-[70vh] overflow-x-auto">
+                          {/* 2026-10-23 表头冻结：限高滚动容器在本层；内层 Table 默认包装也是
+                              overflow-auto（同样产生滚动容器，sticky 会绑错对象），改 overflow-visible
+                              让表头 sticky 绑定到本外层 —— 与教学分数段/学生表同款。
+                              表头底色由全局 thead th 渐变提供（不透明，滑过的行不会透出）。 */}
+                          <Table wrapperClassName="overflow-visible">
                             <TableHeader>
                               <TableRow>
-                                <TableHead className="whitespace-nowrap">学生</TableHead>
-                                <TableHead className="whitespace-nowrap">别名</TableHead>
+                                <TableHead className="sticky top-0 z-20 whitespace-nowrap">学生</TableHead>
+                                <TableHead className="sticky top-0 z-20 whitespace-nowrap">别名</TableHead>
                                 {frequency.bins.map((bin) => (
-                                  <TableHead key={bin.key} className="whitespace-nowrap text-right">{bin.label}</TableHead>
+                                  <TableHead key={bin.key} className="sticky top-0 z-20 whitespace-nowrap text-right">{bin.label}</TableHead>
                                 ))}
-                                <TableHead className="whitespace-nowrap text-right">有效次数</TableHead>
+                                <TableHead className="sticky top-0 z-20 whitespace-nowrap text-right">有效次数</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
