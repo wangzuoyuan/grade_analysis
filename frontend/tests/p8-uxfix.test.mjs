@@ -35,6 +35,14 @@ test('UX02：学生检索按 v1 作用域解析，搜索/学年/班级齐全，�
   assert.doesNotMatch(studentList, /\/api\/students/, '不得再调用旧 /api/students')
 })
 
+test('UX02：档案页头部筛选区两下拉对齐（2026-10-24 用户反馈）', () => {
+  // ScoreYearPicker 自带「学年」标签列；班级列必须同为 space-y-1 标签列且容器
+  // items-end 底对齐。旧写法 items-center + 裸 ClassScopePicker 会让班级下拉浮在学年下拉上方。
+  assert.match(studentList, /sm:items-end">\s*\n\s*<ScoreYearPicker \/>/, '筛选区容器须 items-end 底对齐（items-center 会使两下拉错位）')
+  assert.doesNotMatch(studentList, /sm:items-center">\s*\n\s*<ScoreYearPicker/, '不得回退为 items-center 的筛选区容器')
+  assert.match(studentList, /space-y-1">\s*\n\s*<label className="text-xs font-medium text-slate-500">教学班<\/label>\s*\n\s*<ClassScopePicker \/>/, '班级列须与学年列同构：space-y-1 + 「教学班」标签 + ClassScopePicker')
+})
+
 test('UX02：画像与报告页改接 v1（person_id 键 + 逐场名次 + 作业事件 + 档案）', () => {
   assert.match(studentDetail, /fetchStudent\('teaching', personId, scopeQ\)/, '画像须走 v1 teaching/students/{person_id}')
   assert.match(studentDetail, /fetchTeachingStudents\(name, scopeQ\)/, '逐场名次须走 v1 教学分析')

@@ -270,9 +270,14 @@ export default function StudentSearchPage() {
             {switching ? ' · 正在切换…' : ''}
           </p>
         </div>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        {/* 对齐契约：ScoreYearPicker 自带「学年」标签列，班级列须同为 space-y-1 标签列
+            且容器底对齐（items-end），否则裸下拉会浮在学年下拉上方（2026-10-24 用户反馈） */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
           <ScoreYearPicker />
-          <ClassScopePicker />
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-500">教学班</label>
+            <ClassScopePicker />
+          </div>
           <Button asChild>
             <Link href={workspaceHref('/upload', 'teaching')}>
               <Upload className="h-4 w-4" />
