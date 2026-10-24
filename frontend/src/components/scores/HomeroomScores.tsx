@@ -675,12 +675,13 @@ export function HomeroomScores() {
   const [rankBandsMetric, setRankBandsMetric] = useState<string | null>(null)
   const [rankBandsNonce, setRankBandsNonce] = useState(0)
 
-  // 段位分布（2026-10-20 恢复：按明细表名次现算三段阈值；仅总分口径、
-  // 仅统计学校明细表学籍=1（闵中学籍）学生——后端同一口径过滤）
+  // 段位分布（2026-10-20 恢复：按明细表名次现算三段阈值；仅总分口径。
+  // 2026-10-24 起名次按学籍代码取列——学籍=1 学籍排名（缺补年级排名）、
+  // 学籍非1只认年级排名、未采集学籍排名优先；全员参与统计）
   const [bandMetric, setBandMetric] = useState<string>('__total__')
   const [duanweiBands, setDuanweiBands] = useState<HomeroomBandsResponse | null>(null)
   const [duanweiError, setDuanweiError] = useState<string | null>(null)
-  // F10/F11：无名次口径（或学籍=1 人口无名次）后端 409，区别于网络/瞬时错误展示
+  // F10/F11：无名次口径后端 409，区别于网络/瞬时错误展示
   const [duanweiUnavailable, setDuanweiUnavailable] = useState(false)
   const [duanweiNonce, setDuanweiNonce] = useState(0)
 
@@ -1121,11 +1122,11 @@ export function HomeroomScores() {
                   </CardTitle>
                   <CardDescription>
                     {rankDistribution == null
-                      ? '按年级展示对应总分口径的学籍排名分布。'
+                      ? '按年级展示对应总分口径的名次分布。'
                       : rankDistribution.grade === 1
-                        ? '高一展示主三门、五门、九门总分的学籍排名分布。'
-                        : '高二、高三展示主三门与 3+3 总分的学籍排名分布。'}
-                    每 40 名一档，缺少真实名次的口径不生成柱子。仅统计学校明细表学籍=1（闵中学籍）学生。
+                        ? '高一展示主三门、五门、九门总分的名次分布。'
+                        : '高二、高三展示主三门与 3+3 总分的名次分布。'}
+                    每 40 名一档，缺少名次的口径不生成柱子。名次按学籍代码取列：学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名。
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -1179,7 +1180,7 @@ export function HomeroomScores() {
                 <TabsContent value="students">
               {/* 学生成绩明细表（2026-10-19 表头按学校导出重制）：
                   学号/班级/学籍/姓名 + 语数英单列 + 六选科(原始/等级) +
-                  +3总分 + 主三门/3+3(总分/百分位/校名次/班名次)；行点击展开趋势 */}
+                  +3总分 + 主三门/3+3(总分/百分位/名次/班名次)；行点击展开趋势 */}
               <Card>
                 <CardHeader>
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1195,7 +1196,7 @@ export function HomeroomScores() {
                   </div>
                   <CardDescription>
                     {stats ? `${selectedExamLabel} · 范围 ${String(stats.cohort_size)} 人 · ` : ''}
-                    缺考显示「—」；班名次按本班同口径总分计算（同分同名次），校名次来自导入明细；点击行可展开跨学年趋势。
+                    缺考显示「—」；班名次按本班同口径总分计算（同分同名次），名次来自导入明细——学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名；点击行可展开跨学年趋势。
                     {stats?.small_sample === true ? <Badge variant="warning" className="ml-2">样本&lt;5</Badge> : null}
                   </CardDescription>
                 </CardHeader>
@@ -1261,7 +1262,7 @@ export function HomeroomScores() {
                                 <ScoreSortButton label={`${tt}总分`} active={isStudentSort('totals', tt)} onClick={() => setStudentSort({ kind: 'totals', key: tt })}>总分</ScoreSortButton>
                               </TableHead>,
                               <TableHead key={`${tt}-pct`} className="whitespace-nowrap text-center text-xs">百分位</TableHead>,
-                              <TableHead key={`${tt}-school`} className="whitespace-nowrap text-center text-xs">校名次</TableHead>,
+                              <TableHead key={`${tt}-school`} className="whitespace-nowrap text-center text-xs">名次</TableHead>,
                               <TableHead key={`${tt}-class`} className="whitespace-nowrap border-r text-center text-xs">班名次</TableHead>,
                             ])}
                           </TableRow>
@@ -1398,7 +1399,7 @@ export function HomeroomScores() {
                     </div>
                   )}
                   <p className="mt-3 text-xs text-slate-500">
-                    点击科目或总分表头可从高到低排序；同分按学号升序，缺考置底，排序不改变班名次、校名次。
+                    点击科目或总分表头可从高到低排序；同分按学号升序，缺考置底，排序不改变班名次、名次。
                   </p>
                   {/* 2026-10-22：+3 口径脚注（学校导出口径说明） */}
                   {totalCols.includes('+3') ? (
@@ -1415,7 +1416,7 @@ export function HomeroomScores() {
                     <CardHeader>
                       <CardTitle>排名频次统计</CardTitle>
                       <CardDescription>
-                        多场考试按年级百分位、精确等级分或总分名次档统计每名学生的落点次数。总分口径仅统计学校明细表学籍=1（闵中学籍）学生，单科口径统计全部学生。
+                        多场考试按年级百分位、精确等级分或总分名次档统计每名学生的落点次数。总分名次按学籍代码取列（学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名），单科口径统计全部学生。
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-5">
@@ -1515,7 +1516,7 @@ export function HomeroomScores() {
                     <CardHeader>
                       <CardTitle className="flex items-center gap-2"><Search className="h-4 w-4 text-brand-500" />排名区间筛选</CardTitle>
                       <CardDescription>
-                        按指标类型筛选：总分按学籍/年级名次（仅统计学校明细表学籍=1（闵中学籍）学生）；语数英与高一各学科按年级排名百分位（前%，越小越靠前）；加三学科按等级分（40–70）。同时显示本班名次；筛选依据值缺失的学生不进名单。
+                        按指标类型筛选：总分按名次（学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名）；语数英与高一各学科按年级排名百分位（前%，越小越靠前）；加三学科按等级分（40–70）。同时显示本班名次；筛选依据值缺失的学生不进名单。
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-5">
@@ -1601,7 +1602,7 @@ export function HomeroomScores() {
                 <CardHeader>
                   <CardTitle>重点关注名单</CardTitle>
                   <CardDescription>
-                    主三门学籍排名标注明显进退步、波动、临界段、薄弱段与稳定优秀；单科年级百分位较主三门落后 20 个百分点时标注严重偏科。
+                    主三门名次标注明显进退步、波动、临界段、薄弱段与稳定优秀（名次按学籍代码取列：学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名）；单科年级百分位较主三门落后 20 个百分点时标注严重偏科。
                     {focus ? ` 当前明显进退步阈值 ${String(focus.config.progress_rank_threshold)} 名，波动阈值 ${String(focus.config.volatility_rank_threshold)} 名；临界段 ${String(focus.config.critical_min)}–${String(focus.config.critical_max)} 名，薄弱段从 ${String(focus.config.weak_min)} 名起。` : ''}
                   </CardDescription>
                 </CardHeader>
@@ -1620,7 +1621,7 @@ export function HomeroomScores() {
                         <TableHeader>
                           <TableRow>
                             <TableHead>学生</TableHead>
-                            <TableHead className="text-right">学籍排名</TableHead>
+                            <TableHead className="text-right">名次</TableHead>
                             <TableHead className="text-right">主三门</TableHead>
                             <TableHead>关注原因</TableHead>
                           </TableRow>
@@ -1737,14 +1738,14 @@ export function HomeroomScores() {
 
                 <TabsContent value="duanwei">
                   {/* 段位分布（2026-10-20 恢复，F10 三段阈值）：按成绩明细表导入的名次现算；
-                      仅总分口径、仅统计学校明细表学籍=1（闵中学籍）学生（后端同口径过滤，
-                      学籍随最近一次明细表导入更新，历史考试图表即时联动）。 */}
+                      仅总分口径。2026-10-24 起名次按学籍代码取列（学籍=1 学籍排名、
+                      学籍非1 年级排名、未采集学籍排名优先），全员参与统计。 */}
                   <Card>
                     <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <CardTitle>段位分布</CardTitle>
                         <CardDescription>
-                          按成绩明细表名次计算（学籍名次优先）；段位阈值沿用分析配置。仅统计学校明细表学籍=1（闵中学籍）学生，学籍随最近一次导入更新。悬浮分段条可查看段内学生名单。
+                          按成绩明细表名次计算（学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名）；段位阈值沿用分析配置。悬浮分段条可查看段内学生名单。
                         </CardDescription>
                       </div>
                       {duanweiOptions.length > 0 ? (
@@ -1771,7 +1772,7 @@ export function HomeroomScores() {
                           <div>
                             <p className="text-sm font-medium text-slate-600">段位不可计算（无名次口径）</p>
                             <p className="mt-0.5 text-xs text-slate-400">
-                              当前口径的学籍=1（闵中学籍）学生没有名次数据；导入带排名的成绩明细表后可计算。
+                              当前口径的学生没有名次数据；导入带排名的成绩明细表后可计算。
                             </p>
                           </div>
                         </div>

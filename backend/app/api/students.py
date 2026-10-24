@@ -35,7 +35,7 @@ from app.api.schemas import (
 from app.core.context import WorkspaceContext, resolve_workspace_context
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
 from app.db.models import get_db
-from app.db.workspace_models import WorkspaceExamEvent
+from app.db.workspace_models import WorkspaceExamEvent, WsStudentIdentity
 
 router = APIRouter(tags=["students"])
 
@@ -247,6 +247,8 @@ def homeroom_student_profile(
     # R1：画像事实只取目标人（统一可读事实口径 F09：仅本域事实；
     # 成员限定目标人，绝不混入他人成绩）
     entries = q.readable_facts(db, ctx, member_ids=[person_id])
+    identity = db.get(WsStudentIdentity, person_id)
+    person_xueji = identity.xueji if identity is not None else None
 
     subject_facts = [e.fact for e in entries if e.fact.total_type is None]
     total_facts = [e.fact for e in entries if e.fact.total_type is not None]
@@ -264,12 +266,12 @@ def homeroom_student_profile(
         key=lambda f: (q.display_exam_date(f) is None, q.display_exam_date(f) or "", f.id),
     ):
         totals_grouped.setdefault(fact.total_type, []).append(
-            # 总分行带校名次（学籍名次优先）；单科行不传 rank 恒 None
+            # 总分行带名次（2026-10-24 起按学籍代码选列）；单科行不传 rank 恒 None
             _exam_entry(
                 fact,
                 "homeroom",
                 db,
-                rank=resolve_year_rank(fact.xueji_rank, fact.grade_rank),
+                rank=resolve_year_rank(fact.xueji_rank, fact.grade_rank, person_xueji),
             )
         )
     # 2026-10-22 列序拍板：学科/总分按规范序输出。年级与

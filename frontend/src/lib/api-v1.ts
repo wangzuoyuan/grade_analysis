@@ -661,7 +661,7 @@ export interface HomeroomRankBandsResponse {
 
 /** 班主任学生行（契约 §2.1）；scores/totals 值缺考为 null，绝不转 0。
  *  2026-10-19 扩展：grade_scores 选科等级分、percentiles 百分位（学科+总分）、
- *  ranks 各总分口径校名次、xueji 学籍代码、class_num 行政班号。 */
+ *  ranks 各总分口径名次（2026-10-24 起按学籍代码选列）、xueji 学籍代码、class_num 行政班号。 */
 export interface HomeroomStudentRow {
   person_id: PersonId
   name: string | null
@@ -1643,7 +1643,7 @@ export interface StudentReportExam {
   grade_score?: number | null
   /** 来源保存的年级百分比（0–1）；后端 ProfileExam 已下发，前端按需使用。 */
   grade_percentile?: number | null
-  /** 校名次（学籍名次优先；仅总分行有值，2026-10-22 起下发）。 */
+  /** 名次（2026-10-24 起按学籍代码选列：学籍=1 取学籍排名、缺时补年级排名；学籍非1 只取年级排名；仅总分行有值）。 */
   rank?: number | null
   source_domain: 'homeroom' | 'teaching'
 }

@@ -8,9 +8,12 @@
 统一口径（阈值为 app/analysis/config.py 的出厂常量，段位阈值运行时读
 AnalysisConfig）：
 
-- 年级名次 resolve_year_rank：学籍名次 xueji_rank 优先，其次年级名次
-  grade_rank；两者皆缺 → None（名次不可得）。绝不以「百分位 × 人数」
-  推算名次，也不允许 9999/999999 之类哨兵值冒充最弱名次。
+- 年级名次 resolve_year_rank：按学籍代码选列（2026-10-24）——学籍=1
+  取学籍名次（缺时用年级名次补）；学籍为已知非 1 整数只认年级名次
+  （旧表给借读类学生填的学籍名次是小圈子名次，绝不回退）；学籍未采集
+  （None）维持学籍名次优先回退年级名次。两列皆缺 → None（名次不可得）。
+  绝不以「百分位 × 人数」推算名次，也不允许 9999/999999 之类哨兵值
+  冒充最弱名次。
 - 进退步 progress_issue：名次差 = 上一次名次 − 本次名次（名次数值变小
   = 正数 = 进步）；≥ PROGRESS_RANK_THRESHOLD(80) 判「明显进步」，
   ≤ −PROGRESS_RANK_THRESHOLD 判「明显退步」。任一场名次缺失不判。
@@ -31,6 +34,8 @@ AnalysisConfig）：
   该 key 名次为 None。
 - 名次区间筛选：只按真实名次（resolve_year_rank）过滤；名次不可得的
   学生不进结果，由 metric_note 明确标注缺失，不按百分位换算补位。
+  （2026-10-24 起名次类统计不再按「学籍=1」过滤人口——有效名次本身
+  已按学籍代码选列，学籍非 1 且无年级名次的学生自然不进名次统计。）
 
 跨学年趋势：结构上按学年/年级分组陈列（新版 trends 端点按学年分组，
 旧版画像按年级排序输出），不做任何跨学年连算的进退步/波动结论；
@@ -128,14 +133,27 @@ def normalized_percentile(value: Optional[float]) -> Optional[float]:
 
 
 def resolve_year_rank(
-    xueji_rank: Optional[int], grade_rank: Optional[int]
+    xueji_rank: Optional[int],
+    grade_rank: Optional[int],
+    xueji: Optional[int] = None,
 ) -> Optional[int]:
-    """年级名次解析（唯一口径）：学籍名次优先，其次年级名次。
+    """年级名次解析（唯一口径，2026-10-24 起按学籍代码选列）：
 
-    两者皆缺（或为非正数的非法值）返回 None（名次不可得）。调用方必须把
-    None 当「缺失」处理：不落段、不进名次区间、不参与进退步/波动，
-    绝不编造名次。"""
-    for candidate in (xueji_rank, grade_rank):
+    - 学籍=1（闵中）→ 学籍名次优先，缺时用年级名次补；
+    - 学籍为已知非 1 整数（2/3/4 等借读类）→ 只认年级名次，绝不回退
+      学籍名次（学校旧表给这类学生填的是小圈子名次，非全年级口径）；
+    - 学籍未采集（None）→ 维持历史行为：学籍名次优先、缺则年级名次
+      （未采集不倒退为空，重导填上学籍代码后自动按上两条归位）。
+
+    候选值为非正数的非法值跳过。两者皆缺返回 None（名次不可得）。
+    调用方必须把 None 当「缺失」处理：不落段、不进名次区间、不参与
+    进退步/波动，绝不编造名次。"""
+    if xueji is not None and int(xueji) != 1:
+        candidates = (grade_rank,)
+    else:
+        # 学籍=1 或未采集（None）：学籍名次优先回退年级名次
+        candidates = (xueji_rank, grade_rank)
+    for candidate in candidates:
         if candidate is not None and int(candidate) >= 1:
             return int(candidate)
     return None

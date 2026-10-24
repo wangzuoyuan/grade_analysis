@@ -292,7 +292,117 @@ def is_grade23_student_sheet(path: Path) -> bool:
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb[wb.sheetnames[0]]
     headers = [clean(ws.cell(2, col).value) for col in range(1, 5)]
-    return headers == ["学号", "班级", "学籍", "姓名"] and clean(ws.cell(2, 20).value) == "+3总分"
+    if headers != ["学号", "班级", "学籍", "姓名"]:
+        return False
+    # 2026-10-24 判型放宽：新版明细表总分块增列后「+3总分」不再恒在第 20 列，
+    # 改为第 2 行任意表头含 +3总分/主三门/3+3 关键字即认明细表
+    # （名次段表/均分表前四列不是 学号/班级/学籍/姓名，天然被排除）。
+    for col in range(5, min(ws.max_column, 40) + 1):
+        label = _norm_label(ws.cell(2, col).value)
+        if label in {"+3总分", "主三门", "3+3总分"} or "主三门" in label or "3+3" in label:
+            return True
+    return False
+
+
+def _norm_label(value: Any) -> str:
+    """表头标签归一：去空白、全角加号转半角。"""
+    return clean(value).replace(" ", "").replace("　", "").replace("＋", "+")
+
+
+# 旧版固定列位（2026-10-24 前的学校导出；新版明细表因增「年级排名」列
+# 会平移总分块与语数英百分位列，固定列位只作表头识别失败时的兜底）。
+_GRADE23_FIXED_TOTALS = {
+    "+3": {"score": 20},
+    "主三门": {"score": 21, "percentile": 22, "xueji_rank": 23},
+    "3+3": {"score": 24, "percentile": 25, "xueji_rank": 26},
+}
+_GRADE23_FIXED_SUBJECT_PCT = {"语文": 27, "数学": 28, "英语": 29}
+
+
+def _grade23_total_of(label: str) -> str | None:
+    """列标签（表头顶标签或整列名）→ 总分口径。"""
+    if not label:
+        return None
+    if label.startswith("+3") or label in {"加3", "加3总分"}:
+        return "+3"
+    if "主三门" in label or "主三" in label:
+        return "主三门"
+    if "3+3" in label:
+        return "3+3"
+    return None
+
+
+def _grade23_slot_of(text: str) -> str | None:
+    """列的子标签/后缀 → 槽位（总分/百分位/学籍排名/年级排名）。"""
+    if not text:
+        return "score"
+    if "百分位" in text:
+        return "percentile"
+    if "学籍排名" in text or "学籍名次" in text or "校名次" in text:
+        return "xueji_rank"
+    if "年级排名" in text or "年级名次" in text:
+        return "grade_rank"
+    if text in {"总分", "分数", "原始分", "原始分数"}:
+        return "score"
+    return None
+
+
+def _grade23_layout(ws) -> dict[str, Any] | None:
+    """新版高二/三明细表表头名驱动列定位（2026-10-24 起：总分块带
+    「学籍排名+年级排名」两列名次，与高一明细表对齐）。
+
+    兼容两类表头：①两行表头（第 2 行合并总标签 + 第 3 行子标签，
+    如 主三门 / 总分·年级百分位·学籍排名·年级排名）；②单行表头
+    （第 2 行整列名，如 主三门总分/主三门年级百分位/主三门学籍排名）。
+
+    激活条件：总分块里识别到显式「学籍排名/校名次」或「年级排名」列表头
+    ——旧版文件（子列无标签、纯固定列位）不激活，走原固定列位逻辑。
+    激活后：槽位缺标签时按旧固定列位兜底（仅当该列标签确属同一总分块），
+    学科原始/等级列（第 5–19 列位于 +3总分 之前，永不平移）保持固定列位。
+    """
+    max_col = ws.max_column
+    flats = [_norm_label(ws.cell(2, c).value) for c in range(1, max_col + 1)]
+    tops = fill_merged_headers(flats)
+    subs = [_norm_label(ws.cell(3, c).value) for c in range(1, max_col + 1)]
+
+    totals: dict[str, dict[str, int]] = {"+3": {}, "主三门": {}, "3+3": {}}
+    pcts: dict[str, int] = {}
+    rank_label_seen = False
+
+    for col in range(5, max_col + 1):
+        flat, top, sub = flats[col - 1], tops[col - 1], subs[col - 1]
+        total_type = _grade23_total_of(flat) or _grade23_total_of(top)
+        if total_type is not None:
+            suffix = flat
+            for prefix in ("+3总分", "主三门总分", "3+3总分", "主三门", "3+3", "+3"):
+                if suffix.startswith(prefix):
+                    suffix = suffix[len(prefix):]
+                    break
+            text = sub or suffix
+            slot = _grade23_slot_of(text)
+            if slot is not None:
+                totals[total_type].setdefault(slot, col)
+                if slot in {"xueji_rank", "grade_rank"}:
+                    rank_label_seen = True
+            continue
+        # 语数英年级百分位列（新版可能随总分块平移，同样按名定位）
+        for subject in ("语文", "数学", "英语"):
+            if (flat.startswith(subject) or top.startswith(subject)) and "百分位" in (sub or flat or top):
+                pcts.setdefault(subject, col)
+                break
+
+    if not rank_label_seen:
+        return None
+    # 槽位兜底：缺标签的槽按旧固定列位补（该列标签须仍属同一总分块；
+    # 列数不足（如 3+3 块整块缺失）不兜底——保持槽缺失）
+    for total_type, fixed in _GRADE23_FIXED_TOTALS.items():
+        for slot, fixed_col in fixed.items():
+            if slot in totals[total_type] or fixed_col > len(flats):
+                continue
+            label = flats[fixed_col - 1] or tops[fixed_col - 1]
+            if _grade23_total_of(label) == total_type:
+                totals[total_type][slot] = fixed_col
+    return {"totals": totals, "pcts": pcts}
 
 
 def find_grade23_class_average_header(ws: Any) -> int | None:
@@ -520,12 +630,43 @@ def parse_excel_grade23(file_path: str, grade: int) -> dict:
 
 
 def parse_excel_grade23_student_rows(path: Path, grade: int) -> dict:
-    """解析高二/高三学生成绩明细表（已由判型确认是明细表）。"""
+    """解析高二/高三学生成绩明细表（已由判型确认是明细表）。
+
+    2026-10-24 起双格式：新版明细表总分块带「学籍排名+年级排名」两列
+    名次（与高一明细表对齐）——识别到显式名次列表头即走表头名驱动布局
+    （_grade23_layout）；旧版文件保持固定列位。学科原始/等级列恒在第
+    5–19 列（位于 +3总分 之前，新版增列不会使其平移），始终固定列位。
+    """
     wb = load_workbook(path, data_only=True, read_only=False)
     ws = wb[wb.sheetnames[0]]
     students: list[dict[str, Any]] = []
     subject_scores: list[dict[str, Any]] = []
     total_scores: list[dict[str, Any]] = []
+    layout = _grade23_layout(ws)
+
+    if layout is not None:
+        # 新版：语数英年级百分位列按表头定位（可能随总分块平移）
+        subject_pcts = dict(_GRADE23_FIXED_SUBJECT_PCT)
+        subject_pcts.update(layout["pcts"])
+        total_specs = []
+        for total_type in ("+3", "主三门", "3+3"):
+            slots = layout["totals"][total_type]
+            total_specs.append(
+                (
+                    total_type,
+                    slots.get("score"),
+                    slots.get("percentile"),
+                    slots.get("xueji_rank"),
+                    slots.get("grade_rank"),
+                )
+            )
+    else:
+        subject_pcts = dict(_GRADE23_FIXED_SUBJECT_PCT)
+        total_specs = [
+            ("+3", 20, None, None, None),
+            ("主三门", 21, 22, 23, None),
+            ("3+3", 24, 25, 26, None),
+        ]
 
     for row_idx in range(4, ws.max_row + 1):
         student_id = clean(ws.cell(row_idx, 1).value)
@@ -546,9 +687,10 @@ def parse_excel_grade23_student_rows(path: Path, grade: int) -> dict:
             }
         )
 
-        for subject, raw_col, grade_col, pct_col in GRADE23_SUBJECTS:
+        for subject, raw_col, grade_col, _fixed_pct_col in GRADE23_SUBJECTS:
             raw_score = number(ws.cell(row_idx, raw_col).value)
             grade_score = number(ws.cell(row_idx, grade_col).value) if grade_col else None
+            pct_col = subject_pcts.get(subject)
             grade_percentile = percentile(ws.cell(row_idx, pct_col).value) if pct_col else None
             if raw_score is None and grade_score is None and grade_percentile is None:
                 continue
@@ -565,16 +707,17 @@ def parse_excel_grade23_student_rows(path: Path, grade: int) -> dict:
                 }
             )
 
-        total_specs = [
-            ("+3", 20, None, None),
-            ("主三门", 21, 22, 23),
-            ("3+3", 24, 25, 26),
-        ]
-        for total_type, score_col, pct_col, xueji_rank_col in total_specs:
-            total_score = number(ws.cell(row_idx, score_col).value)
+        for total_type, score_col, pct_col, xueji_rank_col, grade_rank_col in total_specs:
+            total_score = number(ws.cell(row_idx, score_col).value) if score_col else None
             grade_percentile = percentile(ws.cell(row_idx, pct_col).value) if pct_col else None
             xueji_rank = integer(ws.cell(row_idx, xueji_rank_col).value) if xueji_rank_col else None
-            if total_score is None and grade_percentile is None and xueji_rank is None:
+            grade_rank = integer(ws.cell(row_idx, grade_rank_col).value) if grade_rank_col else None
+            if (
+                total_score is None
+                and grade_percentile is None
+                and xueji_rank is None
+                and grade_rank is None
+            ):
                 continue
             total_scores.append(
                 {
@@ -583,7 +726,7 @@ def parse_excel_grade23_student_rows(path: Path, grade: int) -> dict:
                     "total_score": total_score,
                     "grade_percentile": grade_percentile,
                     "xueji_rank": xueji_rank,
-                    "grade_rank": None,
+                    "grade_rank": grade_rank,
                 }
             )
 

@@ -67,7 +67,7 @@ from app.api.homework import (
 )
 from app.core.context import WorkspaceContext
 from app.core.errors import InvalidScopeParam, ResourceOutOfScope
-from app.db.workspace_models import ScoreFact, WsStudentNote
+from app.db.workspace_models import ScoreFact, WsStudentIdentity, WsStudentNote
 from app.diagnosis import thresholds as th
 
 # 教师关注「接触类」档案分类（notes/router.py CATEGORIES 的接触子集；
@@ -450,13 +450,17 @@ def _compute_student(
         ordered = _truncate_at_anchor(exams, full_ordered, anchor_exam, anchor_key)
 
     teaching = _is_teaching_scope(scope)
-    current_level, notes = _current_level_indicator(exams, ordered, band_config, teaching)
-    trend = _trend_indicator(exams, ordered, trend_thresholds, teaching)
+    # 2026-10-24 起名次按学籍代码选列（学籍=1 学籍排名优先、非 1 只认
+    # 年级排名、未采集维持学籍排名优先）
+    identity = db.get(WsStudentIdentity, person_id)
+    person_xueji = identity.xueji if identity is not None else None
+    current_level, notes = _current_level_indicator(exams, ordered, band_config, teaching, person_xueji)
+    trend = _trend_indicator(exams, ordered, trend_thresholds, teaching, person_xueji)
     stability = _stability_indicator(exams, ordered, teaching)
     imbalance = _imbalance_indicator(exams, ordered, teaching)
     homework = _homework_from(scope.mode, events, line_axis_map, as_of)
     attention = _attention_from(note_rows, as_of)
-    notes.extend(_data_quality_notes(exams, ordered, teaching))
+    notes.extend(_data_quality_notes(exams, ordered, teaching, person_xueji))
 
     # 12.1：只计有有效成绩证据的考试（全缺考/仅登记行不算，绝不充当
     # 「有效考试 ≥2 场」的分类证据）。
@@ -529,7 +533,8 @@ def _not_computable(reason: str) -> Tuple[str, str]:
 
 
 def _current_level_indicator(
-    exams: Dict[str, dict], ordered: List[str], band_config: dict, teaching: bool = False
+    exams: Dict[str, dict], ordered: List[str], band_config: dict, teaching: bool = False,
+    xueji: Optional[int] = None,
 ):
     notes: List[str] = []
     if not ordered:
@@ -557,7 +562,7 @@ def _current_level_indicator(
     absent = main3_row is not None and main3_row.score is None
     # 缺考纪律：score=NULL 的总分行，行内残留名次/百分位绝不取用
     rank = (
-        defs.resolve_year_rank(main3_row.xueji_rank, main3_row.grade_rank)
+        defs.resolve_year_rank(main3_row.xueji_rank, main3_row.grade_rank, xueji)
         if main3_row is not None and not absent
         else None
     )
@@ -621,7 +626,9 @@ def _current_level_indicator(
 # ── 指标 2：趋势（学年内，主三门名次序列） ──
 
 
-def _main3_rank_points(exams: Dict[str, dict], ordered: List[str]) -> List[Tuple[str, int]]:
+def _main3_rank_points(
+    exams: Dict[str, dict], ordered: List[str], xueji: Optional[int] = None
+) -> List[Tuple[str, int]]:
     """有效名次点：缺考（score=NULL，残留名次不取）/未导入名次/无总分行
     的那一场不进序列（不转 0、不残留）。"""
     points = []
@@ -629,7 +636,7 @@ def _main3_rank_points(exams: Dict[str, dict], ordered: List[str]) -> List[Tuple
         row = exams[name]["totals"].get(DEFAULT_TOTAL_TYPE)
         if row is None or row.score is None:
             continue
-        rank = defs.resolve_year_rank(row.xueji_rank, row.grade_rank)
+        rank = defs.resolve_year_rank(row.xueji_rank, row.grade_rank, xueji)
         if rank is not None:
             points.append((name, rank))
     return points
@@ -640,6 +647,7 @@ def _trend_indicator(
     ordered: List[str],
     thresholds: Optional[dict] = None,
     teaching: bool = False,
+    xueji: Optional[int] = None,
 ) -> dict:
     thresholds = thresholds or {
         "direction_rank_change": th.TREND_DIRECTION_MIN_CHANGE,
@@ -663,7 +671,7 @@ def _trend_indicator(
             "direction_threshold": direction_min,
             "streak_threshold": streak_min,
         }
-    points = _main3_rank_points(exams, ordered)
+    points = _main3_rank_points(exams, ordered, xueji)
     # 名次差 = 上一次名次 − 本次名次（共享口径：正数 = 进步）——仅供下方
     # 方向/连击/长期计算；导出字段 rank_change 按路线图全局规则取反
     # （本次−上次，负值 = 名次数值变小 = 相对位置上升）。
@@ -1016,7 +1024,8 @@ def _attention_from(note_rows, as_of: date) -> dict:
 
 
 def _data_quality_notes(
-    exams: Dict[str, dict], ordered: List[str], teaching: bool = False
+    exams: Dict[str, dict], ordered: List[str], teaching: bool = False,
+    xueji: Optional[int] = None,
 ) -> List[str]:
     notes: List[str] = []
     if ordered and exams[ordered[-1]]["display_date"] is None:
@@ -1024,7 +1033,7 @@ def _data_quality_notes(
     main3_row_exams = sum(
         1 for name in ordered if exams[name]["totals"].get(DEFAULT_TOTAL_TYPE) is not None
     )
-    rank_points = _main3_rank_points(exams, ordered)
+    rank_points = _main3_rank_points(exams, ordered, xueji)
     if main3_row_exams > len(rank_points):
         notes.append("部分考试主三门名次缺失（缺考或未导入），未计入趋势名次序列")
     if teaching:

@@ -87,10 +87,10 @@ test('班级均分表：班型合并单元格 + 总分仅均分/班型排名 + �
 
 test('明细表表头按学校导出：学号/班级/学籍/姓名 + 选科原始/等级 + 名次列', () => {
   assert.match(page, /学籍/, '学籍列')
-  assert.match(page, /校名次/, '校名次列（导入明细的学籍名次）')
+  assert.match(page, /\{`\$\{tt\}-school`[\s\S]{0,200}名次<\/TableHead>/, '名次列（2026-10-24 起按学籍代码选列）')
   assert.match(page, /班名次/, '班名次列（本班口径前端计算）')
   assert.match(page, /grade_scores/, '须消费等级分扩展字段')
   assert.match(page, /percentiles/, '须消费百分位扩展字段')
   assert.match(backend, /grade_scores_by_person/, '后端须聚合等级分')
-  assert.match(backend, /ranks_by_person/, '后端须聚合校名次')
+  assert.match(backend, /ranks_by_person/, '后端须聚合名次')
 })

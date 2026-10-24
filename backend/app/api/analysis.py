@@ -147,22 +147,21 @@ def _exam_member_ids(db: Session, ctx: WorkspaceContext, exam_name: str) -> List
     return q.members_at(db, ctx.mode, ctx.class_ids, exam_date)
 
 
-def _xueji1_member_ids(db: Session, member_ids: List[int]) -> List[int]:
-    """排名分布类图表的总分口径人口（2026-10-20 用户裁决，班主任工作台全域）：
-    只统计学校成绩明细表学籍=1（闵中学籍）的学生。
+def _xueji_map(db: Session, member_ids) -> Dict[int, Optional[int]]:
+    """成员的学籍代码（identity.xueji，随每次明细表导入按文件值覆盖更新）。
 
-    学籍存在身份上（xueji 列，随每次明细表导入按文件值覆盖更新），因此
-    历史考试的图表在查询时按学生**当前**学籍过滤——重导明细表后全部历史
-    图表即时联动。学籍未知（NULL，尚未导入回填）与 3/4 类均不参与，
-    绝不默认视作 1；空列表是合法空态。"""
-    if not member_ids:
-        return []
+    2026-10-24 起名次解析按学籍代码选列（学籍=1 取学籍排名、已知非 1
+    只认年级排名、未采集维持学籍排名优先）——本表供 resolve_year_rank
+    第三参使用。库中无行的成员不在返回里（视同未采集 None）。"""
+    ids = list(dict.fromkeys(member_ids))
+    if not ids:
+        return {}
     rows = (
-        db.query(WsStudentIdentity.id)
-        .filter(WsStudentIdentity.id.in_(member_ids), WsStudentIdentity.xueji == 1)
+        db.query(WsStudentIdentity.id, WsStudentIdentity.xueji)
+        .filter(WsStudentIdentity.id.in_(ids))
         .all()
     )
-    return [row[0] for row in rows]
+    return {row[0]: row[1] for row in rows}
 
 
 def _grade_score_of(fact) -> Optional[float]:
@@ -431,12 +430,15 @@ def homeroom_exam_stats(
                 score_basis="raw",
             )
         )
+    xueji_map = _xueji_map(db, [f.identity_id for f in facts])
     for total_type in defs.order_totals(by_total, exam_grade):
         valid = [f.score for f in by_total[total_type] if f.score is not None]
         if len(valid) < 5:
             small_sample = True
         ranks = [
-            defs.resolve_year_rank(f.xueji_rank, f.grade_rank)
+            defs.resolve_year_rank(
+                f.xueji_rank, f.grade_rank, xueji_map.get(f.identity_id)
+            )
             for f in by_total[total_type]
             if f.score is not None
         ]
@@ -634,6 +636,7 @@ def homeroom_exam_students(
         {e.fact.total_type for e in entries if e.fact.total_type is not None},
         _exam_grade_of_facts(db, [e.fact for e in entries]),
     )
+    xueji_map = _xueji_map(db, member_ids)
     by_person: Dict[int, Dict[str, Optional[float]]] = {}
     totals_by_person: Dict[int, Dict[str, Optional[float]]] = {}
     grade_scores_by_person: Dict[int, Dict[str, Optional[float]]] = {}
@@ -650,18 +653,14 @@ def homeroom_exam_students(
             totals_by_person.setdefault(e.person_id, {})[e.fact.total_type] = e.fact.score
             if e.fact.grade_percentile is not None:
                 percentiles_by_person.setdefault(e.person_id, {})[e.fact.total_type] = e.fact.grade_percentile
-            rank = defs.resolve_year_rank(e.fact.xueji_rank, e.fact.grade_rank)
+            rank = defs.resolve_year_rank(
+                e.fact.xueji_rank, e.fact.grade_rank, xueji_map.get(e.person_id)
+            )
             if rank is not None:
                 ranks_by_person.setdefault(e.person_id, {})[e.fact.total_type] = rank
 
     alias_map = q.aliases_for(db, member_ids, "homeroom", ctx.academic_year_id)
     name_map = q.names_for(db, member_ids)
-    xueji_map = {
-        identity.id: identity.xueji
-        for identity in db.query(WsStudentIdentity)
-        .filter(WsStudentIdentity.id.in_(member_ids))
-        .all()
-    }
     admin_class = db.get(AdministrativeClass, ctx.class_ids[0])
     admin_class_num = admin_class.class_num if admin_class is not None else None
     students = []
@@ -774,17 +773,15 @@ def homeroom_rank_frequency(
     revisions = []
     exam_rows = []
     rank_keys = set()
+    xueji_map: Dict[int, Optional[int]] = {}
     for exam_name in selected_names:
         if not _exam_exists_for_homeroom(db, ctx, exam_name):
             raise ResourceOutOfScope(
                 "exam not found in homeroom domain", details={"exam_name": exam_name}
             )
         member_ids = _exam_member_ids(db, ctx, exam_name)
-        # 2026-10-20 用户裁决：总分名次口径仅统计学校明细表学籍=1（闵中学籍）
-        # 学生；单科（百分位/等级分）口径保留全部学生。
-        if meta["kind"] == "total_rank":
-            member_ids = _xueji1_member_ids(db, member_ids)
         entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
+        xueji_map.update(_xueji_map(db, [e.person_id for e in entries]))
         exam_rows.append(
             HomeroomRankFrequencyExam(
                 exam_name=q.exam_label(db, exam_name),
@@ -798,7 +795,9 @@ def homeroom_rank_frequency(
             fact = entry.fact
             key = None
             if meta["kind"] == "total_rank" and fact.total_type == meta["key"]:
-                rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+                rank = defs.resolve_year_rank(
+                    fact.xueji_rank, fact.grade_rank, xueji_map.get(entry.person_id)
+                )
                 key = _rank_bin(rank)
                 if key:
                     rank_keys.add(key)
@@ -848,7 +847,8 @@ def homeroom_rank_frequency(
         students=students,
         metric_note=(
             "单科按年级百分位五等分；选考科目按精确等级分统计；"
-            "总分按学籍/年级名次每40名一档统计，仅统计学校明细表学籍=1（闵中学籍）学生。"
+            "总分按名次每40名一档统计——学籍=1（闵中学籍）取学籍排名、"
+            "学籍非1只取年级排名、学籍未采集取学籍排名；名次缺失不计数。"
         ),
     )
 
@@ -858,16 +858,17 @@ def homeroom_rank_frequency(
 # 测试依赖该词）。
 _RANK_RANGE_NOTES = {
     "total_rank": (
-        "总分按学籍/年级名次筛选；名次不可得的学生不进名单"
-        "（不按百分位推算名次）；仅统计学校明细表学籍=1（闵中学籍）学生。"
+        "总分按名次筛选（学籍=1（闵中学籍）取学籍排名、缺时用年级排名补；"
+        "学籍非1只取年级排名；学籍未采集取学籍排名）；名次不可得的学生"
+        "不进名单（不按百分位推算名次）。"
     ),
     "subject_percentile": (
         "单科按年级排名百分位（前%）筛选，数值越小越靠前；"
-        "百分位缺失的学生不进名单；统计全部学生（不按学籍过滤）。"
+        "百分位缺失的学生不进名单；统计全部学生。"
     ),
     "subject_grade_score": (
         "选考科目按等级分（40–70）筛选，数值越大越靠前；"
-        "等级分缺失的学生不进名单；统计全部学生（不按学籍过滤）。"
+        "等级分缺失的学生不进名单；统计全部学生。"
     ),
 }
 
@@ -911,11 +912,8 @@ def homeroom_rank_range(
             "invalid rank range", details={"rank_min": rank_min, "rank_max": rank_max}
         )
     member_ids = _exam_member_ids(db, ctx, exam_name)
-    # 2026-10-20 用户裁决：总分名次口径仅统计学校明细表学籍=1（闵中学籍）
-    # 学生；单科口径保留全部学生。
-    if meta["kind"] == "total_rank":
-        member_ids = _xueji1_member_ids(db, member_ids)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
+    xueji_map = _xueji_map(db, member_ids)
     matched = []
     scores = []
     for entry in entries:
@@ -929,7 +927,9 @@ def homeroom_rank_range(
         # P0-A1 不编造原则（共享口径）：筛选依据值（名次/百分位/等级分）
         # 缺失即该生不进名单，绝不按其他字段推算。year_rank 对单科口径
         # 仅作展示（fact 带真实校名次时照填，可为 None）。
-        year_rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+        year_rank = defs.resolve_year_rank(
+            fact.xueji_rank, fact.grade_rank, xueji_map.get(entry.person_id)
+        )
         scores.append((entry.person_id, fact.score))
         if meta["kind"] == "total_rank":
             if year_rank is not None and rank_min <= year_rank <= rank_max:
@@ -1011,16 +1011,18 @@ def homeroom_rank_distribution(
         )
     grade = _homeroom_grade(db, ctx)
     total_types = _distribution_total_types(grade)
-    # 2026-10-20：总分口径排名分布仅统计学校明细表学籍=1（闵中学籍）学生
-    member_ids = _xueji1_member_ids(db, _exam_member_ids(db, ctx, exam_name))
+    member_ids = _exam_member_ids(db, ctx, exam_name)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
+    xueji_map = _xueji_map(db, member_ids)
     counts = {total_type: defaultdict(int) for total_type in total_types}
     max_rank = 0
     for entry in entries:
         fact = entry.fact
         if fact.total_type not in counts:
             continue
-        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+        rank = defs.resolve_year_rank(
+            fact.xueji_rank, fact.grade_rank, xueji_map.get(entry.person_id)
+        )
         key = _rank_bin(rank)
         if key is None:
             continue
@@ -1045,7 +1047,7 @@ def homeroom_rank_distribution(
             )
             for total_type in total_types
         ],
-        metric_note="按学籍/年级名次每40名一档，仅统计学校明细表学籍=1（闵中学籍）学生；缺少真实名次的总分口径保留图例但不生成柱子。",
+        metric_note="按名次每40名一档——学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名；缺少名次的总分口径保留图例但不生成柱子。",
     )
 
 
@@ -1073,6 +1075,7 @@ def homeroom_exam_focus(
     member_ids = _exam_member_ids(db, ctx, exam_name)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
     history_entries = q.readable_facts(db, ctx, None, member_ids=member_ids)
+    xueji_map = _xueji_map(db, member_ids)
     facts_by_person: Dict[int, List[ScoreFact]] = {}
     for entry in entries:
         facts_by_person.setdefault(entry.person_id, []).append(entry.fact)
@@ -1086,8 +1089,10 @@ def homeroom_exam_focus(
         total = next((f for f in facts if f.total_type == "主三门"), None)
         if total is None:
             continue
-        # P0-A1 共享口径：学籍名次优先、其次年级名次；不可得 → None 不落段
-        rank = defs.resolve_year_rank(total.xueji_rank, total.grade_rank)
+        # P0-A1 共享口径（2026-10-24 起按学籍代码选列）：不可得 → None 不落段
+        rank = defs.resolve_year_rank(
+            total.xueji_rank, total.grade_rank, xueji_map.get(person_id)
+        )
         issues: List[str] = []
 
         historical_totals = {
@@ -1112,7 +1117,9 @@ def homeroom_exam_focus(
         # 名次缺失（缺考/未导入）的那一场不进名次序列：不转 0、不残留
         # 上次名次、不伪造连续性（共享口径与 trends 一致）
         ranks = [
-            defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+            defs.resolve_year_rank(
+                fact.xueji_rank, fact.grade_rank, xueji_map.get(person_id)
+            )
             for fact in ordered_totals
         ]
         ranks = [value for value in ranks if value is not None]
@@ -1219,11 +1226,13 @@ def homeroom_trends(
         )
         .all()
     )
+    identity = db.get(WsStudentIdentity, person_id)
+    person_xueji = identity.xueji if identity is not None else None
 
     def _point(f: ScoreFact) -> TrendExamPoint:
         if f.total_type is not None:
-            # 总分：真实学籍/年级名次（共享口径 resolve_year_rank）；缺失 → null
-            rank = defs.resolve_year_rank(f.xueji_rank, f.grade_rank)
+            # 总分：有效名次（共享口径，按学籍代码选列）；缺失 → null
+            rank = defs.resolve_year_rank(f.xueji_rank, f.grade_rank, person_xueji)
             rank_basis = "school" if rank is not None else None
         else:
             # 单科：百分位的百分数表示（0–100），明确标注 grade_percentile
@@ -1397,16 +1406,17 @@ def homeroom_bands(
         )
 
     member_ids = _exam_member_ids(db, ctx, exam_name)
-    # 2026-10-20：段位分布仅统计学校明细表学籍=1（闵中学籍）学生
-    member_ids = _xueji1_member_ids(db, member_ids)
     entries = q.readable_facts(db, ctx, exam_name, member_ids=member_ids)
+    xueji_map = _xueji_map(db, member_ids)
     ranked = []
     for entry in entries:
         fact = entry.fact
         if fact.total_type != subject:
             continue
-        # 共享口径：学籍名次优先、其次年级名次；缺名次不落段
-        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+        # 共享口径（2026-10-24 起按学籍代码选列）；缺名次不落段
+        rank = defs.resolve_year_rank(
+            fact.xueji_rank, fact.grade_rank, xueji_map.get(entry.person_id)
+        )
         if rank is not None:
             ranked.append((entry.person_id, rank))
     if not ranked:

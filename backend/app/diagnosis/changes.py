@@ -325,13 +325,16 @@ def _subject_change_item(subject: str, from_fact, to_fact) -> dict:
     }
 
 
-def _total_change(from_fact, to_fact, data_domain: str, total_type: str = MAIN3_TOTAL_TYPE) -> dict:
+def _total_change(
+    from_fact, to_fact, data_domain: str, total_type: str = MAIN3_TOTAL_TYPE,
+    xueji: Optional[int] = None,
+) -> dict:
     def _side(fact):
         if fact is None:
             return {"present": False, "score": None, "rank": None, "rank_basis": None}
         # 缺考（score=NULL）：行在但名次不取——行内残留名次绝不冒充成绩
         rank = (
-            defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+            defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank, xueji)
             if fact.score is not None
             else None
         )
@@ -372,8 +375,8 @@ def _total_change(from_fact, to_fact, data_domain: str, total_type: str = MAIN3_
     }
 
 
-def _main3_change(from_fact, to_fact, data_domain: str) -> dict:
-    return _total_change(from_fact, to_fact, data_domain)
+def _main3_change(from_fact, to_fact, data_domain: str, xueji: Optional[int] = None) -> dict:
+    return _total_change(from_fact, to_fact, data_domain, xueji=xueji)
 
 
 def student_change_decomposition(db, scope, person_id, from_exam, to_exam) -> dict:
@@ -396,6 +399,11 @@ def student_change_decomposition(db, scope, person_id, from_exam, to_exam) -> di
 
     from_subjects, from_totals = _collect_person_facts(db, ctx, from_exam, person_id)
     to_subjects, to_totals = _collect_person_facts(db, ctx, to_exam, person_id)
+    # 2026-10-24 起名次按学籍代码选列
+    from app.db.workspace_models import WsStudentIdentity
+
+    identity = db.get(WsStudentIdentity, person_id)
+    person_xueji = identity.xueji if identity is not None else None
 
     subjects = [
         _subject_change_item(subject, from_subjects.get(subject), to_subjects.get(subject))
@@ -404,11 +412,14 @@ def student_change_decomposition(db, scope, person_id, from_exam, to_exam) -> di
     # 全口径总分分解（主三门/五门/3+3……两场任一侧存在的口径都输出；
     # research 结局聚合按所选 metric 取对应口径，不再固定主三门）
     totals = [
-        _total_change(from_totals.get(tt), to_totals.get(tt), ctx.data_domain, tt)
+        _total_change(
+            from_totals.get(tt), to_totals.get(tt), ctx.data_domain, tt, person_xueji
+        )
         for tt in sorted(set(from_totals) | set(to_totals))
     ]
     main3 = _main3_change(
-        from_totals.get(MAIN3_TOTAL_TYPE), to_totals.get(MAIN3_TOTAL_TYPE), ctx.data_domain
+        from_totals.get(MAIN3_TOTAL_TYPE), to_totals.get(MAIN3_TOTAL_TYPE), ctx.data_domain,
+        person_xueji,
     )
 
     movers = [
@@ -482,7 +493,9 @@ def _roster_at(db, ctx: WorkspaceContext, exam_name: str, exam_date: Optional[da
     return list(ctx.member_person_ids)
 
 
-def _basis_records_homeroom(subject_rows, total_rows, person_ids) -> Dict[int, dict]:
+def _basis_records_homeroom(
+    subject_rows, total_rows, person_ids, xueji_map: Optional[Dict[int, Optional[int]]] = None
+) -> Dict[int, dict]:
     records: Dict[int, dict] = {}
     for pid in person_ids:
         main3 = (total_rows.get(pid) or {}).get(MAIN3_TOTAL_TYPE)
@@ -491,7 +504,10 @@ def _basis_records_homeroom(subject_rows, total_rows, person_ids) -> Dict[int, d
         records[pid] = {
             "score": main3.score,
             "percentile": defs.normalized_percentile(main3.grade_percentile),
-            "rank": defs.resolve_year_rank(main3.xueji_rank, main3.grade_rank),
+            "rank": defs.resolve_year_rank(
+                main3.xueji_rank, main3.grade_rank,
+                xueji_map.get(pid) if xueji_map else None,
+            ),
             "grade_score": None,
         }
     return records
@@ -629,8 +645,23 @@ def class_change_decomposition(db, scope, from_exam, to_exam) -> dict:
     subject_rows_to, total_rows_to = _collect_class_facts(db, ctx, to_exam, roster_to)
 
     if ctx.data_domain == "homeroom":
-        from_records = _basis_records_homeroom(subject_rows_from, total_rows_from, roster_from)
-        to_records = _basis_records_homeroom(subject_rows_to, total_rows_to, roster_to)
+        # 2026-10-24 起名次按学籍代码选列（学籍=1 学籍排名优先、非 1 只认
+        # 年级排名、未采集维持学籍排名优先）
+        from app.db.workspace_models import WsStudentIdentity
+
+        roster_ids = sorted(roster_from | roster_to)
+        xueji_map = {
+            row[0]: row[1]
+            for row in db.query(WsStudentIdentity.id, WsStudentIdentity.xueji)
+            .filter(WsStudentIdentity.id.in_(roster_ids))
+            .all()
+        }
+        from_records = _basis_records_homeroom(
+            subject_rows_from, total_rows_from, roster_from, xueji_map
+        )
+        to_records = _basis_records_homeroom(
+            subject_rows_to, total_rows_to, roster_to, xueji_map
+        )
     else:
         from_records = _basis_records_teaching(subject_rows_from, roster_from, ctx.subject)
         to_records = _basis_records_teaching(subject_rows_to, roster_to, ctx.subject)

@@ -122,11 +122,17 @@ def metric_points(
     entries = q.readable_facts(db, ctx, member_ids=[person_id])
     exams = _group_exams(entries, db)
     ordered = _ordered_exam_names(exams)
+    # 2026-10-24 起名次按学籍代码选列（学籍=1 学籍排名优先、非 1 只认
+    # 年级排名、未采集维持学籍排名优先）
+    from app.db.workspace_models import WsStudentIdentity
+
+    identity = db.get(WsStudentIdentity, person_id)
+    person_xueji = identity.xueji if identity is not None else None
     source, key = meta["source"], meta["key"]
     points: List[Dict[str, Any]] = []
     for name in ordered:
         bucket = exams[name]
-        value, missing = _metric_value_of(bucket, source, key)
+        value, missing = _metric_value_of(bucket, source, key, person_xueji)
         points.append(
             {
                 # 展示用人类可读考试名；稳定定位键另附 exam_key（修复 3：
@@ -142,7 +148,9 @@ def metric_points(
     return points
 
 
-def _metric_value_of(bucket: dict, source: str, key: str) -> Tuple[Optional[float], Optional[str]]:
+def _metric_value_of(
+    bucket: dict, source: str, key: str, xueji: Optional[int] = None
+) -> Tuple[Optional[float], Optional[str]]:
     """单场分组事实 → (指标值, 缺失原因)。共享定义解析，绝不另算。
     缺考纪律：score=NULL 的行（登记缺考）指标值一律不可得——行内残留的
     名次/百分位/等级分绝不冒成绩（reason="absent"）。"""
@@ -152,7 +160,7 @@ def _metric_value_of(bucket: dict, source: str, key: str) -> Tuple[Optional[floa
             return None, "no_total_row"
         if fact.score is None:
             return None, "absent"
-        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank, xueji)
         if rank is None:
             return None, "rank_missing"
         return float(rank), None

@@ -377,16 +377,26 @@ def _y_by_person(db, ctx: WorkspaceContext, exam_name: str, roster: List[int], m
 
 def _main3_rank_by_person(db, ctx: WorkspaceContext, exam_name: str, roster: List[int]) -> Dict[int, int]:
     """该场考试主三门名次（段位分层用；与 B1 current_level 同源：
-    resolve_year_rank + 主三门总分行）。名次不可得的学生不落段。"""
+    resolve_year_rank + 主三门总分行）。名次不可得的学生不落段。
+    2026-10-24 起名次按学籍代码选列。"""
     from app.api import _queries as q
     from app.api.homework import DEFAULT_TOTAL_TYPE
+    from app.db.workspace_models import WsStudentIdentity
 
+    xueji_map = {
+        row[0]: row[1]
+        for row in db.query(WsStudentIdentity.id, WsStudentIdentity.xueji)
+        .filter(WsStudentIdentity.id.in_(roster))
+        .all()
+    } if roster else {}
     ranks: Dict[int, int] = {}
     for entry in q.readable_facts(db, ctx, exam_name, member_ids=roster):
         fact = entry.fact
         if fact.total_type != DEFAULT_TOTAL_TYPE:
             continue
-        rank = defs.resolve_year_rank(fact.xueji_rank, fact.grade_rank)
+        rank = defs.resolve_year_rank(
+            fact.xueji_rank, fact.grade_rank, xueji_map.get(entry.person_id)
+        )
         if rank is not None:
             ranks.setdefault(entry.person_id, rank)
     return ranks

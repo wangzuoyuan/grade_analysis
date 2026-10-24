@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 
 from app.ingest.excel_parser import parse_excel_grade23
@@ -87,6 +88,133 @@ def test_parse_grade23_sample_subjects(tmp_path):
     assert subjects["物理"]["raw_score"] == 48
     assert subjects["物理"]["grade_score"] == 52
     assert "生物" not in subjects
+
+
+# ── 2026-10-24 新版明细表：主三门/3+3 各带「学籍排名+年级排名」两列名次 ──
+# 学科列恒在 5–19；总分块扩为 4 列（21-24 / 25-28），语数英百分位移至 29-31。
+
+
+def _grade23_new_format_rows(ws):
+    """两名学生按列号写入（新版布局）。"""
+    rows = {
+        "7240101": ("06", 1, "卞幻", {5: 100, 6: 110, 7: 120, 8: 70, 9: 80,
+                                      20: 174, 21: 325.5, 22: "25.08%", 23: 283, 24: 290,
+                                      25: 499.5, 26: "30.01%", 27: 291, 28: 298,
+                                      29: "75.08%", 30: "40.12%", 31: "35.45%"}),
+        "7240102": ("06", 2, "学生乙", {5: 90, 6: 100, 7: 110, 8: None, 9: None,
+                                        20: 95, 21: 300, 22: "40.00%", 23: 350, 24: 358,
+                                        25: 395, 26: "45.00%", 27: 420, 28: 428,
+                                        29: "60.00%", 30: "55.00%", 31: "50.00%"}),
+    }
+    for r, (sid, (cls, xueji, name, cols)) in enumerate(rows.items(), start=4):
+        ws.cell(r, 1, sid)
+        ws.cell(r, 2, cls)
+        ws.cell(r, 3, xueji)
+        ws.cell(r, 4, name)
+        for c, v in cols.items():
+            if v is not None:
+                ws.cell(r, c, v)
+
+
+def make_grade23_new_format_two_row(path: Path):
+    """新版·两行表头（总标签合并 + 子标签，同高一风格）。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "学生成绩明细"
+    for c, t in {1: "学号", 2: "班级", 3: "学籍", 4: "姓名", 5: "语文", 6: "数学", 7: "英语",
+                 8: "物理", 10: "化学", 20: "+3总分", 21: "主三门", 25: "3+3总分",
+                 29: "语文", 30: "数学", 31: "英语"}.items():
+        ws.cell(2, c, t)
+    for c, s in {8: "原始分", 9: "等级分", 10: "原始分", 11: "等级分",
+                 21: "总分", 22: "年级百分位", 23: "学籍排名", 24: "年级排名",
+                 25: "总分", 26: "年级百分位", 27: "学籍排名", 28: "年级排名",
+                 29: "年级百分位", 30: "年级百分位", 31: "年级百分位"}.items():
+        ws.cell(3, c, s)
+    for c in (8, 10):
+        ws.merge_cells(start_row=2, start_column=c, end_row=2, end_column=c + 1)
+    ws.merge_cells(start_row=2, start_column=21, end_row=2, end_column=24)
+    ws.merge_cells(start_row=2, start_column=25, end_row=2, end_column=28)
+    _grade23_new_format_rows(ws)
+    wb.save(path)
+
+
+def make_grade23_new_format_one_row(path: Path):
+    """新版·单行表头（整列名：主三门总分/主三门学籍排名/主三门年级排名…）。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "学生成绩明细"
+    for c, t in {1: "学号", 2: "班级", 3: "学籍", 4: "姓名", 5: "语文", 6: "数学", 7: "英语",
+                 8: "物理", 9: "等级分"}.items():
+        ws.cell(2, c, t)  # 5-19 学科列本测试只填到 9；其余按需
+    for c, t in {20: "+3总分", 21: "主三门总分", 22: "主三门年级百分位", 23: "主三门学籍排名",
+                 24: "主三门年级排名", 25: "3+3总分", 26: "3+3年级百分位", 27: "3+3学籍排名",
+                 28: "3+3年级排名", 29: "语文年级百分位", 30: "数学年级百分位", 31: "英语年级百分位"}.items():
+        ws.cell(2, c, t)
+    _grade23_new_format_rows(ws)
+    wb.save(path)
+
+
+@pytest.mark.parametrize("builder", [
+    make_grade23_new_format_two_row,
+    make_grade23_new_format_one_row,
+])
+def test_parse_grade23_new_format_dual_ranks(tmp_path, builder):
+    """新版明细表（两行/单行表头两种形态）双列名次全解析；
+    学籍列照进 students。"""
+    sample = tmp_path / "高二2026学年第一学期10月考学生成绩明细表.xlsx"
+    builder(sample)
+    assert is_grade23_student_sheet(sample)
+
+    result = parse_excel_grade23(str(sample), grade=2)
+    assert result["kind"] == "student_scores"
+
+    totals = {row["total_type"]: row for row in result["total_scores"] if row["student_id"] == "7240101"}
+    assert totals["主三门"]["total_score"] == 325.5
+    assert abs(totals["主三门"]["grade_percentile"] - 0.2508) < 1e-9
+    assert totals["主三门"]["xueji_rank"] == 283
+    assert totals["主三门"]["grade_rank"] == 290
+    assert totals["3+3"]["total_score"] == 499.5
+    assert totals["3+3"]["xueji_rank"] == 291
+    assert totals["3+3"]["grade_rank"] == 298
+    assert totals["+3"]["total_score"] == 174
+
+    subjects = {row["subject"]: row for row in result["subject_scores"] if row["student_id"] == "7240101"}
+    assert abs(subjects["语文"]["grade_percentile"] - 0.7508) < 1e-9
+    assert abs(subjects["数学"]["grade_percentile"] - 0.4012) < 1e-9
+    assert abs(subjects["英语"]["grade_percentile"] - 0.3545) < 1e-9
+    assert subjects["物理"]["raw_score"] == 70
+    assert subjects["物理"]["grade_score"] == 80
+
+    xueji = {s["student_id"]: s["xueji"] for s in result["students"]}
+    assert xueji == {"7240101": 1, "7240102": 2}
+
+
+def test_parse_grade23_new_format_partial_columns(tmp_path):
+    """极简新格式文件（只有主三门块 + 语义化列名，无 3+3 块）：
+    识别到的槽照解析、缺失块不兜底不报错。"""
+    wb = Workbook()
+    ws = wb.active
+    for c, t in {1: "学号", 2: "班级", 3: "学籍", 4: "姓名",
+                 21: "主三门总分", 22: "主三门年级百分位", 23: "主三门学籍排名",
+                 24: "主三门年级排名"}.items():
+        ws.cell(2, c, t)
+    ws.cell(4, 1, "7240101")
+    ws.cell(4, 2, "06")
+    ws.cell(4, 3, 1)
+    ws.cell(4, 4, "卞幻")
+    ws.cell(4, 21, 325.5)
+    ws.cell(4, 23, 283)
+    ws.cell(4, 24, 290)
+    sample = tmp_path / "高二极简新版明细.xlsx"
+    wb.save(sample)
+    assert is_grade23_student_sheet(sample)
+
+    result = parse_excel_grade23(str(sample), grade=2)
+    totals = {row["total_type"]: row for row in result["total_scores"]}
+    assert totals["主三门"]["xueji_rank"] == 283
+    assert totals["主三门"]["grade_rank"] == 290
+    assert "+3" not in totals
+    assert "3+3" not in totals
 
 
 def test_parse_grade1_percentiles(tmp_path):

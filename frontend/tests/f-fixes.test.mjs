@@ -108,25 +108,26 @@ test('名次段分布：读导入名次段表，无导入呈现上传引导空�
   assert.match(homeroomScores, /rankBandsMetric/, '口径选择态存在（3+3/主三门）')
 })
 
-test('段位分布恢复：按明细名次现算三段阈值，仅总分口径 + 学籍=1 人口（2026-10-20）', () => {
+test('段位分布恢复：按明细名次现算三段阈值，仅总分口径（2026-10-24 起名次按学籍代码选列、全员统计）', () => {
   assert.match(homeroomScores, /fetchHomeroomBands\(\{/, '恢复 F10 bands 端点调用')
   assert.match(homeroomScores, /duanweiReqRef\.current/, '独立请求序号（F11，与名次段分布分开）')
   assert.match(homeroomScores, /duanweiUnavailable/, '区分 409 不可算与其他错误')
   assert.match(homeroomScores, /err instanceof ApiV1Error && err\.status === 409/, '409 判定基于状态码')
   assert.match(homeroomScores, /段位不可计算（无名次口径）/, '不可计算提示卡文案在场')
-  assert.match(homeroomScores, /仅统计学校明细表学籍=1（闵中学籍）学生/, '学籍口径脚注在场')
+  assert.match(homeroomScores, /学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名/, '学籍选列口径脚注在场')
   // 指标选项仅总分（单科无名次恒 409，不再提供）
   assert.match(homeroomScores, /duanweiOptions[\s\S]*?__total__\$\{t\.total_type\}/, '口径选项仅总分')
   assert.doesNotMatch(homeroomScores, /duanweiOptions[\s\S]{0,400}subjectCols/, '口径选项不得含单科')
 })
 
-test('排名分布图表学籍口径脚注（2026-10-20：总分仅学籍=1，单科全部）', () => {
+test('排名分布图表名次口径脚注（2026-10-24：按学籍代码选列，全员统计）', () => {
   // 排名分段（顶部柱状图）
   const distIdx = homeroomScores.indexOf('每 40 名一档')
-  const distCtx = homeroomScores.slice(distIdx, distIdx + 200)
-  assert.match(distCtx, /仅统计学校明细表学籍=1（闵中学籍）学生/, '排名分段卡脚注')
-  // 频次/区间：总分过滤、单科保留
-  assert.match(homeroomScores, /总分口径仅统计学校明细表学籍=1（闵中学籍）学生，单科口径统计全部学生/, '频次/区间卡脚注')
+  const distCtx = homeroomScores.slice(distIdx, distIdx + 220)
+  assert.match(distCtx, /学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名/, '排名分段卡脚注')
+  // 频次/区间：总分名次按学籍选列、单科全部学生
+  assert.match(homeroomScores, /总分名次按学籍代码取列（学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名），单科口径统计全部学生/, '频次卡脚注')
+  assert.match(homeroomScores, /总分按名次（学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名）/, '区间卡脚注')
 })
 
 test('段位分布口径收窄 + 悬浮学生名单（2026-10-23）', () => {

@@ -34,6 +34,25 @@ def test_resolve_year_rank_priority_and_missing():
     assert resolve_year_rank(-1, None) is None
 
 
+def test_resolve_year_rank_xueji_column_selection():
+    """2026-10-24 起按学籍代码选列：学籍=1 学籍排名优先（缺补年级排名）；
+    学籍非 1 只认年级排名（借读生小圈子学籍排名绝不回退）；学籍未采集
+    （None）维持学籍排名优先回退年级排名。"""
+    from app.analysis.definitions import resolve_year_rank
+
+    # 学籍=1：学籍排名优先
+    assert resolve_year_rank(12, 30, xueji=1) == 12
+    # 学籍=1 且学籍排名缺失：回退年级排名
+    assert resolve_year_rank(None, 30, xueji=1) == 30
+    # 学籍非 1（2/3/4）：只认年级排名，绝不取学籍排名
+    assert resolve_year_rank(2, 30, xueji=2) == 30
+    assert resolve_year_rank(3, None, xueji=3) is None
+    assert resolve_year_rank(0, 30, xueji=4) == 30  # 无效学籍排名仍被跳过
+    # 学籍未采集（None）：维持历史行为（学籍排名优先回退年级排名）
+    assert resolve_year_rank(12, 30, xueji=None) == 12
+    assert resolve_year_rank(None, 30, xueji=None) == 30
+
+
 def test_progress_issue_thresholds():
     from app.analysis.definitions import ISSUE_PROGRESS, ISSUE_REGRESSION, progress_issue
 

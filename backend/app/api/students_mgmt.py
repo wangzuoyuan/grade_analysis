@@ -2837,6 +2837,8 @@ def student_report(
     facts = q.homeroom_facts(db, ctx, identity_ids=[person_id])
     subject_facts = [f for f in facts if f.total_type is None]
     total_facts = [f for f in facts if f.total_type is not None]
+    identity = db.get(WsStudentIdentity, person_id)
+    person_xueji = identity.xueji if identity is not None else None
 
     # 2026-10 用户裁决：两域成绩不互通，画像/打印只读本域事实。
     # 2026-10-22 列序拍板：学科/总分按规范序输出（年级 = 该生最新一场
@@ -2856,12 +2858,12 @@ def student_report(
         total_facts, key=lambda f: (f.exam_date is None, f.exam_date or date.min, f.id)
     ):
         totals_grouped.setdefault(fact.total_type, []).append(
-            # 总分行带校名次（学籍名次优先）；单科行不传 rank 恒 None
+            # 总分行带名次（2026-10-24 起按学籍代码选列）；单科行不传 rank 恒 None
             _exam_entry(
                 fact,
                 "homeroom",
                 db,
-                rank=resolve_year_rank(fact.xueji_rank, fact.grade_rank),
+                rank=resolve_year_rank(fact.xueji_rank, fact.grade_rank, person_xueji),
             )
         )
     totals = [
