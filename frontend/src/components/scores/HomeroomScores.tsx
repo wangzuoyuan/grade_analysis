@@ -115,9 +115,10 @@ const RANGE_KIND_BOUNDS = {
  *  仅作初次进入的初始值（Tabs 非受控 defaultValue），页内切换照旧，非法值回退班级均分表。 */
 const SCORES_TABS = new Set(['averages', 'students', 'bands', 'duanwei', 'frequency', 'range', 'focus'])
 
-/** 段位分布口径排除项（2026-10-23 用户裁决）：+3 为选修三科等级分之和，没有名次数据、
- *  选中恒「段位不可计算」，不再进入口径下拉；主三门/3+3 照常提供。 */
-const DUANWEI_EXCLUDED_TOTALS = new Set<string>(['+3'])
+/** 无名次总分排除项：+3 为选修三科等级分之和，没有名次数据——不进段位分布口径下拉
+ *  （2026-10-23 用户裁决，选中恒「段位不可计算」），也不进明细表展开行的「总分排名趋势」
+ *  图（2026-10-24 用户指示，画不出线只留空图例）；主三门/3+3 等有名次口径照常。 */
+const RANKLESS_TOTALS = new Set<string>(['+3'])
 
 function TrendChart({
   title,
@@ -264,7 +265,12 @@ function TrendPanel({
             ) : (
               <div className="grid gap-5 xl:grid-cols-2">
                 <TrendChart title="单科年级排名趋势" series={year.subjects} />
-                <TrendChart title="总分排名趋势" series={year.totals} />
+                <TrendChart
+                  title="总分排名趋势"
+                  series={Object.fromEntries(
+                    Object.entries(year.totals).filter(([name]) => !RANKLESS_TOTALS.has(name)),
+                  )}
+                />
               </div>
             )}
           </div>
@@ -811,11 +817,11 @@ export function HomeroomScores() {
   }, [selectedExam, scopeQ, rankBandsMetric, rankBandsNonce])
 
   // 段位分布指标选项：仅各总分口径（单科行无名次，后端恒 409 不再提供）；
-  // +3 已被 DUANWEI_EXCLUDED_TOTALS 排除（2026-10-23），主三门/3+3 保留
+  // +3 已被 RANKLESS_TOTALS 排除（2026-10-23），主三门/3+3 保留
   const duanweiOptions = useMemo(
     () =>
       (stats?.totals ?? [])
-        .filter((t) => !DUANWEI_EXCLUDED_TOTALS.has(t.total_type))
+        .filter((t) => !RANKLESS_TOTALS.has(t.total_type))
         .map((t) => ({ value: `__total__${t.total_type}`, label: `总分（${t.total_type}）` })),
     [stats],
   )

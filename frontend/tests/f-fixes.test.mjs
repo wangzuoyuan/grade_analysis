@@ -133,12 +133,12 @@ test('段位分布口径收窄 + 悬浮学生名单（2026-10-23）', () => {
   // 下拉去掉 +3（选修等级分之和，无名次数据、选中恒「段位不可计算」）；主三门/3+3 照常提供
   assert.match(
     homeroomScores,
-    /DUANWEI_EXCLUDED_TOTALS = new Set<string>\(\['\+3'\]\)/,
+    /RANKLESS_TOTALS = new Set<string>\(\['\+3'\]\)/,
     '排除集合恰含 +3 一项（不得误伤 3+3）',
   )
   assert.match(
     homeroomScores,
-    /\.filter\(\(t\) => !DUANWEI_EXCLUDED_TOTALS\.has\(t\.total_type\)\)/,
+    /\.filter\(\(t\) => !RANKLESS_TOTALS\.has\(t\.total_type\)\)/,
     '口径选项推导必须过滤排除集合',
   )
   assert.match(homeroomScores, /悬浮分段条可查看段内学生名单/, '卡片说明须提示悬浮交互')
@@ -153,4 +153,14 @@ test('段位分布口径收窄 + 悬浮学生名单（2026-10-23）', () => {
   assert.match(duanweiCtx, /max-w-\[320px\] whitespace-normal/, '长名单必须换行不得撑破浮层')
   // api 类型：names 可选（旧后端兼容）
   assert.match(apiV1, /export interface HomeroomBand \{[\s\S]*?names\?: string\[\]\n\}/, 'HomeroomBand 须带可选 names')
+})
+
+test('总分排名趋势图不画 +3（2026-10-24）', () => {
+  // +3 等级分之和无名次，画不出线只留空图例；单科趋势图不受影响
+  const idx = homeroomScores.indexOf('title="总分排名趋势"')
+  assert.ok(idx > 0, '应能定位总分排名趋势图调用点')
+  const trendCtx = homeroomScores.slice(idx, idx + 300)
+  assert.match(trendCtx, /year\.totals/, '趋势图数据源仍为 year.totals')
+  assert.match(trendCtx, /filter\(\(\[name\]\) => !RANKLESS_TOTALS\.has\(name\)\)/, 'series 必须过滤无名次总分（+3）')
+  assert.doesNotMatch(homeroomScores.slice(idx - 200, idx), /RANKLESS_TOTALS\.has\(name\)/, '单科年级排名趋势不得被过滤')
 })
