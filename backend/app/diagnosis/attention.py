@@ -164,6 +164,13 @@ def attention_summary(db, ctx):
                 evidence = warning["recent_missing"]
                 observed = evidence[0]["assigned_date"] if evidence else None
                 detail = f"当前连续缺交{count}天（按天、不分作业种类）"
+                # 2026-10-24 单账本口径：冲突日已按已交处理（打断连缺），
+                # 单列天数提示人工核实两侧登记
+                conflicts = warning.get("conflicts") or []
+                if conflicts:
+                    days_text = "、".join(c["date"] for c in conflicts[:3])
+                    suffix = "等" if len(conflicts) > 3 else ""
+                    detail += f"；另有{len(conflicts)}天两侧登记不一致（{days_text}{suffix}）待核实"
             else:
                 count = warning["count"]
                 evidence = [dict(date=d, detail=t) for d, t in zip(warning["dates"], warning["details"])]

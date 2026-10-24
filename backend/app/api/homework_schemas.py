@@ -216,6 +216,32 @@ class HomeworkStudentEvent(BaseModel):
     homework_type: str
     status: str
     evaluation: Optional[str] = None
+    # 批次归属域（2026-10-24 单账本口径）：与当前工作台域不同 = 跨域共享
+    # 行（教学端读到的班主任域批次 / 反之），前端据此标「班主任侧/教学侧」
+    data_domain: Optional[str] = None
+
+
+class HomeworkConflictBatch(BaseModel):
+    """冲突日里同一学科同一天的两侧批次（一行一个域）。"""
+
+    assignment_id: int
+    homework_type: str
+    data_domain: str
+    status: str
+
+
+class HomeworkConflictDay(BaseModel):
+    """2026-10-24 跨域冲突日：同一天一侧缺交、另一侧已交。连缺按已交
+    处理、缺交行不进计数，该天单列提示人工核实修正其中一侧。"""
+
+    date: str
+    subject: str
+    batches: List[HomeworkConflictBatch]
+
+
+class HomeworkConflictBrief(BaseModel):
+    date: str
+    subject: str
 
 
 class HomeworkStudentStreaks(BaseModel):
@@ -230,6 +256,7 @@ class HomeworkStudentResponse(BaseModel):
     name: Optional[str] = None
     events: List[HomeworkStudentEvent]
     streaks: HomeworkStudentStreaks
+    conflicts: List[HomeworkConflictDay] = Field(default_factory=list)
 
 
 class HomeworkRecentMissing(BaseModel):
@@ -248,6 +275,8 @@ class HomeworkWarningStudent(BaseModel):
     streak_subject: Optional[str] = None
     streak_homework_type: Optional[str] = None
     recent_missing: List[HomeworkRecentMissing]
+    # 2026-10-24：冲突日（一侧缺交另一侧已交）已按已交处理，此处单列
+    conflicts: List[HomeworkConflictBrief] = Field(default_factory=list)
 
 
 class HomeworkAuxWarningStudent(BaseModel):

@@ -2350,6 +2350,9 @@ export interface HomeworkStudentEvent {
   homework_type: string
   status: string
   evaluation?: string | null
+  /** 批次归属域（'homeroom' | 'teaching'）；与当前工作台域不同 =
+   * 跨域共享行（2026-10-24 单账本口径），前端标「班主任侧/教学侧」。 */
+  data_domain?: string | null
 }
 
 /** 学生连续缺交；没有缺交/请假记录的批次按已交处理。 */
@@ -2359,12 +2362,28 @@ export interface HomeworkStudentStreaks {
   longest_missing_streak: number
 }
 
+/** 冲突日里同一天同学科的两侧批次（2026-10-24：一侧缺交另一侧已交，
+ * 连缺按已交处理并单列提示人工核实）。 */
+export interface HomeworkConflictBatch {
+  assignment_id: number
+  homework_type: string
+  data_domain: string
+  status: string
+}
+
+export interface HomeworkConflictDay {
+  date: string
+  subject: string
+  batches: HomeworkConflictBatch[]
+}
+
 export interface HomeworkStudentResponse {
   metadata: ResponseMetadata
   person_id: PersonId
   name: string | null
   events: HomeworkStudentEvent[]
   streaks: HomeworkStudentStreaks
+  conflicts?: HomeworkConflictDay[]
 }
 
 export interface HomeworkRecentMissing {
@@ -2384,6 +2403,8 @@ export interface HomeworkWarningStudent {
   streak_subject?: string | null
   streak_homework_type?: string | null
   recent_missing: HomeworkRecentMissing[]
+  /** 2026-10-24：两侧同日同学科登记打架的冲突日（已按已交处理）。 */
+  conflicts?: { date: string; subject: string }[]
 }
 
 export interface HomeworkAuxWarningStudent {

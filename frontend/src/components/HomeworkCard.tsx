@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, History, NotebookPen, Sparkles } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, History, NotebookPen, Sparkles } from 'lucide-react'
 
 import {
   homeworkStudentEvents,
@@ -93,8 +93,19 @@ function resolveHomeworkContent(r: HomeworkStudentEvent): string {
 }
 
 /** 明细表（精简4列：日期、学科、作业内容、状态）；行渲染与原单表逐字一致，供
- *  全部视图/近 14 天/更早三处复用，避免三份拷贝。 */
-function EventRowsTable({ rows }: { rows: HomeworkStudentEvent[] }) {
+ *  全部视图/近 14 天/更早三处复用，避免三份拷贝。
+ *  2026-10-24 单账本：跨域共享行（批次 data_domain ≠ 当前工作台域）在学科
+ *  旁标「班主任侧/教学侧」小标签——教学档案里看到的班主任班缺交不再像
+ *  「本班录的」一样无从分辨。 */
+function EventRowsTable({
+  rows,
+  mode,
+}: {
+  rows: HomeworkStudentEvent[]
+  mode: WorkspaceMode
+}) {
+  const ownDomain = mode === 'teaching' ? 'teaching' : 'homeroom'
+  const sharedLabel = mode === 'teaching' ? '班主任侧' : '教学侧'
   return (
     <div className="overflow-x-auto">
       <table className="mt-2 w-full text-sm">
@@ -113,6 +124,7 @@ function EventRowsTable({ rows }: { rows: HomeworkStudentEvent[] }) {
             const isAttendance = isAttendanceAnomaly(r)
             const isNormalAttendance = r.subject === '考勤' && !isAttendance
             const content = resolveHomeworkContent(r)
+            const isShared = Boolean(r.data_domain && r.data_domain !== ownDomain)
 
             return (
               <tr
@@ -126,6 +138,11 @@ function EventRowsTable({ rows }: { rows: HomeworkStudentEvent[] }) {
                 </td>
                 <td className="py-1.5 font-medium text-slate-800 whitespace-nowrap">
                   {r.subject}
+                  {isShared && (
+                    <span className="ml-1.5 rounded bg-slate-100 px-1 py-px text-[10px] font-normal text-slate-500 align-middle">
+                      {sharedLabel}
+                    </span>
+                  )}
                 </td>
                 <td className="py-1.5 text-slate-600 whitespace-nowrap text-xs">
                   {content}
@@ -246,8 +263,18 @@ export default function HomeworkCard({
   }
 
   const events = data?.events ?? []
+  // 冲突日（2026-10-24 单账本）：两侧同日同学科登记打架，后端连缺已按已交
+  // 处理——卡头缺交计数与分类胶囊同步剔除该（日期, 学科）的缺交行；明细行
+  // 保留（共享来源标签 + 冲突提示块单列），保证可追溯。
+  const conflictKeys = new Set(
+    (data?.conflicts ?? []).map((c) => `${c.date}|${c.subject}`),
+  )
+  const isConflictMissing = (e: HomeworkStudentEvent) =>
+    e.status === 'missing' && e.subject !== '考勤' && conflictKeys.has(`${e.assigned_date}|${e.subject}`)
   // 排除考勤出勤批次，仅统计纯学科作业缺交
-  const missing = events.filter((e) => e.status === 'missing' && e.subject !== '考勤')
+  const missing = events.filter(
+    (e) => e.status === 'missing' && e.subject !== '考勤' && !isConflictMissing(e),
+  )
   const excused = events.filter((e) => e.status === 'excused')
   const attendanceAnomalies = events.filter(isAttendanceAnomaly)
 
@@ -336,8 +363,8 @@ export default function HomeworkCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* 本学年全勤良好卡片 */}
-        {!allHistory && missing.length === 0 ? (
+        {/* 本学年全勤良好卡片（有冲突日时仍走下方数字块，冲突提示块单列） */}
+        {!allHistory && missing.length === 0 && (data?.conflicts?.length ?? 0) === 0 ? (
           <div className="flex items-center justify-between rounded-lg bg-emerald-50/80 border border-emerald-200/70 p-3.5 text-sm text-emerald-800">
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="h-5 w-5 text-emerald-600 flex-shrink-0" />
@@ -377,6 +404,32 @@ export default function HomeworkCard({
                 </>
               )}
             </div>
+          </div>
+        )}
+
+        {/* 2026-10-24 单账本：两侧同日同学科登记打架（一侧缺交另一侧已交）
+            的冲突日——连缺已按已交处理，这里单列请人工核实修正其中一侧。 */}
+        {(data?.conflicts?.length ?? 0) > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2.5 text-xs text-amber-800">
+            <div className="flex items-center gap-1.5 font-medium">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              {data!.conflicts!.length} 天两侧作业登记不一致（已按已交处理，请核实）
+            </div>
+            <ul className="mt-1.5 space-y-1 pl-5 list-disc">
+              {data!.conflicts!.map((c) => (
+                <li key={c.date}>
+                  <span className="tabular-nums">{c.date}</span> {c.subject}：
+                  {c.batches
+                    .map(
+                      (b) =>
+                        `${b.data_domain === 'homeroom' ? '班主任侧' : '教学侧'}《${b.homework_type}》${
+                          b.status === 'missing' ? '缺交' : '已交'
+                        }`,
+                    )
+                    .join(' · ')}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -471,7 +524,7 @@ export default function HomeworkCard({
               </div>
             ) : showAllEvents ? (
               <>
-                <EventRowsTable rows={eventsExpanded ? displayEvents : displayEvents.slice(0, 30)} />
+                <EventRowsTable rows={eventsExpanded ? displayEvents : displayEvents.slice(0, 30)} mode={mode} />
                 <MoreToggle
                   hiddenCount={displayEvents.length - 30}
                   unit="条记录"
@@ -488,7 +541,7 @@ export default function HomeworkCard({
                 ) : (
                   <>
                     <div className="mt-1 text-[11px] text-slate-400">近 14 天（{recentAnomalies.length} 条）</div>
-                    <EventRowsTable rows={recentAnomalies} />
+                    <EventRowsTable rows={recentAnomalies} mode={mode} />
                   </>
                 )}
                 {olderAnomalies.length > 0 && (
@@ -496,7 +549,7 @@ export default function HomeworkCard({
                     <summary className="cursor-pointer text-xs font-medium text-slate-500">
                       更早异常记录（{olderAnomalies.length} 条）
                     </summary>
-                    <EventRowsTable rows={olderAnomalies} />
+                    <EventRowsTable rows={olderAnomalies} mode={mode} />
                   </details>
                 )}
               </>

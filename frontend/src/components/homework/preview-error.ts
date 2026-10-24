@@ -28,6 +28,16 @@ export function homeworkPreviewErrorText(err: unknown, scopeNoun: string): strin
     const e = err as ApiErrorLike
     const body = (typeof e.body === 'object' && e.body !== null ? e.body : {}) as Record<string, unknown>
     if (e.code === 'invalid_scope_param') {
+      // 2026-10-24 单账本阻断：对侧关联班同日同学科已有批次（body 带
+      // conflict_batches）→ 提示去对侧批次登记；确属另一份作业则改日期
+      if (Array.isArray(body.conflict_batches)) {
+        const side = typeof body.conflict_side === 'string' ? body.conflict_side : '对侧'
+        const types = (body.conflict_batches as Array<Record<string, unknown>>)
+          .slice(0, 3)
+          .map((b) => `《${String(b.homework_type ?? '')}》`)
+          .join('')
+        return `${side}关联班级当天已录同学科作业${types}：同一份作业请直接在对侧批次上登记缺交（两侧共享同一批记录）；如确属另一份作业，请调整收交日期后重录。`
+      }
       const name = typeof body.name_or_alias === 'string' ? body.name_or_alias.trim() : ''
       if (name !== '') {
         if (Array.isArray(body.candidates)) {

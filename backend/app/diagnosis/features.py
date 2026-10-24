@@ -913,7 +913,9 @@ def _homework_from(mode: str, events, line_axis_map, as_of: date) -> dict:
         for a in axis
         if not _parse_expected_ids(a.expected_members_json)
     }
-    lines = _streak_lines_of(mode, streak_events, line_axis_map, legacy_ids)
+    # 2026-10-24 起 _streak_lines_of 跨域合并线并返回 (lines, conflicts)；
+    # 特征指标只吃连缺天数，冲突日已在天级判定中按已交处理
+    lines, _conflicts = _streak_lines_of(mode, streak_events, line_axis_map, legacy_ids)
     current_streak_days = max((line[0] or 0) for line in lines) if lines else 0
 
     start7 = _window_start(as_of, th.HOMEWORK_WINDOW_7D)
