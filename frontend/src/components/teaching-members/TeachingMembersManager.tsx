@@ -16,6 +16,7 @@ import Link from 'next/link'
 import {
   AlertCircle,
   ArrowRightLeft,
+  Link2,
   Loader2,
   RefreshCw,
   Settings2,
@@ -523,35 +524,44 @@ export function TeachingMembersManager() {
             教学班当期与历史成员、文本导入、行政班同步{switching ? ' · 正在切换…' : ''}
           </p>
         </div>
-        {classes != null && classes.teaching.length > 0 ? (
-          <div className="w-72">
-            <Select
-              value={selectedClassId != null ? String(selectedClassId) : undefined}
-              onValueChange={(v) => {
-                const classId = Number(v)
-                setSelectedClassId(classId)
-                setFilter({ teaching_class_id: classId })
-                setTab('list')
-              }}
-            >
-              <SelectTrigger aria-label="选择教学班">
-                <SelectValue placeholder="选择教学班" />
-              </SelectTrigger>
-              <SelectContent>
-                {classes.teaching.map((c) => (
-                  <SelectItem key={c.class_id} value={String(c.class_id)}>
-                    {c.label}（{c.subject}）
-                  </SelectItem>
-                ))}
-                {selectedClass?.status === 'inactive' ? (
-                  <SelectItem value={String(selectedClass.class_id)}>
-                    {selectedClass.label}（历史）
-                  </SelectItem>
-                ) : null}
-              </SelectContent>
-            </Select>
-          </div>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          {classes != null && classes.teaching.length > 0 ? (
+            <div className="w-72">
+              <Select
+                value={selectedClassId != null ? String(selectedClassId) : undefined}
+                onValueChange={(v) => {
+                  const classId = Number(v)
+                  setSelectedClassId(classId)
+                  setFilter({ teaching_class_id: classId })
+                  setTab('list')
+                }}
+              >
+                <SelectTrigger aria-label="选择教学班">
+                  <SelectValue placeholder="选择教学班" />
+                </SelectTrigger>
+                <SelectContent>
+                  {classes.teaching.map((c) => (
+                    <SelectItem key={c.class_id} value={String(c.class_id)}>
+                      {c.label}（{c.subject}）
+                    </SelectItem>
+                  ))}
+                  {selectedClass?.status === 'inactive' ? (
+                    <SelectItem value={String(selectedClass.class_id)}>
+                      {selectedClass.label}（历史）
+                    </SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+          <Link
+            href="/settings/link"
+            className="inline-flex h-10 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            <Link2 className="h-4 w-4 text-slate-400" aria-hidden="true" />
+            班级关联配置
+          </Link>
+        </div>
       </div>
 
       <Card className="print:hidden">

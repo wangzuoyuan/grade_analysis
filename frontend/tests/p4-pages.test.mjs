@@ -188,6 +188,14 @@ test('教学班成员页：当期/历史分列、文本导入两段、关联班 
   assert.match(membersManager, /overflow-x-auto/, '成员宽表须横向滚动')
 })
 
+test('班级信息页头部常驻「班级关联配置」入口（2026-10-24 用户反馈 /settings/link 太隐蔽）', () => {
+  const idx = membersManager.indexOf('班级关联配置')
+  assert.ok(idx > 0, '头部须有「班级关联配置」常驻入口')
+  const chunk = membersManager.slice(Math.max(0, idx - 600), idx + 100)
+  assert.match(chunk, /href="\/settings\/link"/, '入口必须指向 /settings/link')
+  assert.match(chunk, /<Link2 /, '入口带 Link2 图标（区别于 409 引导里的「前往关联配置」）')
+})
+
 test('表单未提交内容走 page-draft 草稿，提交成功清除（简化版 link-draft）', () => {
   assert.match(pageDraft, /page-draft:/, '草稿键前缀须为 page-draft:')
   assert.match(studentDialog, /savePageDraft/, '新建学生表单须暂存草稿')
