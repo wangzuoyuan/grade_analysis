@@ -25,9 +25,11 @@ type ClassRow = PlatformCompare['classes'][number]
 export const byClassName = (a: ClassRow, b: ClassRow) =>
   a.class_label.localeCompare(b.class_label, 'zh-CN', { numeric: true }) || a.id.localeCompare(b.id)
 
-/** 我教的班级柱色（主题蓝）与其他班级（灰色半透明）——同 HomeroomCompare 高亮口径。 */
-const MINE_BAR_COLOR = '#1f7fd6'
-const OTHER_BAR_COLOR = '#94a3b8'
+/** 各班平均分柱状图系列色：原始分=主题蓝、等级分=灰。2026-10-25 前按「我教/其他」逐格
+ *  Cell 填色，而 recharts 图例圆点只认 Bar 系列级 fill，两圆点落回默认黑无法区分原始/等级
+ *  （用户反馈）；改为系列色区分原始/等级（图例自动跟随），不透明度区分我教（0.9）/其他（0.35）。 */
+const RAW_BAR_COLOR = '#1f7fd6'
+const GRADE_BAR_COLOR = '#94a3b8'
 
 type BandBar = { key: string; label: string; avg: number | null | undefined; weight: number; counts: number[]; total: number }
 
@@ -109,8 +111,9 @@ function BandBars({ labels, rows }: { labels: string[]; rows: ClassRow[] }) {
 }
 
 /** 各班平均分柱状图（2026-10-22 用户拍板）：全部班级的原始分均分 + 等级分均分
- *  双柱（高一只原始分、无图例）；我教的班级（managed_class_id 非空）主题色高亮，
- *  其余灰色半透明（同 HomeroomCompare 逐格 Cell 口径）。全部均分为空时整块不渲染。 */
+ *  双柱（高一只原始分、无图例）；颜色口径（2026-10-25 修正）：系列色区分原始/等级
+ *  （图例圆点取 Bar 系列 fill），我教的班级（is_managed，兼容 managed_class_id 旧快照）
+ *  深色 0.9、其他班级浅色 0.35。全部均分为空时整块不渲染。 */
 function ClassAvgBars({ rows, grade }: { rows: ClassRow[]; grade: number }) {
   const chartData = rows.map(c => ({
     classLabel: c.class_label,
@@ -125,7 +128,7 @@ function ClassAvgBars({ rows, grade }: { rows: ClassRow[]; grade: number }) {
     <div className="rounded-lg border border-slate-100 p-3">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-sm font-medium text-slate-700">各班平均分对比</p>
-        <p className="text-xs text-slate-400">主题色为我教的教学班，灰色为其他班级</p>
+        <p className="text-xs text-slate-400">深色柱为我教的班级，浅色柱为其他班级</p>
       </div>
       <div className="h-72">
         <ResponsiveContainer width="100%" height="100%">
@@ -157,15 +160,15 @@ function ClassAvgBars({ rows, grade }: { rows: ClassRow[]; grade: number }) {
               formatter={(v: number | string) => (typeof v === 'number' ? v.toFixed(1) : v)}
             />
             {grade !== 1 && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 4 }} iconType="circle" />}
-            <Bar dataKey="raw_avg" name="原始分均分" maxBarSize={22} radius={[3, 3, 0, 0]}>
+            <Bar dataKey="raw_avg" name="原始分均分" fill={RAW_BAR_COLOR} maxBarSize={22} radius={[3, 3, 0, 0]}>
               {chartData.map((d, i) => (
-                <Cell key={i} fill={d.mine ? MINE_BAR_COLOR : OTHER_BAR_COLOR} fillOpacity={d.mine ? 0.9 : 0.35} />
+                <Cell key={i} fillOpacity={d.mine ? 0.9 : 0.35} />
               ))}
             </Bar>
             {grade !== 1 && (
-              <Bar dataKey="grade_avg" name="等级分均分" maxBarSize={22} radius={[3, 3, 0, 0]}>
+              <Bar dataKey="grade_avg" name="等级分均分" fill={GRADE_BAR_COLOR} maxBarSize={22} radius={[3, 3, 0, 0]}>
                 {chartData.map((d, i) => (
-                  <Cell key={i} fill={d.mine ? MINE_BAR_COLOR : OTHER_BAR_COLOR} fillOpacity={d.mine ? 0.9 : 0.35} />
+                  <Cell key={i} fillOpacity={d.mine ? 0.9 : 0.35} />
                 ))}
               </Bar>
             )}

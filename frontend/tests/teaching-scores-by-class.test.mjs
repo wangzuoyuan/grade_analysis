@@ -136,23 +136,51 @@ test('等级人数全空或未导入时不出堆叠条',()=>{
   assert.match(noBands,/colspan="22"/i)
 })
 
-test('各班平均分柱状图（2026-10-22 用户拍板）：原始/等级双柱、我教班级主题色高亮、其余灰色半透明',()=>{
+test('各班平均分柱状图：系列色区分原始/等级（图例圆点跟随系列 fill）、不透明度区分我教班级（2026-10-25 修正）',()=>{
   const tables=readFileSync(path.join(root,'components/scores/TeachingQualityTables.tsx'),'utf8')
   assert.match(tables,/function ClassAvgBars\(\{ rows, grade \}/)
   assert.match(tables,/c\.is_managed \?\? c\.managed_class_id != null/,'我教班级按后端 is_managed 判定（教学班 label 命中或行政班任课教师同名），兼容旧快照 managed_class_id')
-  assert.match(tables,/#1f7fd6/,'我教班级主题蓝');assert.match(tables,/#94a3b8/,'其他班级灰色')
-  assert.equal((tables.match(/fill=\{d\.mine \? MINE_BAR_COLOR : OTHER_BAR_COLOR\} fillOpacity=\{d\.mine \? 0\.9 : 0\.35\}/g)??[]).length,2,'原始分/等级分两个 Bar 都逐格填 Cell')
-  assert.match(tables,/name="原始分均分"/);assert.match(tables,/name="等级分均分"/)
+  assert.match(tables,/const RAW_BAR_COLOR = '#1f7fd6'/,'原始分系列=主题蓝')
+  assert.match(tables,/const GRADE_BAR_COLOR = '#94a3b8'/,'等级分系列=灰')
+  assert.match(tables,/dataKey="raw_avg" name="原始分均分" fill=\{RAW_BAR_COLOR\}/,'原始分 Bar 系列级 fill——recharts 图例圆点只认系列级 fill')
+  assert.match(tables,/dataKey="grade_avg" name="等级分均分" fill=\{GRADE_BAR_COLOR\}/,'等级分 Bar 系列级 fill')
+  assert.equal((tables.match(/<Cell key=\{i\} fillOpacity=\{d\.mine \? 0\.9 : 0\.35\} \/>/g)??[]).length,2,'两个 Bar 逐格只控不透明度（我教深、其他浅），Cell 不再写 fill')
+  assert.doesNotMatch(tables,/MINE_BAR_COLOR|OTHER_BAR_COLOR/,'按我教/其他逐格填色的旧写法退役——曾致图例两圆点落回默认黑无法区分原始/等级')
   assert.match(tables,/maxBarSize=\{22\}/);assert.match(tables,/radius=\{\[3, 3, 0, 0\]\}/)
   assert.match(tables,/interval=\{0\}[\s\S]*?angle=\{-20\}[\s\S]*?textAnchor="end"/,'X 轴班级名斜排不省略')
   assert.match(tables,/\{grade !== 1 && <Legend/,'高一不渲染图例')
   assert.match(tables,/grade_avg: grade === 1 \? null : c\.metrics\.grade_avg \?\? null/,'高一无等级分柱')
   // 渲染层面：柱状图卡在堆叠条与表格之上；全部均分为空时整块不渲染
   const html=render(TeachingQualityTables,{data:banded,grade:2})
-  for(const s of ['各班平均分对比','主题色为我教的教学班，灰色为其他班级','h-72']) assert(html.includes(s),`缺 ${s}`)
+  for(const s of ['各班平均分对比','深色柱为我教的班级，浅色柱为其他班级','h-72']) assert(html.includes(s),`缺 ${s}`)
   assert(html.indexOf('各班平均分对比')<html.indexOf('rounded-full bg-slate-100'),'柱状图在堆叠条上方')
   const allNull=render(TeachingQualityTables,{data:{...comparison,classes:comparison.classes.map(c=>({...c,metrics:{...c.metrics,raw_avg:null,grade_avg:null}}))},grade:2})
   assert(!allNull.includes('各班平均分对比'),'全部均分为空不出柱状图')
+})
+
+test('图例圆点颜色回归（2026-10-25 用户反馈）：recharts 图例圆点取 Bar 系列 fill 且两色可区分，柱子继承系列色只按 Cell 控透明度',()=>{
+  // 真渲染一个与 ClassAvgBars 同构的最小 BarChart（recharts 在 node SSR 下静态出 SVG）。
+  // 修复前写法（fill 全靠逐格 Cell）图例圆点无 fill 属性，浏览器按 SVG 默认画成黑色两圆点无差别。
+  const rc=nativeRequire('recharts')
+  const data=[{n:'甲',raw:66,grade:53,mine:true},{n:'乙',raw:60,grade:49,mine:false}]
+  const el=React.createElement(rc.BarChart,{width:400,height:250,data},
+    React.createElement(rc.XAxis,{dataKey:'n'}),
+    React.createElement(rc.YAxis,null),
+    React.createElement(rc.Legend,{iconType:'circle'}),
+    React.createElement(rc.Bar,{dataKey:'raw',name:'原始分均分',fill:'#1f7fd6'},
+      data.map((d,i)=>React.createElement(rc.Cell,{key:i,fillOpacity:d.mine?0.9:0.35}))),
+    React.createElement(rc.Bar,{dataKey:'grade',name:'等级分均分',fill:'#94a3b8'},
+      data.map((d,i)=>React.createElement(rc.Cell,{key:i,fillOpacity:d.mine?0.9:0.35}))),
+  )
+  const html=renderToStaticMarkup(el)
+  const attr=(tag,name)=>{const m=tag.match(new RegExp(' '+name+'="([^"]*)"'));return m?m[1]:null}
+  const paths=[...html.matchAll(/<path [^>]*>/g)].map(m=>m[0])
+  const dots=paths.filter(t=>t.includes('recharts-symbols')).map(t=>attr(t,'fill'))
+  assert.deepEqual(dots,['#1f7fd6','#94a3b8'],'图例圆点=原始蓝/等级灰（修复前两圆点均无 fill 落回默认黑）')
+  const rects=paths.filter(t=>t.includes('recharts-rectangle')).map(t=>({name:attr(t,'name'),fill:attr(t,'fill'),op:attr(t,'fill-opacity')}))
+  assert.equal(rects.length,4,'两系列 × 两班')
+  assert(rects.every(r=>(r.fill==='#1f7fd6')===Boolean(r.name&&r.name.includes('原始分'))),'柱子 fill 随系列继承')
+  assert(rects.some(r=>r.name&&r.name.includes('原始分')&&r.op==='0.9')&&rects.some(r=>r.name&&r.name.includes('原始分')&&r.op==='0.35'),'我教班不透明 0.9、其他班 0.35')
 })
 
 test('样本估算视图退役（2026-10-22 用户拍板）：compare 页只渲染官方质量分析，无旧模板入口',()=>{

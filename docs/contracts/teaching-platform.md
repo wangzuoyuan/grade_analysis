@@ -4,7 +4,8 @@
 
 - 两表合并显示：/compare 不再按 class_kind 分「行政班质量分析」「教学班质量分析」两张卡，官方班级合并为单卡「班级质量分析」（描述注明「行政班与教学班合并展示 · N 个班级」）。导入仍是两个文件（文件名 class_kind 判定与 replace_roster 语义不变），class_kind 保留为班级名后的小徽标（行政班/教学班）；等级（高一为分数段）人数堆叠条与合计行改按全部班级一次计算；表格 aria-label 统一为「质量分析表」。
 - 样本估算视图退役：compare/page.tsx 的 LegacyComparePage（各教学班样本均分柱状图 + 教学班排名表（样本估算）+ onLegacy 切换按钮）整体删除，teaching 模式直接渲染 TeachingPlatformCompare，空态文案不再引导「右上入口查看」。homeroom 模式重定向 /homeroom/compare 与极简加载态保留（R03：该页 homeroom 分支不发任何教学域请求）。后端 class-compare 端点保留（供仪表盘与 AI 使用）；前端 fetchTeachingClassCompare/fetchTeachingStats 函数仍供 WorkspaceDataDashboard/TeachingScores 使用，仅不在 /compare 页。
-- 各班平均分柱状图：质量表卡内表格上方新增「各班平均分对比」双柱图（recharts）——原始分均分 + 等级分均分双 Bar（高一只渲染原始分柱且不渲染 Legend）；我教的班级主题色 #1f7fd6（fillOpacity 0.9）高亮、其余班级灰色 #94a3b8（fillOpacity 0.35），两个 Bar 均逐格 Cell 填色（同 HomeroomCompare 本班高亮口径）；X 轴班级名 interval=0 斜排（angle -20、textAnchor end），容器高 h-72，maxBarSize 22、radius [3,3,0,0]；说明文案「主题色为我教的教学班，灰色为其他班级」；全部 raw/grade 均为空时整块不渲染。**高亮判定用 compare 响应新增的 `classes[].is_managed`（后端判定：教学班按导入时 label 命中我管理的教学班 managed_class_id，或官方质量表任课教师与当前教师同名——行政班任课也高亮）；前端兼容只带 managed_class_id 的旧快照。**
+- 各班平均分柱状图：质量表卡内表格上方新增「各班平均分对比」双柱图（recharts）——原始分均分 + 等级分均分双 Bar（高一只渲染原始分柱且不渲染 Legend）；X 轴班级名 interval=0 斜排（angle -20、textAnchor end），容器高 h-72，maxBarSize 22、radius [3,3,0,0]；全部 raw/grade 均为空时整块不渲染。**高亮判定用 compare 响应新增的 `classes[].is_managed`（后端判定：教学班按导入时 label 命中我管理的教学班 managed_class_id，或官方质量表任课教师与当前教师同名——行政班任课也高亮）；前端兼容只带 managed_class_id 的旧快照。**
+- 颜色口径（2026-10-25 修正，用户反馈图例两圆点同色无法区分原始/等级）：**系列色区分口径**——原始分 Bar 系列级 fill #1f7fd6（主题蓝）、等级分 Bar 系列级 fill #94a3b8（灰），recharts 图例圆点自动取系列 fill（此前按「我教/其他」逐格 Cell 填色时系列级无 fill，两圆点落回 SVG 默认黑）；**我教/其他班级改用不透明度区分**——我教 Cell fillOpacity 0.9（深色）、其他 0.35（浅色），Cell 不再写 fill（柱子继承系列色）；说明文案「深色柱为我教的班级，浅色柱为其他班级」。回归测试用 recharts SSR 真渲染断言图例圆点 fill 与柱子透明度（teaching-scores-by-class.test.mjs）。
 
 ## 2026-10-21 展示与指标调整
 
