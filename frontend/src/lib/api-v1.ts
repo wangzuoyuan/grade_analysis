@@ -170,6 +170,39 @@ export interface TeachingClassManageResponse {
   classes: ClassesCatalogTeaching[]
 }
 
+export interface TeachingClassDeletePreview {
+  token: string
+  expires_at: string
+  impact: {
+    class_id: number
+    label: string
+    subject: string
+    academic_year_id: number
+    academic_year_name: string
+    member_count: number
+    membership_count: number
+    score_count: number
+    homework_count: number
+    submission_count: number
+    exclusion_count: number
+    link_count: number
+    pair_count: number
+    invalidated_operations: number
+    closed_sessions: number
+    reference_count: number
+  }
+}
+
+export function previewTeachingClassDelete(classId: number): Promise<TeachingClassDeletePreview> {
+  return request<TeachingClassDeletePreview>(`${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(classId))}/delete-preview`, { method: 'POST' })
+}
+
+export function confirmTeachingClassDelete(classId: number, req: { token: string; confirm_name: string }): Promise<TeachingClassManageResponse & { success: boolean; impact: TeachingClassDeletePreview['impact'] }> {
+  return request<TeachingClassManageResponse & { success: boolean; impact: TeachingClassDeletePreview['impact'] }>(`${API_V1_BASE}/teaching/classes/${encodeURIComponent(String(classId))}/delete-confirm`, {
+    method: 'POST', body: JSON.stringify(req),
+  })
+}
+
 export function listManagedTeachingClasses(academicYearId?: number, subject?: string): Promise<TeachingClassManageResponse> {
   return request<TeachingClassManageResponse>(withQuery(`${API_V1_BASE}/teaching/classes`, {
     academic_year_id: academicYearId,

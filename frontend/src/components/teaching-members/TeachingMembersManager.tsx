@@ -51,6 +51,7 @@ import {
   type TeachingSyncPreview,
 } from '@/lib/api-v1'
 import { apiErrorMessage } from '@/components/link/error-text'
+import { DeleteTeachingClassDialog } from './DeleteTeachingClassDialog'
 import { useWorkspace } from '@/lib/workspace'
 import { clearPageDraft, loadPageDraft, savePageDraft } from '@/lib/page-draft'
 import type { TeachingSyncNewStudentDecision } from '@/lib/api-v1'
@@ -131,9 +132,13 @@ export function TeachingMembersManager() {
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null)
   const [managedClasses, setManagedClasses] = useState<ClassesCatalogTeaching[] | null>(null)
   const [classLabel, setClassLabel] = useState('')
+  const [newClassSubject, setNewClassSubject] = useState('')
   const [classBusy, setClassBusy] = useState(false)
   const [classManageError, setClassManageError] = useState<string | null>(null)
+  const [classNotice, setClassNotice] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<{ key: string; item: ClassesCatalogTeaching } | null>(null)
   const reqRef = useRef(0)
+  const managedReqRef = useRef(0)
 
   // 成员列表
   const [members, setMembers] = useState<{ active: TeachingMember[]; left: TeachingMember[] } | null>(null)
@@ -180,12 +185,18 @@ export function TeachingMembersManager() {
   const yearId = typeof filter.academic_year_id === 'number'
     ? filter.academic_year_id
     : config?.current_academic_year?.id ?? null
+  const classContextKey = JSON.stringify([yearId, generation, filter.teaching_class_id])
+  const activeDeleteTarget = deleteTarget?.key === classContextKey ? deleteTarget.item : null
+  const currentClassContext = useRef(classContextKey)
+  currentClassContext.current = classContextKey
+  const managementSubject = scope?.subject ?? managedClasses?.[0]?.subject ?? config?.teaching.subject ?? newClassSubject.trim()
 
   const loadManagedClasses = useCallback(() => {
     if (yearId == null) return
+    const req = ++managedReqRef.current
     listManagedTeachingClasses(yearId, scope?.subject ?? undefined)
-      .then((result) => setManagedClasses(result.classes ?? []))
-      .catch((err: unknown) => setClassManageError(apiErrorMessage(err)))
+      .then((result) => { if (req === managedReqRef.current) setManagedClasses(result.classes ?? []) })
+      .catch((err: unknown) => { if (req === managedReqRef.current) setClassManageError(apiErrorMessage(err)) })
   }, [yearId, scope?.subject])
 
   useEffect(() => { loadManagedClasses() }, [loadManagedClasses, generation])
@@ -194,8 +205,8 @@ export function TeachingMembersManager() {
     if (yearId == null || classLabel.trim() === '') return
     setClassBusy(true); setClassManageError(null)
     try {
-      const result = await createTeachingClass({ academic_year_id: yearId, label: classLabel.trim(), subject: scope?.subject ?? undefined })
-      setManagedClasses(result.classes ?? []); setClassLabel(''); loadConfig()
+      const result = await createTeachingClass({ academic_year_id: yearId, label: classLabel.trim(), subject: managementSubject || undefined })
+      setManagedClasses(result.classes ?? []); setClassLabel(''); loadConfig(); refreshScope()
     } catch (err) { setClassManageError(apiErrorMessage(err)) } finally { setClassBusy(false) }
   }
 
@@ -244,7 +255,7 @@ export function TeachingMembersManager() {
         setClasses(null)
         setClassesError(apiErrorMessage(err))
       })
-  }, [yearId])
+  }, [yearId, generation])
 
   // 页内选班与顶部/侧栏的全局工作台范围使用同一个 filter 事实源。
   useEffect(() => {
@@ -565,13 +576,34 @@ export function TeachingMembersManager() {
       </div>
 
       <Card className="print:hidden">
-        <CardHeader><CardTitle className="flex items-center gap-2"><Settings2 className="h-4 w-4" />教学班管理</CardTitle><CardDescription>新增、改名、停用或恢复教学班。停用只从日常选择中隐藏，历史成员、成绩和作业均保留。</CardDescription></CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-2"><Settings2 className="h-4 w-4" />教学班管理</CardTitle><CardDescription>新增、改名、停用、恢复或删除教学班。停用保留历史数据；删除会清除该班专属数据，需先核对影响并确认。</CardDescription></CardHeader>
         <CardContent className="space-y-3">
           {classManageError ? <p role="alert" className="text-sm text-danger-500">{classManageError}</p> : null}
-          <div className="flex flex-col gap-2 sm:flex-row"><Input value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="新教学班名称" className="sm:max-w-xs" /><Button onClick={() => void handleCreateClass()} disabled={classBusy || !classLabel.trim()}>新增教学班</Button></div>
-          <div className="flex flex-wrap gap-2">{(managedClasses ?? []).map((item) => <div key={item.class_id} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><span className={item.status === 'inactive' ? 'text-slate-400' : 'font-medium text-slate-800'}>{item.label}</span>{item.status === 'inactive' ? <Badge variant="outline">已停用</Badge> : null}{item.status === 'inactive' ? <Button variant="ghost" size="sm" onClick={() => { setSelectedClassId(item.class_id); setFilter({ teaching_class_id: item.class_id }) }} disabled={classBusy}>查看历史</Button> : null}<Button variant="ghost" size="sm" onClick={() => void handleRenameClass(item)} disabled={classBusy}>改名</Button><Button variant="ghost" size="sm" onClick={() => void handleToggleClass(item)} disabled={classBusy}>{item.status === 'inactive' ? '恢复' : '停用'}</Button></div>)}</div>
+          {classNotice ? <p role="status" className="text-sm text-brand-600">{classNotice}</p> : null}
+          <div className="flex flex-col gap-2 sm:flex-row"><Input value={classLabel} onChange={(e) => setClassLabel(e.target.value)} placeholder="新教学班名称" className="sm:max-w-xs" />{!scope?.subject && !managedClasses?.length && !config?.teaching.subject ? <Input aria-label="新教学班任教学科" value={newClassSubject} onChange={e => setNewClassSubject(e.target.value)} placeholder="任教学科，如物理" className="sm:max-w-40" /> : null}<Button onClick={() => void handleCreateClass()} disabled={classBusy || !classLabel.trim() || !managementSubject}>新增教学班</Button></div>
+          <div className="flex flex-wrap gap-2">{(managedClasses ?? []).map((item) => <div key={item.class_id} className="flex max-w-full flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"><span className={item.status === 'inactive' ? 'break-all text-slate-400' : 'break-all font-medium text-slate-800'}>{item.label}</span>{item.status === 'inactive' ? <Badge variant="outline">已停用</Badge> : null}{item.status === 'inactive' ? <Button variant="ghost" size="sm" onClick={() => { setSelectedClassId(item.class_id); setFilter({ teaching_class_id: item.class_id }) }} disabled={classBusy}>查看历史</Button> : null}<Button variant="ghost" size="sm" onClick={() => void handleRenameClass(item)} disabled={classBusy}>改名</Button><Button variant="ghost" size="sm" onClick={() => void handleToggleClass(item)} disabled={classBusy}>{item.status === 'inactive' ? '恢复' : '停用'}</Button><Button variant="ghost" size="sm" className="text-danger-600" aria-label={`删除教学班${item.label}`} onClick={() => { setClassNotice(''); setDeleteTarget({ key: classContextKey, item }) }} disabled={classBusy}>删除</Button></div>)}</div>
         </CardContent>
       </Card>
+
+      {activeDeleteTarget ? <DeleteTeachingClassDialog key={`${classContextKey}:${activeDeleteTarget.class_id}`} item={activeDeleteTarget}
+        onClose={() => setDeleteTarget(null)} onDeleted={(remaining, deletedLabel) => {
+          if (currentClassContext.current === classContextKey) {
+            reqRef.current += 1
+            managedReqRef.current += 1
+            setDeleteTarget(null)
+            setManagedClasses(remaining)
+            setNewClassSubject(activeDeleteTarget.subject)
+            setClasses(c => c ? { ...c, teaching: c.teaching.filter(t => t.class_id !== activeDeleteTarget.class_id) } : c)
+            setClassManageError(null)
+            setClassNotice(`已删除教学班「${deletedLabel}」及其专属数据。`)
+            if (selectedClassId === activeDeleteTarget.class_id || filter.teaching_class_id === activeDeleteTarget.class_id) {
+              const next = remaining.find(c => c.status !== 'inactive')?.class_id ?? null
+              setSelectedClassId(next)
+              setFilter({ teaching_class_id: next ?? 'all' })
+            }
+          }
+          refreshScope()
+        }} /> : null}
 
       {configError ? (
         <Card>

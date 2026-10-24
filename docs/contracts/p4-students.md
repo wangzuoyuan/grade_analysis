@@ -119,3 +119,15 @@ S08（关联学生改号/同名身份确认，历史接续）→ §2.1 alias 追
   关联班引导提示、sync-from-homeroom）。
 - `/homeroom/students/{id}/report`：打印视图。
 - 旧 /student、/settings/classes 页迁移替换；沿用教学风格与 P2/P3 模式。
+
+## 3.1 教学班永久删除（2026-10-24）
+
+班级管理在用、停用教学班均提供「删除」。有数据也允许删除：先显示学年、学科、班名与实际影响，再输入完整班名确认；页面不可撤销。停用/恢复沿用保留历史语义。
+
+- `POST /api/v1/teaching/classes/{id}/delete-preview`：返回 `token/expires_at/impact`；30 分钟有效，预览只写操作台账，不改业务数据。
+- `POST /api/v1/teaching/classes/{id}/delete-confirm` `{token, confirm_name}`：凭据绑定班 ID、完整名称和全行指纹；获取 SQLite 写锁后重算范围，漂移/过期/消费/错班返回 409，名称不符 422，未知班 404。一次事务完成，异常全量回滚；成功返回 `success/classes/impact`，classes 为该班实际所属学年同学科剩余列表（允许空列表）。
+- 删除：目标班全部当前/历史成员关系；仅 `data_domain=teaching` 且 `class_ref_id=目标班ID` 的成绩、作业（包括撤销批次）及逐人记录、作业统计排除；目标班关联及其配对。不从成员身份反推扩大成绩/作业删除范围。
+- 保留：学生身份、学号、个人档案，其他班级/学年及班主任域数据，整场考试与官方全年级质量/统计参照。参照 JSON 仅把明确命中本班 `managed_class_id` 改空，不改变统计值或其他班引用。
+- 相关未确认操作失效（跨班批次包含目标班时整批失效）；相关已确认教学换届撤销凭据失效，普通已确认导入审计保留；关闭引用目标班的教学聊天和依赖其关联的聊天。来源映射标为已删除/不再有效。删除快照及变更前参照留本机 `ImportBatch`，不返回前端、不入 Git。
+- 已删除班 ID 不重用：删除事务保存 `HomeworkSetting.teaching_class_id_high_watermark`，`TeachingClass` ORM 创建统一原子分配后续编号（覆盖手动、导入、换届创建），不需 schema 迁移。删除后前端清理旧班选择、刷新目录/工作台；迟到预览和切范围前的凭据不再显示。
+- `impact`：`class_id/label/subject/academic_year_id/academic_year_name`，`member_count/membership_count/score_count/homework_count/submission_count/exclusion_count/link_count/pair_count/reference_count/invalidated_operations/closed_sessions`。成员人数去重，成员关系含历史多行。

@@ -229,6 +229,24 @@ class TeachingClass(Base):
     )
 
 
+@event.listens_for(TeachingClass, "before_insert")
+def _allocate_teaching_class_id(mapper, connection, target):
+    """After a class deletion, reserve new IDs atomically across all ORM creators.
+
+    SQLite otherwise reuses the deleted maximum rowid. Old scope snapshots and
+    browser requests must never address a different class with the same ID.
+    The counter is installed by the deletion transaction; existing DBs need no DDL.
+    """
+    if target.id is None:
+        row = connection.execute(text(
+            "UPDATE homework_setting SET value = MAX(CAST(value AS INTEGER), "
+            "COALESCE((SELECT MAX(id) FROM teaching_class), 0)) + 1 "
+            "WHERE key = 'teaching_class_id_high_watermark' RETURNING value"
+        )).first()
+        if row is not None:
+            target.id = int(row[0])
+
+
 class TeachingClassMember(Base):
     """教学班成员及有效期。source 记录名册来源（manual/导入/关联投影），
     默认 manual。"""

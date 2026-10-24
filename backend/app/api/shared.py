@@ -343,6 +343,8 @@ def list_teaching_classes(
     db: Session = Depends(get_db),
 ):
     ay = q.resolve_year(db, academic_year_id)
+    if not subject and not db.query(TeachingClass.id).filter_by(academic_year_id=ay.id).first() and not q.carryover_subjects(db, ay.id):
+        return TeachingClassManageResponse(classes=[])
     managed_subject = _management_subject(db, ay.id, subject)
     # 未换届自动延续：该学年本学科尚无教学班时，目录展示最近旧学年的班。
     carried = q.carryover_teaching_year(db, managed_subject, ay.id)
