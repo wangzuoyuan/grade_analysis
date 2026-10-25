@@ -335,21 +335,56 @@ def _streak_status(submission: HomeworkSubmission) -> str:
 #   submitted（含合成的默认已交）→ 清零停止；当天只有 attendance/excused → 跳过；
 #   当天该生无任何行：当天批次全部是 legacy（无应交快照）→ 跳过（无法核实），
 #   否则（有新批次）→ 默认已交、清零停止。
-# - 跨域冲突（2026-10-24）：同一天一侧 missing、另一侧 submitted → 该天按
-#   已交处理（打断连缺），日期收进 conflicts 返回供展示「两侧登记不一致，
-#   请核实」；同域内同天混合（卷一已交+卷二缺交）不算冲突，维持 missing。
+# - 跨域冲突（2026-10-24 引入、2026-10-25 收紧配对口径）：同一天、**同作业
+#   种类**跨域一侧 missing、另一侧 submitted 才算两本账打架（同一份作业两边
+#   记岔了）→ 该天按已交处理（打断连缺），日期收进 conflicts 返回供展示
+#   「两侧登记不一致，请核实」；种类只在一侧存在 = 同日两份不同作业（如
+#   班主任侧《日常作业》+ 教学侧《周末卷订正》，同日两份作业的真实案例（匿名）），缺交照实
+#   计数、不判冲突（录入阻断同步只拦同种类）。当天既有冲突对又有未被解释
+#   的真实缺交 → 按缺交处理、不列冲突日（真实缺交优先如实计数；冲突对两行
+#   保留在明细中人工核对）。同域内同天混合（卷一已交+卷二缺交）不算冲突，
+#   维持 missing。
 LineKey = Tuple[str, int, Optional[str]]
 
 
+def _day_conflict_pair(
+    rows: Dict[Tuple[str, str], List[str]],
+) -> Tuple[bool, bool]:
+    """一天内按（域, 作业种类）分组的状态表 → (是否有跨域冲突对,
+    是否有未被冲突对解释的真实缺交)。
+
+    2026-10-25 配对口径（同日两份作业的真实案例（匿名））：只有**同作业种类**跨域一侧 missing、
+    另一侧 submitted 才是两本账打架（同一份作业两边记岔了）；种类只在一侧
+    存在 = 同日两份不同作业，其缺交是真实缺交。_day_merged_statuses 与
+    _legacy_homeroom_streak 共用，单一实现。"""
+    has_pair = False
+    has_unexplained = False
+    for (domain, hw_type), sts in rows.items():
+        if "missing" not in sts:
+            continue
+        counterpart = any(
+            "submitted" in other_sts
+            for (other_domain, other_type), other_sts in rows.items()
+            if other_domain != domain and other_type == hw_type
+        )
+        if counterpart:
+            has_pair = True
+        else:
+            has_unexplained = True
+    return has_pair, has_unexplained
+
+
 def _day_merged_statuses(
-    rows_by_date: Dict[date, Dict[str, List[str]]],
+    rows_by_date: Dict[date, Dict[Tuple[str, str], List[str]]],
     day_is_legacy: Dict[date, List[bool]],
 ) -> Tuple[List[str], List[date]]:
     """把某条连缺线内该生的逐行状态按 assigned_date 合并成天状态序列
     （喂给 _streaks_of；跳过的天不出现 = 既不累加也不打断）。
 
-    rows_by_date 按域分组：{date: {data_domain: [状态]}}，供跨域冲突判定
-    （一侧 missing + 另一侧 submitted → 该天记已交并列入 conflict_days）。"""
+    rows_by_date 按（域, 作业种类）分组：{date: {(data_domain, homework_type):
+    [状态]}}，供跨域冲突判定——同种类一侧 missing + 另一侧 submitted → 全部
+    缺交都被冲突对解释时该天记已交并列入 conflict_days；仍有未被解释的缺交
+    （同日另一份作业真缺）→ 该天记 missing、不列冲突日。"""
     statuses: List[str] = []
     conflict_days: List[date] = []
     for day in sorted(day_is_legacy):
@@ -361,14 +396,16 @@ def _day_merged_statuses(
             continue
         flat = [status for sts in rows.values() for status in sts]
         if "missing" in flat:
-            missing_domains = {d for d, sts in rows.items() if "missing" in sts}
-            # 另一个域当天明确已交（显式或默认已交合成）→ 两本账打架，
-            # 按已交处理，交给人工核实（录入阻断已挡新增，存量提示修正）
-            if any("submitted" in sts for d, sts in rows.items() if d not in missing_domains):
-                statuses.append("submitted")
-                conflict_days.append(day)
-            else:
+            # 2026-10-25 起（域, 种类）配对：全部缺交都被同种类跨域已交解释
+            # → 两本账打架，按已交处理交给人工核实；仍有未被解释的缺交
+            # （同日另一份作业真缺）→ 按缺交如实计数
+            has_pair, has_unexplained = _day_conflict_pair(rows)
+            if has_unexplained:
                 statuses.append("missing")
+            else:
+                statuses.append("submitted")
+                if has_pair:
+                    conflict_days.append(day)
         elif "submitted" in flat:
             statuses.append("submitted")
     return statuses, conflict_days
@@ -381,10 +418,10 @@ def _streak_line_of(
 ) -> Tuple[int, str, int, List[date]]:
     """一条连缺线的按天 (current, basis, longest, conflict_days)。basis 恒
     'events'（按天序列走 _streaks_of；legacy 日期轴另有 _legacy_homeroom_streak）。"""
-    rows_by_date: Dict[date, Dict[str, List[str]]] = {}
+    rows_by_date: Dict[date, Dict[Tuple[str, str], List[str]]] = {}
     for a, s in line_events:
         rows_by_date.setdefault(a.assigned_date, {}).setdefault(
-            a.data_domain, []
+            (a.data_domain, (a.homework_type or "").strip()), []
         ).append(_streak_status(s))
     day_is_legacy: Dict[date, List[bool]] = {}
     for a in line_axis:
@@ -401,27 +438,26 @@ def _legacy_homeroom_streak(
     """旧班主任迁移数据（仅缺交历史、无应交快照）按学科班的日期轴连缺：
     该生日无缺交（含全交台账日、migration-only 日）即结束连续段，但保留
     已从最新日数出的连缺值。返回 (current, basis='legacy_events',
-    conflict_days)——2026-10-24 跨域合并后轴含教学域批次：同日一侧缺、
-    另一侧交 = 冲突日，按已交处理（break）并单列日期（与 _day_merged_statuses
-    同口径；legacy 轴只算 current，longest 恒 0 不变）。"""
-    own_by_date: Dict[date, Dict[str, List[str]]] = {}
+    conflict_days)——2026-10-24 跨域合并后轴含教学域批次：同日**同种类**
+    一侧缺、另一侧交 = 冲突日，按已交处理（break）并单列日期（与
+    _day_merged_statuses 同口径，配对逻辑共用 _day_conflict_pair；不同种类
+    = 两份不同作业，缺交照实计数）；legacy 轴只算 current，longest 恒 0
+    不变。"""
+    own_by_date: Dict[date, Dict[Tuple[str, str], List[str]]] = {}
     for a, s in line_events:
         own_by_date.setdefault(a.assigned_date, {}).setdefault(
-            a.data_domain, []
+            (a.data_domain, (a.homework_type or "").strip()), []
         ).append(_streak_status(s))
     rows_by_date: Dict[date, List[HomeworkAssignment]] = {}
     for a in line_axis:
         rows_by_date.setdefault(a.assigned_date, []).append(a)
-    # 先全轴扫出冲突日（同日一侧缺、另一侧交）——展示层要完整清单，不能只
-    # 记连缺循环 break 前遇到的那一个；连缺循环里冲突日按已交处理（break）
+    # 先全轴扫出冲突日（同种类一侧缺、另一侧交且无未被解释的真实缺交）
+    # ——展示层要完整清单，不能只记连缺循环 break 前遇到的那一个；
+    # 连缺循环里冲突日按已交处理（break）
     conflict_day_set: Set[date] = set()
-    for day, by_domain in own_by_date.items():
-        missing_domains = {d for d, sts in by_domain.items() if "missing" in sts}
-        if missing_domains and any(
-            "submitted" in sts
-            for d, sts in by_domain.items()
-            if d not in missing_domains
-        ):
+    for day, by_group in own_by_date.items():
+        has_pair, has_unexplained = _day_conflict_pair(by_group)
+        if has_pair and not has_unexplained:
             conflict_day_set.add(day)
     current = 0
     for event_date in reversed(sorted(rows_by_date)):
@@ -626,17 +662,27 @@ def _homework_share_links(db: Session, ctx: WorkspaceContext) -> List[HomeroomTe
 
 
 def _cross_side_same_day_batches(
-    db: Session, ctx: WorkspaceContext, subject: str, assigned_date: date
+    db: Session,
+    ctx: WorkspaceContext,
+    subject: str,
+    assigned_date: date,
+    homework_type: str,
 ) -> List[Tuple[str, str, HomeworkAssignment]]:
-    """关联对侧班同日同学科的 active 批次 → [(对侧班标签, 侧名, 批次)]。
+    """关联对侧班同日同学科**同作业种类**的 active 批次
+    → [(对侧班标签, 侧名, 批次)]。
 
-    2026-10-24 作业两域单账本口径的录入阻断依据：同一学科当天已在
+    2026-10-24 两域单账本口径的录入阻断依据：同一学科当天已在
     对侧（班主任行政班 / 教学走班）登过记，本侧再录就会形成两本账
-    （连缺分线各算、缺交互相投影）。只按「link active + 共享作业 +
-    link.subject == 录入学科 + 对侧班 + 同日 + active」判定存在性，
-    不做 _event_time_mapping 逐批次门——录入阻断要的是「对侧已记
-    这笔作业」这一事实，与成员交集时点无关。"""
+    （连缺分线各算、缺交互相投影）。2026-10-25 收紧（用户拍板：同日两份
+    作业的真实案例匿名化）：只有**同作业种类**才算同一份作业记重——同日
+    同学科不同种类
+    （如班主任侧《日常作业》+ 教学侧《周末卷订正》）是两份不同作业，
+    本来就该各记各的，放行不阻断。只按「link active + 共享作业 +
+    link.subject == 录入学科 + 对侧班 + 同日 + 同种类 + active」判定
+    存在性，不做 _event_time_mapping 逐批次门——录入阻断要的是「对侧已记
+    这笔作业」这一事实，与成员交集时点无关。种类比较取 strip 后精确相等。"""
     other_domain = "teaching" if ctx.mode == "homeroom" else "homeroom"
+    wanted_type = (homework_type or "").strip()
     hits: List[Tuple[str, str, HomeworkAssignment]] = []
     for link in _homework_share_links(db, ctx):
         if link.subject != subject:
@@ -670,28 +716,36 @@ def _cross_side_same_day_batches(
             .all()
         )
         for a in rows:
-            hits.append((other_label, side, a))
+            if (a.homework_type or "").strip() == wanted_type:
+                hits.append((other_label, side, a))
     return hits
 
 
 def _reject_cross_side_conflict(
-    db: Session, ctx: WorkspaceContext, subject: str, assigned_date: date
+    db: Session,
+    ctx: WorkspaceContext,
+    subject: str,
+    assigned_date: date,
+    homework_type: str,
 ) -> None:
-    """录入阻断（2026-10-24 拍板）：对侧同日同学科已有 active 批次 → 422。
+    """录入阻断（2026-10-24 拍板、2026-10-25 收窄到同种类）：对侧同日同学科
+    **同作业种类**已有 active 批次 → 422；不同种类 = 两份不同作业，放行。
 
     preview 被拒拿不到 token，confirm 自然无法提交；confirm 侧在漂移
     校验后再查一次，关掉「preview 后对侧才录」的 TTL 竞态。改既有批次
     （补例外/修订）不走本门。"""
-    hits = _cross_side_same_day_batches(db, ctx, subject, assigned_date)
+    hits = _cross_side_same_day_batches(
+        db, ctx, subject, assigned_date, homework_type
+    )
     if not hits:
         return
     other_label, side, first = hits[0]
     names = "、".join(f"《{a.homework_type}》" for _l, _s, a in hits[:3])
     suffix = "等" if len(hits) > 3 else ""
     raise InvalidScopeParam(
-        f"{side}关联班级 {other_label} 当天已录同学科批次 {names}{suffix}，"
-        "同一份作业请直接到对侧批次编辑登记（两侧共享同一批学生记录）；"
-        "如确属另一份作业，请调整收交日期后重录",
+        f"{side}关联班级 {other_label} 当天已录同学科同种类批次 {names}{suffix}，"
+        "应为同一份作业，请直接到对侧批次编辑登记（两侧共享同一批学生记录）；"
+        "如当天确有两份不同作业，请使用不同的作业种类区分后重录",
         details={
             "param": "assigned_date",
             "conflict_subject": subject,
@@ -1093,9 +1147,10 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
         ctx = resolve_workspace_context(db, teacher_id, "teaching", teach_params)
         roster = q.teaching_roster(db, [target_class], ctx.as_of)
 
-    # 2026-10-24 两域单账本：对侧关联班同日同学科已有批次 → 422 阻断，
-    # 先于解析与快照写入（fail fast；改既有批次不走本门）。
-    _reject_cross_side_conflict(db, ctx, subject, assigned_date)
+    # 2026-10-24 两域单账本：对侧关联班同日同学科**同种类**已有批次 → 422
+    # 阻断（2026-10-25 收窄，不同种类=两份作业放行），先于解析与快照写入
+    # （fail fast；改既有批次不走本门）。
+    _reject_cross_side_conflict(db, ctx, subject, assigned_date, homework_type)
 
     # 三模式解析（先解析全批次再应用例外，行顺序不影响结果）
     resolved: List[Tuple[int, str, Optional[str]]] = []
@@ -1340,10 +1395,15 @@ def homework_confirm(req: HomeworkConfirmRequest, db: Session = Depends(get_db))
             "preview scope changed", details={"drift": drift}
         )
 
-    # 2026-10-24 两域单账本：preview 之后对侧才录了同日同学科批次 → 拒绝
-    # （关掉 preview TTL 竞态，零写入；口径同 _reject_cross_side_conflict）。
+    # 2026-10-24 两域单账本：preview 之后对侧才录了同日同学科同种类批次 →
+    # 拒绝（关掉 preview TTL 竞态，零写入；口径同 _reject_cross_side_conflict，
+    # 2026-10-25 起不同种类放行）。
     _reject_cross_side_conflict(
-        db, ctx, snapshot["subject"], date.fromisoformat(snapshot["assigned_date"])
+        db,
+        ctx,
+        snapshot["subject"],
+        date.fromisoformat(snapshot["assigned_date"]),
+        snapshot["homework_type"],
     )
 
     # 单事务写入（任一步失败全量回滚，batch 保持 pending 可重试）
@@ -2240,7 +2300,9 @@ def homework_warnings(
     连续口径按天（与画像端点共用 _streak_lines_of，单一实现）：同日多批次
     先合并成天——任一缺交该天计 1、默认/显式已交清零停止、请假与出勤异常
     跳过；班主任按（域, 班, 学科）分线取最大 current，教学按（域, 班）单线
-    （不分作业种类，streak_homework_type 恒 None）。迁移的仅缺交历史批次
+    （不分作业种类，streak_homework_type 恒 None）。2026-10-25 起冲突日按
+    （域, 作业种类）配对：同日同学科**同种类**一侧缺交一侧已交才算冲突
+    （不同种类=两份不同作业，缺交照实计数）。迁移的仅缺交历史批次
     没有 expected_members 快照时，班主任线按旧版保留下来的班级级日期轴
     计算并返回 basis='legacy_events'；教学线按天轴统一处理（当天仅 legacy
     批次无法核实 → 跳过）。本端点不计算 submission_rate。
@@ -2438,7 +2500,8 @@ def homework_warnings(
 
         # 连续缺交按天口径（与画像端点共用 _streak_lines_of，单一实现）：
         # 2026-10-24 起跨域合并——班主任按学科、教学按单线，两侧批次同一
-        # 条线；同日一侧缺交另一侧已交 = 冲突日，按已交处理并单列提示核实。
+        # 条线；2026-10-25 起同日**同作业种类**一侧缺交另一侧已交 = 冲突日
+        # （不同种类=两份不同作业，缺交照实计数），按已交处理并单列提示核实。
         # “全部所教班”只汇总结果，连续轴仍以实际归属班为边界；否则 B 班
         # 某日的事件会错误中断 A 班学生的连击。
         lines, line_conflicts = _streak_lines_of(mode, evs, line_axis_map, legacy_assignment_ids)

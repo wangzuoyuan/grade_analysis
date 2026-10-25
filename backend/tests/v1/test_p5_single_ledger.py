@@ -1,13 +1,15 @@
-"""P5 作业两域单账本（2026-10-24）：录入跨侧冲突阻断 + 连缺/展示跨域合并。
+"""P5 作业两域单账本（2026-10-24 引入，2026-10-25 收紧冲突配对口径）：
+录入跨侧冲突阻断 + 连缺/展示跨域合并。
 
 - 录入阻断：current_subject_homework 共享开启时，对侧关联班同日同学科
-  已有 active 批次 → preview 422（details.conflict_batches），confirm 对
-  已签发 token 复查（关掉 preview TTL 竞态）；同侧同日重复维持软警告；
-  共享关闭时两侧互不可见，不阻断。
-- 连缺合并：班主任按学科、教学按单线，跨域批次并成一条线；同日一侧
-  missing + 另一侧 submitted = 冲突日 → 按已交处理（打断连缺）、缺交行
-  不进 missing_count/recent_missing、单列 conflicts；两侧都缺 = missing；
-  其他学科不受同学科冲突影响。
+  **同作业种类**已有 active 批次 → preview 422（details.conflict_batches），
+  confirm 对已签发 token 复查（关掉 preview TTL 竞态）；不同种类 = 两份
+  不同作业（同日两份作业的真实案例（匿名）：班主任侧《日常作业》+ 教学侧《周末卷订正》），
+  放行不阻断；同侧同日重复维持软警告；共享关闭时两侧互不可见，不阻断。
+- 连缺合并：班主任按学科、教学按单线，跨域批次并成一条线；同日**同种类**
+  一侧 missing + 另一侧 submitted = 冲突日 → 按已交处理（打断连缺）、缺交行
+  不进 missing_count/recent_missing、单列 conflicts；不同种类 = 真实缺交
+  照实计数、不判冲突；两侧都缺 = missing；其他学科不受同学科冲突影响。
 - 存量两本账经直插库造（API 已被阻断造不出来），对应生产先于本口径
   落库的历史数据。
 """
@@ -186,9 +188,11 @@ def test_no_block_when_share_scope_closed(client, v1_seed):
 
 
 def _seed_double_ledger(client, seed, db_session):
-    """两本账式存量（真实案例匿名化）：H6 物理 11-01 甲默认已交（屏障）、11-03 甲缺 +
-    T6 物理 11-03 甲·T 默认已交（冲突日）、11-04 甲缺；H6 语文 11-03 甲缺
-    （同学科冲突不殃及其他学科）。模块内 DB 共享，幂等：已造过即跳过。"""
+    """两本账式存量（真实案例匿名化）：H6 物理 11-01 甲默认已交（屏障）、
+    11-03 甲缺《卷二》+ T6 同日同种类《卷二》甲·T 默认已交（**同种类**
+    冲突日，2026-10-25 口径下两侧批次种类必须一致才判冲突）、11-04 甲缺；
+    H6 语文 11-03 甲缺（同学科冲突不殃及其他学科）。模块内 DB 共享，
+    幂等：已造过即跳过。"""
     _set_scope(client, seed, ["roster", "current_subject_homework"])
     exists = (
         db_session.query(wm.HomeworkAssignment)
@@ -213,7 +217,7 @@ def _seed_double_ledger(client, seed, db_session):
     )
     _insert_batch(
         db_session, domain="teaching", class_id=seed.t6_id, ay_id=seed.ay_id,
-        subject="物理", homework_type="测量实验", day="2025-11-03",
+        subject="物理", homework_type="卷二", day="2025-11-03",
         expected_ids=[seed.jia_t_id, seed.yi_t_id], rows=[],
     )
     _insert_batch(
@@ -316,12 +320,55 @@ def test_both_sides_missing_same_day_stays_missing(client, v1_seed, db_session):
     assert all(c["date"] != "2025-11-06" for c in row["conflicts"])
 
 
+def test_different_type_same_day_is_two_assignments_not_conflict(
+    client, v1_seed, db_session
+):
+    """2026-10-25 用户裁决（同日两份作业的真实案例（匿名））：同日同学科**不同种类** = 两份
+    不同作业——①录入放行（旧口径 422 拦截、逼老师改日期）；②缺交照实
+    计数（进 missing_count/recent_missing），不判冲突、无琥珀提示。
+    11-19 全交屏障 + 11-20 H《日常作业》甲缺 + T《周末卷订正》全交。"""
+    _set_scope(client, v1_seed, ["roster", "current_subject_homework"])
+    barrier = _preview(client, v1_seed, mode="homeroom", day="2025-11-19")
+    assert barrier.status_code == 200, barrier.text
+    _confirm(client, barrier.json()["token"])
+    # H6 先录《日常作业》（甲缺），T6 同日再录《周末卷订正》→ 放行
+    h_miss = _preview(
+        client, v1_seed, mode="homeroom", day="2025-11-20",
+        homework_type="日常作业", kind="detailed",
+        rows=[{"person_id": v1_seed.jia_h_id, "status": "missing"}],
+    )
+    assert h_miss.status_code == 200, h_miss.text
+    _confirm(client, h_miss.json()["token"])
+    t_ok = _preview(
+        client, v1_seed, mode="teaching", day="2025-11-20",
+        homework_type="周末卷订正",
+    )
+    assert t_ok.status_code == 200, t_ok.text
+    _confirm(client, t_ok.json()["token"])
+
+    row = _student_row(_warnings(client, v1_seed, mode="teaching"), v1_seed.jia_t_id)
+    assert row["current_streak"] == 1  # 11-20 真缺计入；11-19 全交屏障打断
+    assert all(c["date"] != "2025-11-20" for c in row["conflicts"])
+    assert row["recent_missing"][0]["assigned_date"] == "2025-11-20"
+
+    profile = _profile(client, v1_seed, v1_seed.jia_t_id, mode="teaching")
+    assert all(c["date"] != "2025-11-20" for c in profile["conflicts"])
+    day_events = [
+        e for e in profile["events"] if e["assigned_date"] == "2025-11-20"
+    ]
+    assert {(e["data_domain"], e["status"]) for e in day_events} == {
+        ("homeroom", "missing"),
+        ("teaching", "submitted"),
+    }
+
+
 def test_legacy_line_also_detects_conflicts(client, v1_seed, db_session):
-    """legacy 线（9 月迁移批次无快照）2026-10-24 起同样判冲突：同日一侧
-    缺、另一侧交 → 冲突日单列、连缺按已交 break；班主任侧 conflicts
-    不再因 legacy 分支漏报（真实两本账案例回归）。轴上加入 migration
-    批次后整条物理线走 legacy 分支，此用例须最后跑（前序用例依赖非
-    legacy 轴）。"""
+    """legacy 线（9 月迁移批次无快照）同样判冲突：同日**同种类**一侧缺、
+    另一侧交 → 冲突日单列、连缺按已交 break（11-12 H/T 均《卷子》）；同日
+    不同种类（11-14 H《周末卷》缺 + T《周末卷订正》交）不判冲突、缺交照实
+    进明细；班主任侧 conflicts 不再因 legacy 分支漏报（真实两本账案例回归）。
+    轴上加入 migration 批次后整条物理线走 legacy 分支，此用例须最后跑
+    （前序用例依赖非 legacy 轴）。"""
     _set_scope(client, v1_seed, ["roster", "current_subject_homework"])
     # migration 批次：无 expected 快照 → 物理线整线转 legacy 分支
     _insert_batch(
@@ -329,7 +376,7 @@ def test_legacy_line_also_detects_conflicts(client, v1_seed, db_session):
         subject="物理", homework_type="迁移历史", day="2025-11-10",
         expected_ids=None, rows=[(v1_seed.jia_h_id, "missing")],
     )
-    # 11-12：一侧缺（H6）+ 另一侧交（T6 默认已交）→ 冲突日
+    # 11-12：一侧缺（H6）+ 另一侧**同种类**交（T6 默认已交）→ 冲突日
     _insert_batch(
         db_session, domain="homeroom", class_id=v1_seed.h6_id, ay_id=v1_seed.ay_id,
         subject="物理", homework_type="卷子", day="2025-11-12",
@@ -338,21 +385,39 @@ def test_legacy_line_also_detects_conflicts(client, v1_seed, db_session):
     )
     _insert_batch(
         db_session, domain="teaching", class_id=v1_seed.t6_id, ay_id=v1_seed.ay_id,
-        subject="物理", homework_type="实验册", day="2025-11-12",
+        subject="物理", homework_type="卷子", day="2025-11-12",
         expected_ids=[v1_seed.jia_t_id], rows=[],
     )
-    # 11-13：H6 缺（冲突之后的真缺，current 从这里数起 = 1）
+    # 11-13：H6 缺（冲突之后的真缺）
     _insert_batch(
         db_session, domain="homeroom", class_id=v1_seed.h6_id, ay_id=v1_seed.ay_id,
         subject="物理", homework_type="日常作业", day="2025-11-13",
         expected_ids=[v1_seed.jia_h_id],
         rows=[(v1_seed.jia_h_id, "missing")],
     )
+    # 11-14：同日不同种类（H6《周末卷》缺 + T6《周末卷订正》默认已交）
+    # → 不是冲突日，H6 缺交照实保留
+    _insert_batch(
+        db_session, domain="homeroom", class_id=v1_seed.h6_id, ay_id=v1_seed.ay_id,
+        subject="物理", homework_type="周末卷", day="2025-11-14",
+        expected_ids=[v1_seed.jia_h_id],
+        rows=[(v1_seed.jia_h_id, "missing")],
+    )
+    _insert_batch(
+        db_session, domain="teaching", class_id=v1_seed.t6_id, ay_id=v1_seed.ay_id,
+        subject="物理", homework_type="周末卷订正", day="2025-11-14",
+        expected_ids=[v1_seed.jia_t_id], rows=[],
+    )
 
     body = _profile(client, v1_seed, v1_seed.jia_h_id, mode="homeroom")
     physics_conflicts = [c for c in body["conflicts"] if c["subject"] == "物理"]
     assert any(c["date"] == "2025-11-12" for c in physics_conflicts), body["conflicts"]
-    # legacy 轴只数 current：11-13 缺 → 11-12 冲突 break（更早不追溯）；
-    # 语文线（非 legacy）current 同为 1，winner 平手按 longest 取语文线，
-    # 故只断言数值、不断言 basis
+    # 11-14 不同种类 = 两份作业，不得判冲突
+    assert all(c["date"] != "2025-11-14" for c in physics_conflicts), body["conflicts"]
+    # legacy 轴只数 current：11-20 缺（前序用例）→ 11-19 全交屏障 break，
+    # 数值恒 1；语文线（非 legacy）current 同为 1，winner 平手按最后事件日
+    # 取物理线，故只断言数值、不断言 basis
     assert body["streaks"]["current_missing_streak"] == 1
+    # 11-14 缺交行未被冲突剔除（进最近缺交证据）
+    row = _student_row(_warnings(client, v1_seed, mode="homeroom"), v1_seed.jia_h_id)
+    assert "2025-11-14" in {r["assigned_date"] for r in row["recent_missing"]}

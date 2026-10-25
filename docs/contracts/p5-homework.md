@@ -1,4 +1,4 @@
-# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.2，2026-10-24 录入跨侧同日冲突 422 阻断 + 连缺/展示跨域合并单账本）
+# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.3，2026-10-25 冲突配对收窄到同作业种类——同日同学科不同种类=两份作业放行并照实计数）
 
 依 `docs/planning/03-architecture.md` §4、`05-acceptance.md`（H01–H06）、
 ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-api.md v2 §2.1（R10 已落地，
@@ -52,12 +52,17 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
   - 同日同科同种类已有批次：preview 返回 `existing_batches: [{assignment_id, batch_token, revision}]`
     提示"编辑既有批次或新建"；**不自动叠加**（H02）。
   - **v1.2（2026-10-24）录入跨侧冲突阻断（单账本）**：`current_subject_homework` 共享开启时，
-    对侧关联班（link.subject == 录入学科）**同日**已有 active 批次 → preview 直接 **422**
-    `invalid_scope_param`，details 带 `conflict_batches: [{assignment_id, homework_type,
+    对侧关联班（link.subject == 录入学科）**同日同作业种类**已有 active 批次 → preview 直接
+    **422** `invalid_scope_param`，details 带 `conflict_batches: [{assignment_id, homework_type,
     assigned_date, side, class_label}]` 与 `conflict_side`；不签发 token，confirm 无从提交。
     confirm 在漂移校验后**复查**同一条件（关掉"preview 后对侧才录"的 TTL 竞态，零写入）。
     同日判定不含 ±1 天；改既有批次（补例外/修订）不受影响；共享关闭时两域互不可见、
-    不阻断。文案引导「同一份作业到对侧批次编辑登记；确属另一份作业请调整收交日期重录」。
+    不阻断。
+  - **v1.3（2026-10-25）阻断收窄到同种类（用户拍板，同日两份作业的真实案例（匿名））**：同日同学科**不同作业
+    种类**（如班主任侧《日常作业》+ 教学侧《周末卷订正》）= 两份不同作业，本来就该各记
+    各的，**放行不阻断**（v1.2 会拦下并逼老师「调整收交日期重录」，属误伤）。种类比较取
+    strip 后精确相等。文案改为「同种类应为同一份作业，到对侧批次编辑登记；确有两份不同
+    作业请用不同作业种类区分」。
 - 响应：`{token, expires_at, assignment: {subject, homework_type, assigned_date, expected_members:
   [{person_id, name}], submissions: [{person_id, name, status, evaluation?}], warnings}}`
   （expected_members = 当期有效成员快照；关联班含 LinkedStudent 交集内对侧投影成员——共享批次两侧
@@ -95,6 +100,12 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
     跨域共享行（前端标「班主任侧/教学侧」）。`conflicts` 列两侧同日同学科登记打架
     （一侧 missing + 另一侧 submitted）的冲突日——该天连缺**已按已交处理**、缺交行
     不进计数，单列供人工核实修正其中一侧。
+  - **v1.3（2026-10-25）冲突配对收窄到同作业种类**：只有**同种类**跨域一侧缺交、另一侧
+    已交才算「同一份作业记岔了」（冲突日）；**不同种类 = 同日两份不同作业**，缺交照实
+    进 missing_count/recent_missing、不判冲突、无琥珀提示（v1.2 会把真缺交按已交藏起来）。
+    当天既有冲突对又有未被解释的真实缺交 → 该天按缺交处理、不列冲突日（真实缺交优先
+    如实计数；冲突对两行保留在明细中人工核对）。存量数据无需迁移：两名涉事学生（匿名）
+    2026-09-23《日常作业》缺交在新口径下自动回归真实缺交。
 
 ## 3. 预警时间轴（H03 红线）
 
@@ -104,9 +115,11 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - 连续缺交按天口径（与画像端点 streaks 同一实现）：同日多批次先合并成天（任一缺交该天计 1、
   已交清零停止、请假/出勤异常跳过）；**v1.2（2026-10-24）起跨域合并——班主任按学科、
   教学按天单线（不分作业种类），同一学科两域批次（行政班 + 关联教学班）并成一条线，
-  events 与批次轴取并集**；同日一侧缺交 + 另一侧已交 = **冲突日**：按已交处理（打断连缺）、
-  该缺交行不进 missing_count/recent_missing、单列 `conflicts: [{date, subject}]` 返回；
-  同域内同天混合（如卷一已交+卷二缺交）不算冲突、维持 missing；两侧都缺 = missing。
+  events 与批次轴取并集**；**v1.3（2026-10-25）起冲突日按（域, 作业种类）配对**：同日同学科
+  **同种类**一侧缺交 + 另一侧已交 = **冲突日**：按已交处理（打断连缺）、该缺交行不进
+  missing_count/recent_missing、单列 `conflicts: [{date, subject}]` 返回；不同种类 = 两份
+  不同作业，缺交照实计数、不判冲突；同域内同天混合（如卷一已交+卷二缺交）不算冲突、
+  维持 missing；两侧都缺 = missing。
   迁移的仅缺交历史批次无 expected_members 快照时，班主任线按旧版班级级日期轴计算
   （basis='legacy_events'）。
 - 仅缺交历史批次（无分母）的学生照常列出缺交计数（事件维度），但 submission_rate 类指标不计算。
