@@ -40,12 +40,15 @@ export function gradeScoreToRadarScore(g: number): number {
 const SUBJECT_ORDER = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理']
 const CORE_SUBJECTS = ['语文', '数学', '英语']
 
-/** 总分轴口径优先级（+3 为等级分之和、无名次数据，不进雷达）。 */
+/** 总分轴口径排序（+3 为等级分之和、无名次数据，不进雷达）；
+ *  2026-10-25 用户反馈「少了三门总分」——所有有年级百分位的总分口径都作轴，不再只选一个。 */
 const TOTAL_PRIORITY = ['3+3', '九门', '主三门', '五门']
 const RADAR_EXCLUDED_TOTALS = new Set(['+3'])
 
-/** 轴数上限：超过拆「主科雷达 + 选科雷达」两张。 */
-const RADAR_MAX_AXES = 7
+/** 轴数上限：超过拆「主科雷达 + 选科雷达」两张。
+ *  高二/三 = 6 学科 + 2 总分（3+3/三门）= 8 轴一张不拆；
+ *  高一 = 9 学科 + 3 总分 = 12 轴拆两张（主科=语数英+全部总分轴，选科=其余学科）。 */
+const RADAR_MAX_AXES = 9
 
 /** 总分口径列头映射：学校导出口径名 → 展示名（未映射口径原样展示）。 */
 export const TOTAL_TYPE_LABELS: Record<string, string> = {
@@ -87,6 +90,8 @@ interface AxisDef {
   /** recharts dataKey / 显示名。 */
   key: string
   standard: AxisStandard
+  /** 总分轴的原始口径名（row.totals 的键；key 是展示名不能直接查）。 */
+  totalType?: string
   /** 轴上任何考试有值（否则整轴无顶点，不画）。 */
   hasValue: boolean
 }
@@ -115,7 +120,7 @@ function subjectStandard(rowCells: Array<RadarSubjectCell | undefined>): AxisSta
 /** 悬浮原值文案（不造数：缺前%/等级分/名次一律「—」）。 */
 function axisRawLabel(axis: AxisDef, row: RadarExamRow): string {
   if (axis.standard === 'total') {
-    const cell = row.totals[axis.key]
+    const cell = axis.totalType != null ? row.totals[axis.totalType] : row.totals[axis.key]
     if (!cell) return '—'
     if (cell.rank != null) return `第 ${cell.rank} 名`
     if (cell.percentile != null) return `前 ${cell.percentile}%`
@@ -129,7 +134,8 @@ function axisRawLabel(axis: AxisDef, row: RadarExamRow): string {
 
 function radarValue(axis: AxisDef, row: RadarExamRow): number | null {
   if (axis.standard === 'total') {
-    const p = row.totals[axis.key]?.percentile
+    const cell = axis.totalType != null ? row.totals[axis.totalType] : row.totals[axis.key]
+    const p = cell?.percentile
     return p != null ? percentileToRadarScore(p) : null
   }
   const cell = row.subjects[axis.key]
@@ -182,7 +188,7 @@ interface RadarGroup {
 export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; className?: string }) {
   const [hiddenExams, setHiddenExams] = useState<Set<string>>(() => new Set())
 
-  const { axes, totalType, groups } = useMemo(() => {
+  const { axes, totalLabels, groups } = useMemo(() => {
     // 学科轴：规范序 ∩ 出现过的学科，任一考试有值才成轴
     const present = SUBJECT_ORDER.filter((sub) =>
       rows.some((r) => r.subjects[sub] != null),
@@ -198,7 +204,7 @@ export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; c
       return { key: sub, standard, hasValue: rows.some((r) => radarValue(probe, r) != null) }
     })
 
-    // 总分轴：优先级选口径（排除 +3），任一考试有百分位才可定位
+    // 总分轴：全部有年级百分位的口径都作轴（2026-10-25 用户反馈补三门总分；排除 +3），按优先级排序
     const totalCandidates = Array.from(new Set(rows.flatMap((r) => Object.keys(r.totals))))
       .filter((t) => !RADAR_EXCLUDED_TOTALS.has(t))
       .sort((a, b) => {
@@ -206,21 +212,13 @@ export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; c
         const ib = TOTAL_PRIORITY.indexOf(b)
         return (ia === -1 ? TOTAL_PRIORITY.length : ia) - (ib === -1 ? TOTAL_PRIORITY.length : ib) || a.localeCompare(b, 'zh')
       })
-    let chosenTotal: string | null = null
-    for (const t of totalCandidates) {
-      if (rows.some((r) => r.totals[t]?.percentile != null)) {
-        chosenTotal = t
-        break
-      }
-    }
-    const totalAxis: AxisDef | null =
-      chosenTotal != null && rows.some((r) => r.totals[chosenTotal]?.percentile != null)
-        ? { key: totalTypeLabel(chosenTotal), standard: 'total', hasValue: true }
-        : null
+    const totalAxes: AxisDef[] = totalCandidates
+      .filter((t) => rows.some((r) => r.totals[t]?.percentile != null))
+      .map((t) => ({ key: totalTypeLabel(t), standard: 'total' as const, totalType: t, hasValue: true }))
 
-    const allAxes = [...subjectAxes.filter((a) => a.hasValue), ...(totalAxis?.hasValue ? [totalAxis] : [])]
+    const allAxes = [...subjectAxes.filter((a) => a.hasValue), ...totalAxes]
 
-    // 轴数 > 7（高一九门场景）：主科雷达 = 语数英 + 总分，选科雷达 = 其余学科
+    // 轴数 > 上限（高一九门+三总分场景）：主科雷达 = 语数英 + 全部总分轴，选科雷达 = 其余学科
     let radarGroups: RadarGroup[]
     if (allAxes.length > RADAR_MAX_AXES) {
       const coreKeys = new Set<string>(CORE_SUBJECTS)
@@ -236,7 +234,7 @@ export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; c
     } else {
       radarGroups = [{ caption: null, axes: allAxes }]
     }
-    return { axes: allAxes, totalType: chosenTotal, groups: radarGroups }
+    return { axes: allAxes, totalLabels: totalAxes.map((a) => a.key), groups: radarGroups }
   }, [rows])
 
   const toggleExam = (key: string) => {
@@ -295,7 +293,7 @@ export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; c
           return (
             <div key={group.caption ?? 'all'} className="space-y-1">
               {group.caption && <p className="text-center text-xs font-medium text-slate-600">{group.caption}</p>}
-              <div className="h-80 w-full">
+              <div className="h-72 w-full">
                 <ResponsiveContainer width="100%" height="100%">
                   <RadarChart data={data} outerRadius="72%" innerRadius="8%">
                     <PolarGrid stroke="#dbe7f3" />
@@ -338,7 +336,7 @@ export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; c
       </div>
       <p className="text-[10px] text-slate-400">
         轴值已统一换算为 0–100 位次分（越靠外越好）：年级前% 轴 = 100 − 前%，等级分轴 =（等级分 − 40）÷ 30 × 100
-        {totalType ? `；总分轴为${totalTypeLabel(totalType)}口径，悬浮显示第 N 名` : ''}。缺考或缺失指标不画顶点。
+        {totalLabels.length > 0 ? `；总分轴为${totalLabels.join('、')}口径，悬浮显示第 N 名` : ''}。缺考或缺失指标不画顶点。
       </p>
     </div>
   )

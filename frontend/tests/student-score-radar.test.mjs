@@ -59,7 +59,10 @@ test('归一化公式：前%→100−p、等级分(40-70)→0-100，越外越好
 test('源码契约：总分轴口径优先级/排除+3、轴数>7 拆分、筛选 chips、原值悬浮', () => {
   assert.match(source, /RADAR_EXCLUDED_TOTALS = new Set\(\['\+3'\]\)/, '+3（等级和）无名次不进总分轴')
   assert.match(source, /TOTAL_PRIORITY = \['3\+3', '九门', '主三门', '五门'\]/, '总分口径优先级')
-  assert.match(source, /RADAR_MAX_AXES = 7/, '拆分阈值')
+  assert.match(source, /有年级百分位的总分口径都作轴/, '总分轴全量成轴（2026-10-25 用户反馈补三门总分）')
+  assert.match(source, /totalLabels\.join\('、'\)/, '脚注列全部总分口径')
+  assert.match(source, /axis\.totalType != null \? row\.totals\[axis\.totalType\]/, '总分轴用原始口径名取值（key 是展示名）')
+  assert.match(source, /RADAR_MAX_AXES = 9/, '拆分阈值（高二 8 轴一张不拆、高一 12 轴拆）')
   assert.match(source, /主科雷达（语数英 \+ 总分）/, '拆分 caption：主科')
   assert.match(source, /选科雷达/, '拆分 caption：选科')
   assert.match(source, /CORE_SUBJECTS = \['语文', '数学', '英语'\]/, '主科定义')
@@ -88,7 +91,7 @@ const grade23Row = (exam_name, date, pct, gs, totalPct, totalRank) => ({
     物理: { percentile: null, grade_score: gs[0] },
     化学: { percentile: null, grade_score: gs[1] },
   },
-  totals: { '3+3': { percentile: totalPct, rank: totalRank }, 主三门: { percentile: null, rank: totalRank + 1 }, '+3': { percentile: null, rank: null } },
+  totals: { '3+3': { percentile: totalPct, rank: totalRank }, 主三门: { percentile: totalPct + 3, rank: totalRank + 1 }, '+3': { percentile: null, rank: null } },
 })
 
 test('SSR 真渲染：高二场景一张雷达——两场考试两个多边形、6学科+总分轴、+3不出现', () => {
@@ -99,13 +102,12 @@ test('SSR 真渲染：高二场景一张雷达——两场考试两个多边形�
     ],
   })
   assert.equal((html.match(/recharts-radar-polygon/g) ?? []).length, 2, '每场考试一个多边形系列（recharts-radar-polygon ×2）')
-  for (const label of ['语文', '数学', '英语', '物理', '化学', '3+3总分']) {
+  for (const label of ['语文', '数学', '英语', '物理', '化学', '3+3总分', '三门总分']) {
     assert(html.includes(`>${label}<`), `轴标签应含 ${label}`)
   }
   assert(!html.includes('主科雷达'), '轴数 ≤7 不拆分')
   assert(!html.includes('+3总分（等级和）'), '+3 不进雷达（其完整口径标签不得出现；3+3总分 是另一口径）')
-  assert(!html.includes('>三门总分<'), '主三门优先级低于 3+3，不作总分轴')
-  assert.match(html, /总分轴为3\+3总分口径，悬浮显示第 N 名/, '脚注写明总分口径')
+  assert.match(html, /总分轴为3\+3总分、三门总分口径，悬浮显示第 N 名/, '脚注列两个总分口径（2026-10-25 补三门总分）')
   assert.match(html, /轴值已统一换算为 0–100 位次分/, '换算说明在场')
   // 考试筛选 chips
   assert.match(html, /aria-label="隐藏10月考雷达"/)
@@ -119,13 +121,15 @@ test('SSR 真渲染：高一九门场景拆两张——主科雷达（语数英+
     exam_name: name,
     exam_date: date,
     subjects: Object.fromEntries(subjects.map((s) => [s, { percentile: 20, grade_score: null }])),
-    totals: { 九门: { percentile: 30, rank: 200 }, 五门: { percentile: 28, rank: 180 } },
+    totals: { 九门: { percentile: 30, rank: 200 }, 五门: { percentile: 28, rank: 180 }, 主三门: { percentile: 25, rank: 160 } },
   })
   const html = render({ rows: [row('期末考', '2026-06-28'), row('期中考', '2026-04-20')] })
   assert(html.includes('主科雷达（语数英 + 总分）'), '拆分 caption：主科')
   assert(html.includes('选科雷达'), '拆分 caption：选科')
-  assert(html.includes('>九门总分<'), '高一无 3+3，总分轴取九门')
-  assert(!html.includes('>五门总分<'), '五门优先级低于九门')
+  // 2026-10-25 用户反馈后总分轴全量：高一 九门/五门/三门 三个总分轴都在主科图
+  for (const label of ['九门总分', '五门总分', '三门总分']) {
+    assert(html.includes(`>${label}<`), `总分轴应含 ${label}`)
+  }
   // 两张图各有一组轴：主科图含英语、选科图含地理
   assert(html.includes('>英语<'))
   assert(html.includes('>地理<'))

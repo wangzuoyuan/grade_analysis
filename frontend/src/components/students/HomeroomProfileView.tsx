@@ -813,7 +813,9 @@ export function HomeroomProfileView() {
                   图A 各科走势：语数英/高一全科按年级前%（越小越靠前），加三按等级分（40–70），标准不同分图展示；图B 总分按校名次（+3 无名次不参与）。点击图例按钮可筛选科目/口径，缺考点不连线。
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
+              <CardContent>
+              {/* 2026-10-25 用户反馈：三图一行排布节约纵向空间（窄屏自动回落单列） */}
+              <div className="grid gap-4 xl:grid-cols-3">
                 {percentileSubjects.length > 0 && (
                   <div>
                     <div className="mb-1.5 text-xs font-medium text-slate-600">图A1 · 各科年级前%走势</div>
@@ -842,13 +844,13 @@ export function HomeroomProfileView() {
                       })}
                     </div>
                     {visiblePercentileSubjects.length === 0 ? (
-                      <div className="flex h-56 items-center justify-center text-xs text-slate-400">
+                      <div className="flex h-44 items-center justify-center text-xs text-slate-400">
                         已隐藏全部学科，点击上方图例按钮恢复显示
                       </div>
                     ) : (
-                      <div className="h-56 w-full">
+                      <div className="h-48 w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={percentileTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                          <LineChart data={percentileTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 12 }}>
                             <RXAxis
                               dataKey="exam_name"
                               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -919,13 +921,13 @@ export function HomeroomProfileView() {
                       })}
                     </div>
                     {visibleGradeSubjects.length === 0 ? (
-                      <div className="flex h-56 items-center justify-center text-xs text-slate-400">
+                      <div className="flex h-44 items-center justify-center text-xs text-slate-400">
                         已隐藏全部学科，点击上方图例按钮恢复显示
                       </div>
                     ) : (
-                      <div className="h-56 w-full">
+                      <div className="h-48 w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={gradeTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                          <LineChart data={gradeTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 12 }}>
                             <RXAxis
                               dataKey="exam_name"
                               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -990,13 +992,13 @@ export function HomeroomProfileView() {
                       })}
                     </div>
                     {visibleRankTotals.length === 0 ? (
-                      <div className="flex h-56 items-center justify-center text-xs text-slate-400">
+                      <div className="flex h-44 items-center justify-center text-xs text-slate-400">
                         已隐藏全部总分口径，点击上方图例按钮恢复显示
                       </div>
                     ) : (
-                      <div className="h-56 w-full">
+                      <div className="h-48 w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={totalRankTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                          <LineChart data={totalRankTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 12 }}>
                             <RXAxis
                               dataKey="exam_name"
                               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -1032,6 +1034,7 @@ export function HomeroomProfileView() {
                     )}
                   </div>
                 )}
+              </div>
               </CardContent>
             </Card>
           )}

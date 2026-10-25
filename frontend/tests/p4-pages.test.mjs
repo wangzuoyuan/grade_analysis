@@ -317,6 +317,9 @@ test('档案页历次成绩雷达卡在走势卡上方 + 走势图按 前%/等�
   assert.match(profileView, /name=\{totalTypeLabel\(t\)\}/, '图B 线名用口径展示名')
   assert.match(profileView, /connectNulls=\{false\}/, '缺考点不连线')
   assert.match(profileView, /angle=\{-15\}/, 'X 轴考试名斜排')
+  // 2026-10-25 用户反馈：三图一行排布节约纵向空间
+  assert.match(profileView, /grid gap-4 xl:grid-cols-3/, '图A1/A2/B 一行三列（窄屏回落单列）')
+  assert.match(profileView, /h-48 w-full/, '走势图高度压缩 56→48')
   assert.doesNotMatch(profileView, /各科成绩走势（原始分）/, '旧原始分走势标题不得残留')
   assert.doesNotMatch(profileView, /visibleSubjects\.map|visibleTotals\.map/, '旧未分组渲染不得残留')
 })
