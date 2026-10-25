@@ -17,8 +17,6 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -98,9 +96,8 @@ import { ExamSelect } from './ExamSelect'
 import { ScoreYearPicker } from './ScoreYearPicker'
 import { analysisScopeQuery, formatScore, sortExamsDesc } from './shared'
 import { bandBarColor, INFERNO_ANCHORS } from './band-colors'
+import { StudentScoreRadar, type RadarExamRow } from '@/components/students/StudentScoreRadar'
 import tableStyles from './homeroom-tables.module.css'
-
-const TREND_COLORS = ['#1f7fd6', '#22b7d9', '#39a97b', '#f0a83a', '#8b5cf6', '#e05a68', '#64748b', '#0d9488', '#c2410c']
 
 /** 排名区间输入的单位/钳制/默认值随指标类型（2026-10-23 拍板，与后端
  *  rank-range 的区间校验同口径）：总分=名次、语数英/高一全科=年级前%
@@ -116,114 +113,44 @@ const RANGE_KIND_BOUNDS = {
 const SCORES_TABS = new Set(['averages', 'students', 'bands', 'duanwei', 'frequency', 'range', 'focus'])
 
 /** 无名次总分排除项：+3 为选修三科等级分之和，没有名次数据——不进段位分布口径下拉
- *  （2026-10-23 用户裁决，选中恒「段位不可计算」），也不进明细表展开行的「总分排名趋势」
- *  图（2026-10-24 用户指示，画不出线只留空图例）；主三门/3+3 等有名次口径照常。 */
+ *  （2026-10-23 用户裁决，选中恒「段位不可计算」）与排名频次等名次口径消费方
+ *  （2026-10-24 泛化）。明细表展开行雷达（2026-10-25）的「总分」轴排除逻辑
+ *  内聚在 StudentScoreRadar（RADAR_EXCLUDED_TOTALS），此处不再重复过滤。 */
 const RANKLESS_TOTALS = new Set<string>(['+3'])
 
-function TrendChart({
-  title,
-  series,
-}: {
-  title: string
-  series: Record<string, Array<{ exam_name: string; exam_date: string | null; rank: number | null; rank_basis: 'school' | 'grade_percentile' | null }>>
-}) {
-  const entries = Object.entries(series)
-  const [hiddenMetrics, setHiddenMetrics] = useState<Set<string>>(() => new Set())
-  if (entries.length === 0) return null
-  const exams = new Map<string, { exam: string; date: string; order: string; [key: string]: string | number | null }>()
-  for (const [metric, points] of entries) {
-    for (const point of points) {
-      const id = `${point.exam_name}|${point.exam_date ?? ''}`
-      const row = exams.get(id) ?? {
-        exam: point.exam_name,
-        date: point.exam_date ? point.exam_date.slice(5, 10) : '日期未知',
-        order: point.exam_date ?? point.exam_name,
+/** 趋势响应的一个学年段 → 雷达数据行（2026-10-25 用户裁决：展开区两张排名
+ *  折线换成历次重叠雷达；percentile 兼容旧后端——缺失时单科回退 rank
+ *  （rank_basis=grade_percentile 时它就是前%），总分行只有 school 名次不回退）。 */
+function radarRowsFromTrendYear(year: HomeroomTrendsResponse['years'][number]): RadarExamRow[] {
+  const examMap = new Map<string, RadarExamRow>()
+  const rowOf = (exam_name: string, exam_date: string | null): RadarExamRow => {
+    const key = `${exam_name}|${exam_date ?? ''}`
+    let row = examMap.get(key)
+    if (!row) {
+      row = { exam_key: key, exam_name, exam_date, subjects: {}, totals: {} }
+      examMap.set(key, row)
+    }
+    return row
+  }
+  for (const [subject, points] of Object.entries(year.subjects)) {
+    for (const p of points) {
+      rowOf(p.exam_name, p.exam_date).subjects[subject] = {
+        percentile: p.percentile ?? (p.rank_basis === 'grade_percentile' ? p.rank : null),
+        grade_score: p.grade_score ?? null,
       }
-      row[metric] = point.rank
-      row[`${metric}__basis`] = point.rank_basis ?? '不可用'
-      exams.set(id, row)
     }
   }
-  const data = [...exams.values()].sort((a, b) => a.order.localeCompare(b.order))
-  const usesPercentile = entries.some(([, points]) => points.some((point) => point.rank_basis === 'grade_percentile'))
-  const toggleMetric = (metric: string) => {
-    setHiddenMetrics((current) => {
-      const next = new Set(current)
-      if (next.has(metric)) next.delete(metric)
-      else next.add(metric)
-      return next
-    })
+  for (const [totalType, points] of Object.entries(year.totals)) {
+    for (const p of points) {
+      rowOf(p.exam_name, p.exam_date).totals[totalType] = {
+        percentile: p.percentile ?? (p.rank_basis === 'grade_percentile' ? p.rank : null),
+        rank: p.rank_basis === 'school' ? p.rank : null,
+      }
+    }
   }
-  return (
-    <div className="space-y-2">
-      <p className="text-xs font-medium text-slate-600">{title}</p>
-      <div className="h-56 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data} margin={{ top: 8, right: 18, bottom: 4, left: -12 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e8f1f8" />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#7890a8' }} />
-            <YAxis
-              reversed
-              allowDecimals={usesPercentile}
-              domain={usesPercentile ? [0, 100] : ['auto', 'auto']}
-              tick={{ fontSize: 11, fill: '#7890a8' }}
-              tickFormatter={(value) => usesPercentile ? `${String(value)}%` : String(value)}
-              label={{ value: usesPercentile ? '年级排名百分位' : '年级名次', angle: -90, position: 'insideLeft', fill: '#7890a8', fontSize: 11 }}
-            />
-            <Tooltip<number, string>
-              labelFormatter={(_, payload) => payload?.[0]?.payload?.exam ?? ''}
-              formatter={(value, name, item) => {
-                const basis = item.payload?.[`${String(name)}__basis`]
-                const label = basis === 'grade_percentile'
-                  ? `年级排名百分位 ${String(value)}%（越小越靠前）`
-                  : `第 ${String(value)} 名（学籍/年级名次）`
-                return [value == null ? '—' : label, name]
-              }}
-            />
-            {entries.map(([metric], index) => (
-              <Line
-                key={metric}
-                type="monotone"
-                dataKey={metric}
-                name={metric}
-                stroke={TREND_COLORS[index % TREND_COLORS.length]}
-                strokeWidth={2}
-                dot={{ r: 3, fill: '#fff', strokeWidth: 2 }}
-                connectNulls={false}
-                hide={hiddenMetrics.has(metric)}
-              />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-      <div className="flex min-h-8 flex-wrap items-center justify-center gap-x-1 gap-y-1" aria-label={`${title}图线选择`}>
-        {entries.map(([metric], index) => {
-          const hidden = hiddenMetrics.has(metric)
-          const color = TREND_COLORS[index % TREND_COLORS.length]
-          return (
-            <button
-              key={metric}
-              type="button"
-              aria-pressed={!hidden}
-              aria-label={`${hidden ? '显示' : '隐藏'}${metric}图线`}
-              onClick={() => toggleMetric(metric)}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300',
-                hidden ? 'text-slate-400 line-through hover:bg-slate-100' : 'text-slate-600 hover:bg-brand-50',
-              )}
-              title={`点击${hidden ? '显示' : '隐藏'}${metric}图线`}
-            >
-              <span
-                aria-hidden="true"
-                className={cn('h-0.5 w-4 rounded-full transition-opacity', hidden && 'opacity-30')}
-                style={{ backgroundColor: color }}
-              />
-              {metric}
-            </button>
-          )
-        })}
-      </div>
-    </div>
+  return [...examMap.values()].sort(
+    (a, b) =>
+      (a.exam_date ?? '').localeCompare(b.exam_date ?? '') || a.exam_name.localeCompare(b.exam_name, 'zh'),
   )
 }
 
@@ -260,18 +187,10 @@ function TrendPanel({
         return (
           <div key={year.academic_year_id} className="rounded-lg border border-slate-100 bg-white px-4 py-3">
             <p className="mb-3 text-sm font-semibold text-slate-700">{year.academic_year_name}</p>
-            {!hasLines ? (
-              <p className="mt-1 text-xs text-slate-400">本学年暂无成绩</p>
+            {hasLines ? (
+              <StudentScoreRadar rows={radarRowsFromTrendYear(year)} />
             ) : (
-              <div className="grid gap-5 xl:grid-cols-2">
-                <TrendChart title="单科年级排名趋势" series={year.subjects} />
-                <TrendChart
-                  title="总分排名趋势"
-                  series={Object.fromEntries(
-                    Object.entries(year.totals).filter(([name]) => !RANKLESS_TOTALS.has(name)),
-                  )}
-                />
-              </div>
+              <p className="mt-1 text-xs text-slate-400">本学年暂无成绩</p>
             )}
           </div>
         )

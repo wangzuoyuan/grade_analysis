@@ -103,6 +103,7 @@ def test_month_precision_reaches_profile_and_trends(client, v1_seed):
             "grade_score": None,
             "rank": None,
             "rank_basis": None,
+            "percentile": None,
         }
     ]
 

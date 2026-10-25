@@ -211,6 +211,9 @@
 - `GET trends?person_id=` → `{person_id, name, years: [{academic_year_id, academic_year_name,
   subjects: {subject: [{exam_name, exam_date, score, grade_score?}]}, totals: {...}}]}`
   （E03：跨学年分段展示，不跨年直接比较九科总分；响应按学年分组即结构上防止跨年连算）
+  **v2.9（2026-10-25 雷达图）**：点位统一增 `percentile`（来源 grade_percentile 的百分数
+  0–100，单科与总分都下发，缺失 null 不推算）——学生成绩雷达图「总分」轴定位用（总分
+  `rank` 是校名次、无法直接落到 0–100 径向刻度）。雷达口径详见 p4-students.md §历次成绩雷达。
 - `GET bands?exam_name=&subject=&metric=` → 段位分布 `{bands: [{label, count, students: [person_id]}],
   total_type?}`。**v2.1（F10）**：段位阈值口径为**年级名次**（AnalysisConfig 的 400/500 是名次阈值，
   绝不可以原始分镜像比较）。当前 ws 域不存年级名次事实，因此 bands 一律返回 409

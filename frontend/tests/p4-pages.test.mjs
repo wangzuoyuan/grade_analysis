@@ -15,6 +15,7 @@ const reportPage = readFileSync(
 )
 const profilePage = readFileSync(new URL('../src/app/homeroom/profile/page.tsx', import.meta.url), 'utf8')
 const profileView = readFileSync(new URL('../src/components/students/HomeroomProfileView.tsx', import.meta.url), 'utf8')
+const scoreRadar = readFileSync(new URL('../src/components/students/StudentScoreRadar.tsx', import.meta.url), 'utf8')
 const homeworkSubjectsCard = readFileSync(
   new URL('../src/components/students/StudentHomeworkSubjectsCard.tsx', import.meta.url),
   'utf8',
@@ -283,28 +284,46 @@ test('档案页「个人作业与成绩分析」全科并列卡：挂作业卡�
   assert.doesNotMatch(homeworkSubjectsCard, /分析学科/, '全科并列，不得引入学科筛选下拉')
 })
 
-test('档案页历次走势拆图A各科/图B总分：图例按钮点选筛选、缺考点断线（2026-10-22）', () => {
-  assert.match(profileView, /<LineChartIcon className="h-4 w-4" \/>\s*历次走势\s*<\/CardTitle>/, '走势卡标题')
-  assert.match(profileView, /图A · 各科成绩走势（原始分）/, '图A 各科原始分')
-  assert.match(profileView, /图B · 总分走势/, '图B 总分口径')
-  // 图例筛选：自定义小按钮组（过滤渲染时须保留图例条目可再点回，故不用默认 Legend）
+test('档案页历次成绩雷达卡在走势卡上方 + 走势图按 前%/等级分/名次 分口径（2026-10-25）', () => {
+  // 雷达卡须在走势卡上方（用户拍板「个人页也添加雷达图在走势图上面」）
+  const radarIdx = profileView.indexOf('历次成绩雷达')
+  const trendIdx = profileView.indexOf('历次走势')
+  assert.ok(radarIdx > 0 && trendIdx > 0 && radarIdx < trendIdx, '雷达卡在走势卡之前')
+  assert.match(profileView, /<RadarIcon className="h-4 w-4" \/>\s*历次成绩雷达/, '雷达卡标题')
+  assert.match(profileView, /<StudentScoreRadar rows=\{radarRows\} \/>/, '雷达组件接线（数据来自 examMatrix）')
+  // 图A 按标准分图：语数英/全科=年级前%（0-100 反转、刻度前X%）、加三=等级分（40-70）
+  assert.match(profileView, /图A1 · 各科年级前%走势/, '图A1 标题')
+  assert.match(profileView, /图A2 · 加三等级分走势/, '图A2 标题（标准不同分图）')
+  assert.match(profileView, /图B · 总分校名次走势/, '图B 标题（按校名次）')
+  assert.match(profileView, /reversed\s+domain=\{\[0, 100\]\}\s+allowDecimals/, '图A1 Y 轴 0-100 反转')
+  assert.match(profileView, /`前\$\{v\}%`/, '图A1 刻度「前X%」')
+  assert.match(profileView, /domain=\{\[40, 70\]\}/, '图A2 等级分轴 40-70')
+  assert.match(profileView, /reversed allowDecimals=\{false\} domain=\{\['auto', 'auto'\]\}/, '图B 名次轴反转')
+  assert.match(profileView, /`前 \$\{Number\(val\)\}%（越小越靠前）`/, '图A1 悬浮文案')
+  assert.match(profileView, /`等级分 \$\{fmtScore\(Number\(val\)\)\}`/, '图A2 悬浮文案')
+  assert.match(profileView, /`第 \$\{Number\(val\)\} 名`/, '图B 悬浮文案')
+  // 学科分组数据驱动（任一考试有等级分 → 等级组）；+3 无名次不进图B
+  assert.match(profileView, /gradeSubjects = useMemo\([\s\S]{0,140}allSubjects\.filter\(\(s\) => examMatrix\.some\(\(r\) => r\.subjects\[s\]\?\.grade_score != null\)\)/, '等级分组=任一考试有等级分')
+  assert.match(profileView, /percentileSubjects = useMemo\([\s\S]{0,120}allSubjects\.filter\(\(s\) => !gradeSubjects\.includes\(s\)\)/, '前%组=其余学科')
+  assert.match(profileView, /PROFILE_RANKLESS_TOTALS/, '图B 排除无名次总分（+3）')
+  // 图例筛选沿用：显隐状态 + 按钮切换 + 渲染前过滤
   assert.match(profileView, /hiddenSubjects/, '学科显隐状态')
   assert.match(profileView, /hiddenTotals/, '总分口径显隐状态')
-  assert.match(profileView, /onClick=\{\(\) => toggleSubject\(sub\)\}/, '图例按钮切换学科')
-  assert.match(profileView, /onClick=\{\(\) => toggleTotal\(t\)\}/, '图例按钮切换总分口径')
-  assert.match(profileView, /aria-pressed=\{active\}/, '图例按钮带按压态')
-  assert.match(profileView, /const visibleSubjects = allSubjects\.filter\(\(s\) => !hiddenSubjects\.has\(s\)\)/, '渲染前过滤隐藏学科')
-  assert.match(profileView, /const visibleTotals = totalTypes\.filter\(\(t\) => !hiddenTotals\.has\(t\)\)/, '渲染前过滤隐藏口径')
-  assert.match(profileView, /\{visibleSubjects\.map\(\(sub\) => \(/, '图A 按可见学科渲染 Line')
-  assert.match(profileView, /\{visibleTotals\.map\(\(t\) => \(/, '图B 按可见口径渲染 Line')
+  assert.match(profileView, /toggleSubject\(sub\)/, '图例按钮切换学科')
+  assert.match(profileView, /toggleTotal\(t\)/, '图例按钮切换总分口径')
+  assert.match(profileView, /\{visiblePercentileSubjects\.map\(\(sub\) => \(/, '图A1 按可见学科渲染')
+  assert.match(profileView, /\{visibleGradeSubjects\.map\(\(sub\) => \(/, '图A2 按可见学科渲染')
+  assert.match(profileView, /\{visibleRankTotals\.map\(\(t\) => \(/, '图B 按可见口径渲染')
+  assert.match(profileView, /name=\{totalTypeLabel\(t\)\}/, '图B 线名用口径展示名')
   assert.match(profileView, /connectNulls=\{false\}/, '缺考点不连线')
   assert.match(profileView, /angle=\{-15\}/, 'X 轴考试名斜排')
-  assert.match(profileView, /dataKey=\{sub\}/, '图A 每学科一条线（dataKey=学科名）')
-  assert.match(profileView, /name=\{totalTypeLabel\(t\)\}/, '图B 线名用口径展示名')
+  assert.doesNotMatch(profileView, /各科成绩走势（原始分）/, '旧原始分走势标题不得残留')
+  assert.doesNotMatch(profileView, /visibleSubjects\.map|visibleTotals\.map/, '旧未分组渲染不得残留')
 })
 
 test('档案页历次明细表：总分组列 + 校名次小字 + 选修等级分小字 + 口径脚注（2026-10-22）', () => {
   assert.match(profileView, /totalTypeLabel\(t\)/, '总分列头走口径映射')
+  assert.match(profileView, /import \{ StudentScoreRadar, totalTypeLabel, type RadarExamRow \} from '@\/components\/students\/StudentScoreRadar'/, '口径映射与雷达组件同源导入')
   for (const [k, label] of [
     ['+3', '+3总分（等级和）'],
     ['主三门', '三门总分'],
@@ -312,7 +331,7 @@ test('档案页历次明细表：总分组列 + 校名次小字 + 选修等级�
     ['五门', '五门总分'],
     ['九门', '九门总分'],
   ]) {
-    assert.ok(profileView.includes(`'${k}': '${label}',`), `口径 ${k} 应映射为「${label}」`)
+    assert.ok(scoreRadar.includes(`'${k}': '${label}',`), `口径 ${k} 应映射为「${label}」（StudentScoreRadar 单一来源）`)
   }
   assert.match(profileView, /cell\.rank != null && \(/, '校名次非空才显示')
   assert.match(profileView, / · 第\{cell\.rank\}名/, '名次小字「 · 第N名」')

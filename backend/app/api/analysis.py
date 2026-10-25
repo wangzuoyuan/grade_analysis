@@ -1230,15 +1230,18 @@ def homeroom_trends(
     person_xueji = identity.xueji if identity is not None else None
 
     def _point(f: ScoreFact) -> TrendExamPoint:
+        # 来源年级百分位（0–1）的百分数表示（0–100），单科与总分统一下发
+        # （2026-10-25 雷达图「总分」轴定位用）；缺失 → null，不用分数推算
+        percentile_raw = defs.normalized_percentile(f.grade_percentile)
+        percentile = round(percentile_raw * 100, 2) if percentile_raw is not None else None
         if f.total_type is not None:
             # 总分：有效名次（共享口径，按学籍代码选列）；缺失 → null
             rank = defs.resolve_year_rank(f.xueji_rank, f.grade_rank, person_xueji)
             rank_basis = "school" if rank is not None else None
         else:
-            # 单科：百分位的百分数表示（0–100），明确标注 grade_percentile
+            # 单科：rank 即百分位的百分数表示（0–100），明确标注 grade_percentile
             # 依据；缺失 → null，不残留上次百分位、不用分数推算（P0-A1 保留）
-            percentile = defs.normalized_percentile(f.grade_percentile)
-            rank = round(percentile * 100, 2) if percentile is not None else None
+            rank = percentile
             rank_basis = "grade_percentile" if rank is not None else None
         return TrendExamPoint(
             exam_name=f.exam_name,
@@ -1247,6 +1250,7 @@ def homeroom_trends(
             grade_score=_grade_score_of(f),
             rank=rank,
             rank_basis=rank_basis,
+            percentile=percentile,
         )
 
     years_raw: Dict[int, dict] = {}

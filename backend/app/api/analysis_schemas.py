@@ -258,6 +258,10 @@ class TrendExamPoint(BaseModel):
     # 总分使用来源保存的学籍/年级名次。缺失时保持 null，不用分数推算。
     rank: Optional[float] = None
     rank_basis: Optional[str] = None
+    # 来源 grade_percentile 的百分数表示（0–100），单科与总分统一下发；
+    # 2026-10-25 学生成绩雷达图「总分」轴定位用（总分 rank 是名次、无法
+    # 直接落到 0–100 径向刻度）。缺失时保持 null，不用分数推算。
+    percentile: Optional[float] = None
 
 
 class TrendYearGroup(BaseModel):

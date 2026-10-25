@@ -803,6 +803,9 @@ export interface HomeroomTrendPoint {
   grade_score?: number | null
   rank: number | null
   rank_basis: 'school' | 'grade_percentile' | null
+  /** 来源 grade_percentile 的百分数（0–100），单科与总分统一下发（2026-10-25
+   *  契约 v2.9）；雷达图「总分」轴定位用，缺失为 null 不推算。旧后端无此字段。 */
+  percentile?: number | null
 }
 
 /** 一个学年的分段（结构上防止跨年连算，E03）。 */

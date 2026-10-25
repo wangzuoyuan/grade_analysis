@@ -131,3 +131,28 @@ S08（关联学生改号/同名身份确认，历史接续）→ §2.1 alias 追
 - 相关未确认操作失效（跨班批次包含目标班时整批失效）；相关已确认教学换届撤销凭据失效，普通已确认导入审计保留；关闭引用目标班的教学聊天和依赖其关联的聊天。来源映射标为已删除/不再有效。删除快照及变更前参照留本机 `ImportBatch`，不返回前端、不入 Git。
 - 已删除班 ID 不重用：删除事务保存 `HomeworkSetting.teaching_class_id_high_watermark`，`TeachingClass` ORM 创建统一原子分配后续编号（覆盖手动、导入、换届创建），不需 schema 迁移。删除后前端清理旧班选择、刷新目录/工作台；迟到预览和切范围前的凭据不再显示。
 - `impact`：`class_id/label/subject/academic_year_id/academic_year_name`，`member_count/membership_count/score_count/homework_count/submission_count/exclusion_count/link_count/pair_count/reference_count/invalidated_operations/closed_sessions`。成员人数去重，成员关系含历史多行。
+
+
+## 6.1 历次成绩雷达 + 走势图分口径（2026-10-25）
+
+用户拍板三项口径（AskUserQuestion 逐项确认）：
+
+- **雷达图**（新组件 `StudentScoreRadar`，两处共用：成绩分析页学生明细表行展开区 TrendPanel、
+  档案页「历次走势」卡上方独立卡）：每场考试一个半透明多边形重叠，图例按钮点选筛选考试；
+  轴值统一换算 0–100「位次分」，**越靠外越好**——年级前% 轴 = 100 − 前%，等级分轴 =
+  （等级分 − 40）÷ 30 × 100，悬浮提示显示原值（「前 x%」「等级分 xx」「3+3总分 · 第 N 名」）。
+- **总分轴**：位置按总分行的年级百分位换算（trends 端点为此新增 `percentile` 字段，见
+  p3 v2.9），悬浮显示校名次。口径优先级 3+3 / 九门 → 主三门 / 五门 → 第一个有名次的；
+  +3（等级分之和）无名次恒排除。
+- **轴数 > 7 拆两张**（高一九门场景）：主科雷达 = 语数英 + 总分，选科雷达 = 其余学科；
+  轴数 ≤ 7（高二/三 6 学科 + 总分）一张。全部数据驱动，不依赖年级配置。
+
+档案页走势图同步换口径（图A/图B 原始分折线退役，原始分仍在明细表）：
+
+- 图A1 各科年级前%走势：语数英/高一全科（任一考试有等级分的学科归 A2，数据驱动分组），
+  Y 轴 0–100 反转、刻度「前X%」、悬浮「前 x%（越小越靠前）」。
+- 图A2 加三等级分走势：Y 轴 40–70，悬浮「等级分 xx」。两组都非空（高二/三）分图展示，
+  仅前%组（高一）单图。
+- 图B 总分校名次走势：Y 轴反转、悬浮「第 N 名」，+3 不参与；多总分口径多线 + 图例筛选。
+- 缺考/缺指标不画点不连线（connectNulls=false 同口径）；examMatrix cell 补存
+  grade_percentile（0–1→0–100 百分数），report 端点无改动。

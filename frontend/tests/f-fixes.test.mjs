@@ -156,12 +156,14 @@ test('段位分布口径收窄 + 悬浮学生名单（2026-10-23）', () => {
   assert.match(apiV1, /export interface HomeroomBand \{[\s\S]*?names\?: string\[\]\n\}/, 'HomeroomBand 须带可选 names')
 })
 
-test('总分排名趋势图不画 +3（2026-10-24）', () => {
-  // +3 等级分之和无名次，画不出线只留空图例；单科趋势图不受影响
-  const idx = homeroomScores.indexOf('title="总分排名趋势"')
-  assert.ok(idx > 0, '应能定位总分排名趋势图调用点')
-  const trendCtx = homeroomScores.slice(idx, idx + 300)
-  assert.match(trendCtx, /year\.totals/, '趋势图数据源仍为 year.totals')
-  assert.match(trendCtx, /filter\(\(\[name\]\) => !RANKLESS_TOTALS\.has\(name\)\)/, 'series 必须过滤无名次总分（+3）')
-  assert.doesNotMatch(homeroomScores.slice(idx - 200, idx), /RANKLESS_TOTALS\.has\(name\)/, '单科年级排名趋势不得被过滤')
+test('展开区两张排名折线已换成历次雷达，+3 无名次不进总分轴（2026-10-25）', () => {
+  // 2026-10-25 用户裁决：明细表展开区「单科年级排名趋势/总分排名趋势」折线整体换成
+  // 历次重叠雷达（StudentScoreRadar）；+3 排除逻辑内聚到雷达组件
+  assert.match(homeroomScores, /<StudentScoreRadar rows=\{radarRowsFromTrendYear\(year\)\} \/>/, '展开区渲染雷达')
+  assert.match(homeroomScores, /function radarRowsFromTrendYear/, 'trends 响应 → 雷达行适配器')
+  assert.match(homeroomScores, /percentile: p\.percentile \?\? \(p\.rank_basis === 'grade_percentile' \? p\.rank : null\)/, '旧后端兼容：percentile 缺失回退前%')
+  assert.doesNotMatch(homeroomScores, /单科年级排名趋势|总分排名趋势|TrendChart/, '旧两张排名折线不得残留')
+  const radarSrc = readFileSync(new URL('../src/components/students/StudentScoreRadar.tsx', import.meta.url), 'utf8')
+  assert.match(radarSrc, /RADAR_EXCLUDED_TOTALS = new Set\(\['\+3'\]\)/, '+3（等级和）排除')
+  assert.match(radarSrc, /TOTAL_PRIORITY = \['3\+3', '九门', '主三门', '五门'\]/, '总分轴口径优先级')
 })

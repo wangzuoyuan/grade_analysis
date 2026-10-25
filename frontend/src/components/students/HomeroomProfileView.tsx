@@ -7,12 +7,14 @@
  * 1. 按当前绑定的行政班加载学生名册，支持顶部即时搜索与快速切换学生（URL ?person_id= 同步）；
  * 2. 学生基本资料卡（姓名、当前学号、座号、状态、学号演进历史）；
  * 3. 核心 KPI（最新总分、历次考试、成长记录条数）；
- * 4. 历次走势卡（图A 各科原始分走势 / 图B 各总分口径走势，图例按钮点选筛选）；
- * 5. 历次各科成绩明细表（多总分口径列 + 校名次小字 + 选修等级分小字；缺考严格显示「—」不转 0）；
- * 6. 班主任专属成长档案（谈话/家访/沟通，支持即时记录与跟进）；
- * 7. 个人作业与成绩分析（全科并列卡，StudentHomeworkSubjectsCard，homeroom 域）；
- * 8. 作业缺交记录卡片（HomeworkCard，homeroom 域；默认展开近 14 天异常，更早折叠）；
- * 9. 快捷打印家长会一页纸报告入口。
+ * 4. 历次成绩雷达卡（每场考试一个多边形重叠，轴值统一 0-100 位次分，2026-10-25）；
+ * 5. 历次走势卡（图A1 语数英/全科·年级前% + 图A2 加三·等级分（标准不同分图），
+ *    图B 总分·校名次；图例按钮点选筛选）；
+ * 6. 历次各科成绩明细表（多总分口径列 + 校名次小字 + 选修等级分小字；缺考严格显示「—」不转 0）；
+ * 7. 班主任专属成长档案（谈话/家访/沟通，支持即时记录与跟进）；
+ * 8. 个人作业与成绩分析（全科并列卡，StudentHomeworkSubjectsCard，homeroom 域）；
+ * 9. 作业缺交记录卡片（HomeworkCard，homeroom 域；默认展开近 14 天异常，更早折叠）；
+ * 10. 快捷打印家长会一页纸报告入口。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -29,6 +31,7 @@ import {
   Minus,
   NotebookPen,
   Printer,
+  Radar as RadarIcon,
   Search,
   Stethoscope,
   User,
@@ -78,12 +81,16 @@ import {
 } from '@/components/ui/table'
 import HomeworkCard from '@/components/HomeworkCard'
 import StudentHomeworkSubjectsCard from '@/components/students/StudentHomeworkSubjectsCard'
+import { StudentScoreRadar, totalTypeLabel, type RadarExamRow } from '@/components/students/StudentScoreRadar'
 import StudentNotes from '@/components/StudentNotes'
 import InterventionCard from '@/components/student/InterventionCard'
 import { DiagnosisCard } from '@/components/student/DiagnosisCard'
 import { cn } from '@/lib/utils'
 
 const DASH = '—'
+
+/** 图B 名次走势不参与的无名次总分口径（+3=等级分之和，与雷达总分轴/段位口径一致）。 */
+const PROFILE_RANKLESS_TOTALS = new Set<string>(['+3'])
 
 function fmtDate(v: string | null | undefined): string {
   return v ? v.slice(0, 10) : DASH
@@ -106,31 +113,23 @@ function statusLabel(s: string | null): string {
   return s
 }
 
+/** 报告响应的 grade_percentile 为 0–1，统一转百分数（0–100，两位小数）。 */
+function reportPercentile(v: number | null | undefined): number | null {
+  return v != null ? Math.round(v * 10000) / 100 : null
+}
+
 interface TrendPoint {
   exam_name: string
   exam_date: string | null
   score: number | null
 }
 
-/** 历次考试明细行：各科（原始分+选修等级分）× 全部总分口径（分数+校名次）。 */
+/** 历次考试明细行：各科（原始分+选修等级分+年级前%）× 全部总分口径（分数+校名次+年级前%）。 */
 interface ExamMatrixRow {
   exam_name: string
   exam_date: string | null
-  subjects: Record<string, { score: number | null; grade_score: number | null }>
-  totals: Record<string, { score: number | null; rank: number | null }>
-}
-
-/** 总分口径列头映射：学校导出口径名 → 展示名（未映射口径原样展示）。 */
-const TOTAL_TYPE_LABELS: Record<string, string> = {
-  '+3': '+3总分（等级和）',
-  '主三门': '三门总分',
-  '3+3': '3+3总分',
-  '五门': '五门总分',
-  '九门': '九门总分',
-}
-
-function totalTypeLabel(t: string): string {
-  return TOTAL_TYPE_LABELS[t] ?? t
+  subjects: Record<string, { score: number | null; grade_score: number | null; percentile: number | null }>
+  totals: Record<string, { score: number | null; rank: number | null; percentile: number | null }>
 }
 
 /** 走势折线分类色板（学科与总分口径共用，按键在全序列中的位置取色，切换显隐不漂移）。 */
@@ -351,6 +350,7 @@ export function HomeroomProfileView() {
         rowOf(e.exam_name, e.exam_date ?? null).totals[t.total_type] = {
           score: e.score,
           rank: e.rank ?? null,
+          percentile: reportPercentile(e.grade_percentile),
         }
       }
     }
@@ -361,6 +361,7 @@ export function HomeroomProfileView() {
         rowOf(e.exam_name, e.exam_date ?? null).subjects[sub.subject] = {
           score: e.score,
           grade_score: e.grade_score ?? null,
+          percentile: reportPercentile(e.grade_percentile),
         }
       }
     }
@@ -406,30 +407,74 @@ export function HomeroomProfileView() {
     })
   }, [])
 
-  const visibleSubjects = allSubjects.filter((s) => !hiddenSubjects.has(s))
-  const visibleTotals = totalTypes.filter((t) => !hiddenTotals.has(t))
+  // 图A 学科按标准分组（2026-10-25 用户拍板）：任一考试有等级分 → 等级分组（加三），
+  // 否则 → 年级前%组（语数英/高一全科）；两组都非空时刻度不同分图展示，数据驱动不依赖年级配置
+  const gradeSubjects = useMemo(
+    () => allSubjects.filter((s) => examMatrix.some((r) => r.subjects[s]?.grade_score != null)),
+    [allSubjects, examMatrix],
+  )
+  const percentileSubjects = useMemo(
+    () => allSubjects.filter((s) => !gradeSubjects.includes(s)),
+    [allSubjects, gradeSubjects],
+  )
 
-  // 图A数据：每行一场考试，键=学科名，值=原始分（缺考 null 断线不补连）
-  const subjectTrendRows = useMemo(
+  // 图A1 数据：键=学科名，值=年级前%（0–100，越小越靠前；缺考 null 断线不补连）
+  const percentileTrendRows = useMemo(
     () =>
       examMatrix.map((row) => {
         const item: Record<string, string | number | null> = { exam_name: row.exam_name }
-        for (const sub of allSubjects) item[sub] = row.subjects[sub]?.score ?? null
+        for (const sub of percentileSubjects) item[sub] = row.subjects[sub]?.percentile ?? null
         return item
       }),
-    [examMatrix, allSubjects],
+    [examMatrix, percentileSubjects],
   )
 
-  // 图B数据：键=总分口径，值=总分
-  const totalTrendRows = useMemo(
+  // 图A2 数据：键=加三学科名，值=等级分（40–70）
+  const gradeTrendRows = useMemo(
     () =>
       examMatrix.map((row) => {
         const item: Record<string, string | number | null> = { exam_name: row.exam_name }
-        for (const t of totalTypes) item[t] = row.totals[t]?.score ?? null
+        for (const sub of gradeSubjects) item[sub] = row.subjects[sub]?.grade_score ?? null
         return item
       }),
-    [examMatrix, totalTypes],
+    [examMatrix, gradeSubjects],
   )
+
+  // 图B 数据：键=总分口径，值=校名次（+3 无名次不参与）
+  const rankTotalTypes = useMemo(
+    () => totalTypes.filter((t) => !PROFILE_RANKLESS_TOTALS.has(t)),
+    [totalTypes],
+  )
+  const totalRankTrendRows = useMemo(
+    () =>
+      examMatrix.map((row) => {
+        const item: Record<string, string | number | null> = { exam_name: row.exam_name }
+        for (const t of rankTotalTypes) item[t] = row.totals[t]?.rank ?? null
+        return item
+      }),
+    [examMatrix, rankTotalTypes],
+  )
+
+  // 雷达数据行（组装见 StudentScoreRadar 的 RadarExamRow 契约）
+  const radarRows = useMemo<RadarExamRow[]>(
+    () =>
+      examMatrix.map((row) => ({
+        exam_key: `${row.exam_name}|${row.exam_date ?? ''}`,
+        exam_name: row.exam_name,
+        exam_date: row.exam_date,
+        subjects: Object.fromEntries(
+          Object.entries(row.subjects).map(([s, c]) => [s, { percentile: c.percentile, grade_score: c.grade_score }]),
+        ),
+        totals: Object.fromEntries(
+          Object.entries(row.totals).map(([t, c]) => [t, { percentile: c.percentile, rank: c.rank }]),
+        ),
+      })),
+    [examMatrix],
+  )
+
+  const visiblePercentileSubjects = percentileSubjects.filter((s) => !hiddenSubjects.has(s))
+  const visibleGradeSubjects = gradeSubjects.filter((s) => !hiddenSubjects.has(s))
+  const visibleRankTotals = rankTotalTypes.filter((t) => !hiddenTotals.has(t))
 
   // 最新一场总分与变化
   const latestTotal = totalTrend.length > 0 ? totalTrend[totalTrend.length - 1] : null
@@ -738,7 +783,25 @@ export function HomeroomProfileView() {
             academicYearId={scopeQ.academic_year_id}
           />
 
-          {/* 历次走势：图A 各科原始分 / 图B 各总分口径（图例按钮点选筛选，缺考点不连线） */}
+          {/* 历次成绩雷达（2026-10-25 用户拍板）：每场考试一个多边形重叠，轴值统一 0-100 位次分 */}
+          {examMatrix.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <RadarIcon className="h-4 w-4" />
+                  历次成绩雷达
+                </CardTitle>
+                <CardDescription>
+                  每场考试一个多边形重叠对比，轴值统一换算 0–100 位次分（越靠外越好）：语数英/高一全科按年级前%、加三按等级分、总分轴按总分年级百分位定位（悬浮显示第 N 名）。点击图例按钮筛选考试。
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <StudentScoreRadar rows={radarRows} />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* 历次走势：图A1 语数英/全科·年级前% + 图A2 加三·等级分（刻度不同分图）+ 图B 总分·校名次 */}
           {examMatrix.length > 0 && (
             <Card>
               <CardHeader>
@@ -747,15 +810,15 @@ export function HomeroomProfileView() {
                   历次走势
                 </CardTitle>
                 <CardDescription>
-                  图A 为各科原始分走势，图B 为各总分口径走势；点击图例按钮可筛选科目/口径（缺考点不连线）。
+                  图A 各科走势：语数英/高一全科按年级前%（越小越靠前），加三按等级分（40–70），标准不同分图展示；图B 总分按校名次（+3 无名次不参与）。点击图例按钮可筛选科目/口径，缺考点不连线。
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {allSubjects.length > 0 && (
+                {percentileSubjects.length > 0 && (
                   <div>
-                    <div className="mb-1.5 text-xs font-medium text-slate-600">图A · 各科成绩走势（原始分）</div>
+                    <div className="mb-1.5 text-xs font-medium text-slate-600">图A1 · 各科年级前%走势</div>
                     <div className="mb-2 flex flex-wrap gap-1.5">
-                      {allSubjects.map((sub) => {
+                      {percentileSubjects.map((sub) => {
                         const active = !hiddenSubjects.has(sub)
                         return (
                           <button
@@ -778,14 +841,14 @@ export function HomeroomProfileView() {
                         )
                       })}
                     </div>
-                    {visibleSubjects.length === 0 ? (
+                    {visiblePercentileSubjects.length === 0 ? (
                       <div className="flex h-56 items-center justify-center text-xs text-slate-400">
                         已隐藏全部学科，点击上方图例按钮恢复显示
                       </div>
                     ) : (
                       <div className="h-56 w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={subjectTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                          <LineChart data={percentileTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
                             <RXAxis
                               dataKey="exam_name"
                               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -794,15 +857,21 @@ export function HomeroomProfileView() {
                               textAnchor="end"
                               height={45}
                             />
-                            <RYAxis tick={{ fontSize: 11, fill: '#64748b' }} />
+                            <RYAxis
+                              reversed
+                              domain={[0, 100]}
+                              allowDecimals
+                              tick={{ fontSize: 11, fill: '#64748b' }}
+                              tickFormatter={(v: number) => `前${v}%`}
+                            />
                             <RTooltip
                               formatter={(val: unknown, name: unknown) => [
-                                val == null ? DASH : fmtScore(Number(val)),
+                                val == null ? DASH : `前 ${Number(val)}%（越小越靠前）`,
                                 String(name),
                               ]}
                               labelFormatter={(label) => `考试：${label}`}
                             />
-                            {visibleSubjects.map((sub) => (
+                            {visiblePercentileSubjects.map((sub) => (
                               <Line
                                 key={sub}
                                 type="monotone"
@@ -822,11 +891,82 @@ export function HomeroomProfileView() {
                   </div>
                 )}
 
-                {totalTypes.length > 0 && (
+                {gradeSubjects.length > 0 && (
                   <div>
-                    <div className="mb-1.5 text-xs font-medium text-slate-600">图B · 总分走势</div>
+                    <div className="mb-1.5 text-xs font-medium text-slate-600">图A2 · 加三等级分走势</div>
                     <div className="mb-2 flex flex-wrap gap-1.5">
-                      {totalTypes.map((t) => {
+                      {gradeSubjects.map((sub) => {
+                        const active = !hiddenSubjects.has(sub)
+                        return (
+                          <button
+                            key={sub}
+                            type="button"
+                            onClick={() => toggleSubject(sub)}
+                            aria-pressed={active}
+                            className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs transition-colors ${
+                              active
+                                ? 'border-slate-300 bg-white text-slate-700 shadow-sm'
+                                : 'border-slate-200 bg-slate-50 text-slate-400'
+                            }`}
+                          >
+                            <span
+                              className="h-2 w-2 rounded-full"
+                              style={{ backgroundColor: trendLineColor(allSubjects, sub) }}
+                            />
+                            {sub}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {visibleGradeSubjects.length === 0 ? (
+                      <div className="flex h-56 items-center justify-center text-xs text-slate-400">
+                        已隐藏全部学科，点击上方图例按钮恢复显示
+                      </div>
+                    ) : (
+                      <div className="h-56 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={gradeTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                            <RXAxis
+                              dataKey="exam_name"
+                              tick={{ fontSize: 11, fill: '#64748b' }}
+                              interval={0}
+                              angle={-15}
+                              textAnchor="end"
+                              height={45}
+                            />
+                            <RYAxis domain={[40, 70]} allowDecimals={false} tick={{ fontSize: 11, fill: '#64748b' }} />
+                            <RTooltip
+                              formatter={(val: unknown, name: unknown) => [
+                                val == null ? DASH : `等级分 ${fmtScore(Number(val))}`,
+                                String(name),
+                              ]}
+                              labelFormatter={(label) => `考试：${label}`}
+                            />
+                            {visibleGradeSubjects.map((sub) => (
+                              <Line
+                                key={sub}
+                                type="monotone"
+                                dataKey={sub}
+                                name={sub}
+                                stroke={trendLineColor(allSubjects, sub)}
+                                strokeWidth={2}
+                                dot={{ r: 3 }}
+                                connectNulls={false}
+                                isAnimationActive={false}
+                              />
+                            ))}
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {rankTotalTypes.length > 0 && (
+                  <div>
+                    <div className="mb-1.5 text-xs font-medium text-slate-600">图B · 总分校名次走势</div>
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {rankTotalTypes.map((t) => {
                         const active = !hiddenTotals.has(t)
                         return (
                           <button
@@ -849,14 +989,14 @@ export function HomeroomProfileView() {
                         )
                       })}
                     </div>
-                    {visibleTotals.length === 0 ? (
+                    {visibleRankTotals.length === 0 ? (
                       <div className="flex h-56 items-center justify-center text-xs text-slate-400">
                         已隐藏全部总分口径，点击上方图例按钮恢复显示
                       </div>
                     ) : (
                       <div className="h-56 w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={totalTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
+                          <LineChart data={totalRankTrendRows} margin={{ top: 10, right: 20, left: 0, bottom: 20 }}>
                             <RXAxis
                               dataKey="exam_name"
                               tick={{ fontSize: 11, fill: '#64748b' }}
@@ -865,15 +1005,15 @@ export function HomeroomProfileView() {
                               textAnchor="end"
                               height={45}
                             />
-                            <RYAxis tick={{ fontSize: 11, fill: '#64748b' }} />
+                            <RYAxis reversed allowDecimals={false} domain={['auto', 'auto']} tick={{ fontSize: 11, fill: '#64748b' }} />
                             <RTooltip
                               formatter={(val: unknown, name: unknown) => [
-                                val == null ? DASH : fmtScore(Number(val)),
+                                val == null ? DASH : `第 ${Number(val)} 名`,
                                 String(name),
                               ]}
                               labelFormatter={(label) => `考试：${label}`}
                             />
-                            {visibleTotals.map((t) => (
+                            {visibleRankTotals.map((t) => (
                               <Line
                                 key={t}
                                 type="monotone"

@@ -99,6 +99,10 @@ def p3_seed(v1_seed):
     old_physics = fact("homeroom", ay2.id, old_cls.id, s.jia_h_id, EXAM_OLD, "2025-01-10", "物理", None, 78.0)
     old_physics.grade_percentile = 0.12
     fact("homeroom", ay2.id, old_cls.id, s.jia_h_id, EXAM_OLD, "2025-01-10", "语文", None, 88.0)
+    # 2026-10-25 雷达图「总分」轴：总分行同时带年级百分位与名次（percentile 定位、rank 悬浮）
+    old_total = fact("homeroom", ay2.id, old_cls.id, s.jia_h_id, EXAM_OLD, "2025-01-10", None, "主三门", 240.0)
+    old_total.grade_percentile = 0.25
+    old_total.grade_rank = 8
 
     # 空态样本：H9（非绑定班）的考试——homeroom 域内存在、本班（H6）无行
     geng = wm.WsStudentIdentity(data_domain="homeroom", display_name="秦庚")
@@ -278,11 +282,19 @@ def test_e03_trends_grouped_by_year_without_cross_year_fields(client, p3_seed, v
     assert same_point["score"] == 88.0
     # 趋势点保留原始分数供详情，图表改用来源中的年级排名百分位；
     # 缺排名就保持 null，不从绝对分数推算。
-    assert set(e1_point) == {"exam_name", "exam_date", "score", "grade_score", "rank", "rank_basis"}
+    assert set(e1_point) == {"exam_name", "exam_date", "score", "grade_score", "rank", "rank_basis", "percentile"}
     assert e1_point["rank"] is None
+    assert e1_point["percentile"] is None
     old_point = old["subjects"]["物理"][0]
     assert old_point["rank"] == 12.0
     assert old_point["rank_basis"] == "grade_percentile"
+    # 2026-10-25 雷达「总分」轴：percentile 单科与总分统一下发（0–100）；
+    # 总分行 rank 仍是校名次口径（rank_basis=school），不与 percentile 混用
+    assert old_point["percentile"] == 12.0
+    old_total_point = old["totals"]["主三门"][0]
+    assert old_total_point["rank"] == 8
+    assert old_total_point["rank_basis"] == "school"
+    assert old_total_point["percentile"] == 25.0
 
 
 def test_e03_trends_person_out_of_scope_404(client, p3_seed, v1_seed):
