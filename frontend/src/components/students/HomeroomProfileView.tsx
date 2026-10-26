@@ -101,6 +101,29 @@ function fmtScore(v: number | null | undefined): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(1)
 }
 
+/** KPI「最新考试总分」较上一场同口径的涨跌徽标：任一侧缺失不显示。 */
+function KpiDiffBadge({ latest, prev }: { latest: number | null; prev: number | null | undefined }) {
+  if (latest == null || prev == null) return null
+  const diff = latest - prev
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center text-xs font-medium',
+        diff > 0 ? 'text-success-600' : diff < 0 ? 'text-danger-600' : 'text-slate-500',
+      )}
+    >
+      {diff > 0 ? (
+        <ArrowUpRight className="h-3 w-3" />
+      ) : diff < 0 ? (
+        <ArrowDownRight className="h-3 w-3" />
+      ) : (
+        <Minus className="h-3 w-3" />
+      )}
+      {diff > 0 ? `+${diff.toFixed(1)}` : diff.toFixed(1)}
+    </span>
+  )
+}
+
 function nameInitial(name: string | null): string {
   if (!name) return '?'
   return name.trim().charAt(0)
@@ -116,12 +139,6 @@ function statusLabel(s: string | null): string {
 /** 报告响应的 grade_percentile 为 0–1，统一转百分数（0–100，两位小数）。 */
 function reportPercentile(v: number | null | undefined): number | null {
   return v != null ? Math.round(v * 10000) / 100 : null
-}
-
-interface TrendPoint {
-  exam_name: string
-  exam_date: string | null
-  score: number | null
 }
 
 /** 历次考试明细行：各科（原始分+选修等级分+年级前%）× 全部总分口径（分数+校名次+年级前%）。 */
@@ -316,19 +333,6 @@ export function HomeroomProfileView() {
     }
   }
 
-  // 主口径总分序列：KPI「最新考试总分/涨跌」用。后端规范排序后 totals[0] 即主口径
-  // （高一=主三门/五门/九门，高二三=+3/主三门/3+3，语数英在前）。
-  const totalTrend = useMemo<TrendPoint[]>(() => {
-    if (!report || !report.totals || report.totals.length === 0) return []
-    const totalGroup = report.totals[0]
-    const exams = totalGroup?.exams ?? []
-    return exams.map((e) => ({
-      exam_name: e.exam_name,
-      exam_date: e.exam_date ?? null,
-      score: e.score,
-    }))
-  }, [report])
-
   // 历次考试明细整合：各科（原始分+选修等级分）× 全部总分口径（分数+校名次），不再只取 totals[0]
   const examMatrix = useMemo<ExamMatrixRow[]>(() => {
     if (!report) return []
@@ -476,10 +480,10 @@ export function HomeroomProfileView() {
   const visibleGradeSubjects = gradeSubjects.filter((s) => !hiddenSubjects.has(s))
   const visibleRankTotals = rankTotalTypes.filter((t) => !hiddenTotals.has(t))
 
-  // 最新一场总分与变化
-  const latestTotal = totalTrend.length > 0 ? totalTrend[totalTrend.length - 1] : null
-  const prevTotal = totalTrend.length > 1 ? totalTrend[totalTrend.length - 2] : null
-  const totalDiff = latestTotal?.score != null && prevTotal?.score != null ? latestTotal.score - prevTotal.score : null
+  // KPI「最新考试总分」取数与历次考试记录同源：examMatrix 末行=最新一场（各口径同场可比），
+  // 倒数第二行=上一场（同口径涨跌对比）；某口径该场缺失显示「—」，不回退到更早一场。
+  const latestExamRow = examMatrix.length > 0 ? examMatrix[examMatrix.length - 1] : null
+  const prevExamRow = examMatrix.length > 1 ? examMatrix[examMatrix.length - 2] : null
 
   // 门禁：若当前处于 teaching 工作台，引导切换
   if (mode === 'teaching') {
@@ -718,37 +722,37 @@ export function HomeroomProfileView() {
           {/* 核心学情 KPI */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <Card>
-              <CardContent className="space-y-1 py-5">
+              <CardContent className="space-y-1.5 py-5">
                 <div className="text-xs font-medium text-slate-500">最新考试总分</div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tracking-tight text-slate-900">
-                    {latestTotal?.score != null ? fmtScore(latestTotal.score) : DASH}
-                  </span>
-                  {totalDiff != null && (
-                    <span
-                      className={cn(
-                        'inline-flex items-center text-xs font-medium',
-                        totalDiff > 0
-                          ? 'text-success-600'
-                          : totalDiff < 0
-                          ? 'text-danger-600'
-                          : 'text-slate-500',
-                      )}
-                    >
-                      {totalDiff > 0 ? (
-                        <ArrowUpRight className="h-3 w-3" />
-                      ) : totalDiff < 0 ? (
-                        <ArrowDownRight className="h-3 w-3" />
-                      ) : (
-                        <Minus className="h-3 w-3" />
-                      )}
-                      {totalDiff > 0 ? `+${totalDiff.toFixed(1)}` : totalDiff.toFixed(1)}
-                    </span>
-                  )}
-                </div>
-                <div className="text-[11px] text-slate-400">
-                  {latestTotal ? `考试：${latestTotal.exam_name}` : '暂无总分记录'}
-                </div>
+                {latestExamRow && totalTypes.length > 0 ? (
+                  <>
+                    {totalTypes.map((t) => {
+                      const cell = latestExamRow.totals[t]
+                      return (
+                        <div key={t} className="flex items-baseline justify-between gap-2">
+                          <span className="text-xs text-slate-500">{totalTypeLabel(t)}</span>
+                          <span className="flex items-baseline gap-1.5 whitespace-nowrap">
+                            <span className="text-lg font-bold tabular-nums tracking-tight text-slate-900">
+                              {cell?.score != null ? fmtScore(cell.score) : DASH}
+                            </span>
+                            <KpiDiffBadge latest={cell?.score ?? null} prev={prevExamRow?.totals[t]?.score} />
+                            {cell?.rank != null && (
+                              <span className="text-[11px] text-slate-400">· 第{cell.rank}名</span>
+                            )}
+                          </span>
+                        </div>
+                      )
+                    })}
+                    <div className="text-[11px] text-slate-400">
+                      考试：{latestExamRow.exam_name}；『第N名』为校名次
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-2xl font-bold tracking-tight text-slate-900">{DASH}</div>
+                    <div className="text-[11px] text-slate-400">暂无总分记录</div>
+                  </>
+                )}
               </CardContent>
             </Card>
 

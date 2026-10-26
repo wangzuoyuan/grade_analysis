@@ -86,6 +86,35 @@ test('档案页明细表消费 report.totals 全部口径（score+rank）与各�
     '总分口径收集分数与校名次',
   )
   assert.match(profileView, /grade_score: e\.grade_score \?\? null/, '各科单元格保留 grade_score')
-  // KPI「最新考试总分」仍取 totals[0]（后端规范序后第一个即主口径）
-  assert.match(profileView, /const totalGroup = report\.totals\[0\]/, 'KPI 主口径取 totals[0]')
+})
+
+test('档案页 KPI「最新考试总分」逐口径显示分数+涨跌+校名次（2026-10-26）', () => {
+  const profileView = readFileSync(
+    new URL('../src/components/students/HomeroomProfileView.tsx', import.meta.url),
+    'utf8',
+  )
+  // 取数与历次考试记录同源：examMatrix 末行=最新一场（各口径同场可比），倒数第二行=上一场（涨跌）
+  assert.match(
+    profileView,
+    /const latestExamRow = examMatrix\.length > 0 \? examMatrix\[examMatrix\.length - 1\] : null/,
+    '最新一场取 examMatrix 末行',
+  )
+  assert.match(
+    profileView,
+    /const prevExamRow = examMatrix\.length > 1 \? examMatrix\[examMatrix\.length - 2\] : null/,
+    '上一场取 examMatrix 倒数第二行',
+  )
+  assert.doesNotMatch(profileView, /const totalGroup = report\.totals\[0\]/, '旧 totals[0] 主口径取数退役')
+  assert.doesNotMatch(profileView, /totalTrend/, '旧 totalTrend 序列退役')
+  // 逐口径行：口径展示名 + 分数 + 涨跌徽标 + 校名次小字
+  assert.match(profileView, /totalTypes\.map\(\(t\) => \{/, 'KPI 按后端规范序逐口径渲染')
+  assert.match(profileView, /\{totalTypeLabel\(t\)\}/, '口径标签走 totalTypeLabel 单一来源')
+  assert.match(
+    profileView,
+    /KpiDiffBadge latest=\{cell\?\.score \?\? null\} prev=\{prevExamRow\?\.totals\[t\]\?\.score\}/,
+    '每个口径带较上一场同口径的涨跌徽标',
+  )
+  assert.match(profileView, /· 第\{cell\.rank\}名/, 'rank 在场时显示校名次小字')
+  assert.match(profileView, /『第N名』为校名次/, 'KPI 脚注注明名次口径')
+  assert.match(profileView, /暂无总分记录/, '空态保留')
 })
