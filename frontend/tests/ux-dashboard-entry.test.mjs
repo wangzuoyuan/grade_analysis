@@ -335,7 +335,7 @@ test('同科多批次显示具体作业名区分（英语 · 练习册 / 英语 
   assert.doesNotMatch(warningsPanel, /\{teaching &&/, '预警时间轴的作业名标注不得再限定教学工作台')
 })
 
-test('作业跟进重构：展开区无学科页签，透视卡片直达缺交并带编辑/撤销入口', () => {
+test('作业跟进重构：展开区无学科页签，透视卡片直达缺交并带编辑/删除入口', () => {
   const table = readFileSync(new URL('../src/components/homework/AssignmentTable.tsx', import.meta.url), 'utf8')
   const apiV1 = readFileSync(new URL('../src/lib/api-v1.ts', import.meta.url), 'utf8')
 
@@ -346,11 +346,12 @@ test('作业跟进重构：展开区无学科页签，透视卡片直达缺交�
   // 2. 学科卡片整卡可点：进入该批次单科明细并默认筛选缺交
   assert.match(table, /onSelectSubject\(a\.assignment_id, 'missing'\)/, '学科卡片点击须直达该科明细并默认缺交筛选')
 
-  // 3. 卡片右上角 ✏️/🗑 小图标：复用既有编辑弹窗与撤销流程，stopPropagation 防触发整卡点击
+  // 3. 卡片右上角 ✏️/🗑 小图标：复用既有编辑弹窗与删除流程（2026-10-26 物理删除），stopPropagation 防触发整卡点击
   assert.match(table, /编辑批次（改日期\/作业名\/学科）/, '卡片 ✏️ 须提示打开编辑批次弹窗')
-  assert.match(table, /title="撤销批次"/, '卡片 🗑 须提示撤销批次')
+  assert.match(table, /title="删除批次（不可恢复）"/, '卡片 🗑 须提示删除批次且不可恢复')
+  assert.doesNotMatch(table, /title="撤销批次"/, '不得再出现撤销批次提示（删除即物理删除）')
   assert.match(table, /e\.stopPropagation\(\)\s*\n\s*onEdit\?\.\(a\)/, '编辑图标须阻止冒泡')
-  assert.match(table, /e\.stopPropagation\(\)\s*\n\s*onRevoke\?\.\(a\)/, '撤销图标须阻止冒泡')
+  assert.match(table, /e\.stopPropagation\(\)\s*\n\s*onRevoke\?\.\(a\)/, '删除图标须阻止冒泡')
 
   // 4. 单科明细头部「← 返回全科透视」：仅按日合并且当日多批次时提供
   assert.match(table, /onBackToOverview\?: \(\) => void/, '明细视图须声明可选返回回调')

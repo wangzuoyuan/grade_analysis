@@ -422,7 +422,9 @@ def _window_rates(
     - 显式缺交 → 只进分母；请假/忘带/出勤异常行 → 分子分母都不进。
     """
     from app.api.homework import (
+        _adjusted_submission,
         _attendance_of,
+        _day_exception_flags,
         _effective_status,
         _forgot_of,
         _parse_expected_ids,
@@ -434,6 +436,7 @@ def _window_rates(
     numer: Dict[int, int] = {}
     denom: Dict[int, int] = {}
     excluded_batches = 0
+    batch_list = []
     for a, mapping in _visible_assignments(db, ctx, active_only=True):
         if not (window_start <= a.assigned_date < window_end_exclusive):
             continue  # 窗口不含考试当日与考后批次，也不含窗口前批次
@@ -441,18 +444,25 @@ def _window_rates(
             continue
         if homework_type is not None and a.homework_type != homework_type:
             continue
+        batch_list.append((a, mapping))
+    # 按天映射（2026-10-26）：当天其他批次登记的请假/出勤异常修正行口径
+    day_flags = _day_exception_flags(db, ctx, [a.assigned_date for a, _m in batch_list])
+    for a, mapping in batch_list:
         if not _parse_expected_ids(a.expected_members_json):
             excluded_batches += 1  # 分母未知：整批剔除，绝不默认已交
             continue
         expected_reader = _projected_expected(db, a, mapping)
         rows = _projected_submissions(db, a, mapping)
         row_by_reader = {rid: s for s, rid in rows}
+        flags_by_pid = day_flags.get(a.assigned_date) or {}
         for rid in expected_reader:
-            status = _effective_status(row_by_reader[rid]) if rid in row_by_reader else "submitted"
+            adjusted = _adjusted_submission(
+                a, rid, row_by_reader.get(rid), flags_by_pid.get(rid)
+            )
+            status = _effective_status(adjusted)
             if status == "excused":
                 continue  # 请假：不计分子分母
-            row = row_by_reader.get(rid)
-            if row is not None and (_attendance_of(row.evaluation) or _forgot_of(row.evaluation)):
+            if _attendance_of(adjusted.evaluation) or _forgot_of(adjusted.evaluation):
                 continue  # 出勤/忘带：不计分子分母
             denom[rid] = denom.get(rid, 0) + 1
             if status != "missing":

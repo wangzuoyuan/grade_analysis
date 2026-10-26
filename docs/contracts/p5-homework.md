@@ -1,4 +1,4 @@
-# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.3，2026-10-25 冲突配对收窄到同作业种类——同日同学科不同种类=两份作业放行并照实计数）
+# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.4，2026-10-26 删除改物理删除 + 请假/出勤异常按天映射；v1.3=2026-10-25 冲突配对收窄到同作业种类）
 
 依 `docs/planning/03-architecture.md` §4、`05-acceptance.md`（H01–H06）、
 ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-api.md v2 §2.1（R10 已落地，
@@ -17,8 +17,13 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 - 双向共享：assignment 归属一域（data_domain + class_ref_id）；对侧经 **active link + 期满 +
   LinkedStudent 交集 + share_categories 含 current_subject_homework** 才可读/写同一事实（读走
   _queries 同风格的门；写走带 link 校验的端点）。其他教学班/其他学科绝不互见。
-- 修订：编辑/撤销递增 assignment.revision（乐观锁，旧版改 409）；撤销（status='revoked'）前有
-  后续依赖（其上有评价编辑）→ 409 列冲突，不覆盖。
+- 修订：编辑递增 assignment.revision（乐观锁，旧版改 409）。
+- **v1.4（2026-10-26）删除即物理删除**：`DELETE` 直接删除批次与全部逐人行
+  （及其衍生的忘带/出勤溯源笔记 `WsStudentNote.source=homework:{id}`），不再写
+  `status='revoked'` 撤销记录；删除前有**晚于批次创建的评价/状态编辑 → 409 列
+  冲突清单**（防误删护栏与原撤销一致，无强制删除口）。G02 跨域边界不变（整批
+  删除仅数据归属域可发起）。列表端点只返回 active 批次——存量 revoked 行保留
+  在库但不再下发（不做破坏性迁移）。删除后同日同科同种类可直接重录。
 - **v2（G01/G02/G03）跨域共享的事件时点门与写边界**：
   - 读与写统一按 `assignment.assigned_date` 逐批次核验：link active 且 assigned_date 在
     [valid_from, valid_to] 内、assigned_date >= max(valid_from, share_history_from ?? valid_from)、
@@ -78,11 +83,32 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 
 - `PATCH /api/v1/homework/assignments/{id}` `{revision, rows?: [...], due_date?}`：revision 不符 409；
   逐行 upsert submission（唯一键 (assignment_id, person_id)）；行内矛盾（同人同批两种状态）422。
-- `DELETE /api/v1/homework/assignments/{id}`：软撤销 status='revoked'；其上有**晚于创建的**评价编辑
-  → 409 列冲突清单；否则成功。撤销后指标即时重算。
+- `DELETE /api/v1/homework/assignments/{id}`：**物理删除**（2026-10-26）：逐人行、
+  批次与 `homework:{id}` 溯源笔记一并删除；其上有**晚于创建的**评价编辑 → 409 列冲突清单；
+  否则成功，响应 `status="deleted"`。指标即时重算；对侧详情随之 404。
 - `GET /api/v1/homework/assignments/{id}` → 详情（含 submissions 与 expected_members）。
   教学工作台展开批次的逐人明细在前端按姓名拼音升序（同姓再按名字，同名按 person_id），
   全部/缺交/已交等筛选及行编辑沿用同一排序；不改 API 顺序或班主任作业名单的展示顺序。
+
+## 1.4 请假/出勤异常按天映射（2026-10-26）
+
+当天任何**可见批次**（本域班 + 经作业共享门的关联班批次、仅事件时点授权成员）
+上登记的请假（`excused`）与出勤异常（评价含 迟到/没来/早退/旷课/缺课/缺席，
+含考勤批次缺勤行）是该生当天的出勤事实，读取时自动映射到当天其他可见批次：
+
+- **请假**：该生当天非考勤批次一律按 `excused`（无条件覆盖，full 台账展开的
+  已交行同样翻转——请假了就不可能有已交；认为确已交付应修正请假记录本身）。
+  分母扣除、缺交计数剔除、连缺跳过。
+- **出勤异常**：该生缺交行补注出勤文本（考勤缺勤行无文本时回退「缺席」）；
+  缺交计数保留、纯缺交/连缺跳过（与同批次缺交+迟到既有口径一致）。
+- 优先级：请假 > 出勤异常 > 原状态；考勤批次只作映射来源、不作映射目标；
+  已删除批次不参与，存量 revoked 批次不参与；作业共享关闭时不跨域映射。
+- **读取即映射、零数据迁移**，历史记录同样生效。单一实现
+  `_day_exception_flags`（按天聚合事实）+ `_adjusted_submission`（临时行修正，
+  绝不写库），消费方：列表项计数与 `*_ids` 数组、批次详情、看板聚合、
+  confirm/patch 回执、preview 展示装饰（附提示语）、学生事件流/画像连缺、
+  预警 missing_count、相关性提交率、逐科作业分析（诊断 features/attention
+  经事件加载器自动继承），前端天级透视与胶囊由列表 id 数组自动跟随。
 
 ## 2. 读取 / 看板
 

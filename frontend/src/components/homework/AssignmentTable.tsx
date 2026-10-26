@@ -5,14 +5,14 @@
  *
  * 约束：
  * - 并发保护仅在后台携带版本值，页面只提示“内容已更新”；
- * - 撤销前 window.confirm，409 冲突清单（该批次有后续评价编辑）
- *   原样展示，绝不静默撤销；
+ * - 删除前 window.confirm（物理删除不可恢复），409 冲突清单（该批次有
+ *   后续评价编辑）原样展示，绝不静默删除；
  * - 请求序号按资源分离（F11）：列表 / 看板 / 行详情互不作废——共用一个序号时，
  *   任一资源重拉会把其他资源的合法回包当过期丢弃。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, ChevronDown, ClipboardList, Pencil, RefreshCw, Trash2, Undo2 } from 'lucide-react'
+import { AlertCircle, ChevronDown, ClipboardList, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 
 export type HomeworkDetailFilter =
   | 'all'
@@ -133,8 +133,6 @@ export interface HomeworkDayGroup {
   totalExcused: number
   totalAttendance: number
   totalNegative: number
-  hasRevoked: boolean
-  allRevoked: boolean
 }
 
 /** 数字单元格与筛选胶囊的统一配色口径（缺交=玫红、请假=蓝、已交=绿、出勤=琥珀、负面=紫）。 */
@@ -536,7 +534,7 @@ export function AssignmentTable({
   const [patching, setPatching] = useState(false)
   const [patchError, setPatchError] = useState<string | null>(null)
 
-  // 撤销状态（409 冲突清单单独呈现）
+  // 删除状态（409 冲突清单单独呈现）
   const [revoking, setRevoking] = useState(false)
   const [revokeError, setRevokeError] = useState<string | null>(null)
   const [revokeConflicts, setRevokeConflicts] = useState<HomeworkRevokeConflict[] | null>(null)
@@ -574,7 +572,6 @@ export function AssignmentTable({
       let rawExcusedSum = 0
       let rawAttendanceSum = 0
       let rawNegativeSum = 0
-      let revokedCount = 0
 
       const excusedSet = new Set<number>()
       const missingSet = new Set<number>()
@@ -592,7 +589,6 @@ export function AssignmentTable({
         rawExcusedSum += a.excused
         rawAttendanceSum += a.attendance_count || (a.subject === '考勤' ? (a.missing || 0) : 0)
         rawNegativeSum += a.negative_count || 0
-        if (a.status === 'revoked') revokedCount++
 
         if (a.excused_ids || a.missing_ids || a.attendance_ids || a.negative_ids) {
           hasIdInfo = true
@@ -620,8 +616,6 @@ export function AssignmentTable({
         totalExcused,
         totalAttendance,
         totalNegative,
-        hasRevoked: revokedCount > 0,
-        allRevoked: revokedCount === list.length,
       })
     }
     return groups
@@ -826,7 +820,7 @@ export function AssignmentTable({
   async function revoke(a: HomeworkAssignmentListItem) {
     if (
       !window.confirm(
-        `确认撤销批次「${a.subject}${showType ? ` ${a.homework_type}` : ''} ${a.assigned_date}」？撤销后不再计入统计，且不可在此界面恢复。`,
+        `确认删除批次「${a.subject}${showType ? ` ${a.homework_type}` : ''} ${a.assigned_date}」？删除后记录连同逐人收交明细一起彻底移除，不可恢复。`,
       )
     ) {
       return
@@ -841,9 +835,9 @@ export function AssignmentTable({
     } catch (err) {
       const conflicts = readHomeworkRevokeConflicts(err)
       if (conflicts != null) {
-        // 409 + conflicts：该批次有后续评价编辑，后端拒绝撤销；清单原样展示，不静默撤销
+        // 409 + conflicts：该批次有后续评价编辑，后端拒绝删除；清单原样展示，不静默删除
         setRevokeConflicts(conflicts)
-        setRevokeError('该批次存在后续评价编辑，撤销被拒绝；请先核对以下冲突清单')
+        setRevokeError('该批次存在后续评价编辑，删除被拒绝；请先核对以下冲突清单')
       } else {
         setRevokeError(apiErrorMessage(err))
       }
@@ -957,7 +951,7 @@ export function AssignmentTable({
         </CardContent>
       </Card> : null}
 
-      {/* 撤销 409 冲突清单：原样展示，提示先核对再处理 */}
+      {/* 删除 409 冲突清单：原样展示，提示先核对再处理 */}
       {!summaryOnly && revokeConflicts != null ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
           <p className="flex items-start gap-2 font-medium">
@@ -1591,9 +1585,9 @@ function DayGroupOverview({
   onSelectSubject: (assignmentId: number, filter?: HomeworkDetailFilter) => void
   /** 卡片右上角 ✏️：打开既有修改批次信息弹窗。 */
   onEdit?: (assignment: HomeworkAssignmentListItem) => void
-  /** 卡片右上角 🗑：走既有撤销流程（window.confirm + 409 冲突清单拦截）。 */
+  /** 卡片右上角 🗑：走既有删除流程（window.confirm + 409 冲突清单拦截）。 */
   onRevoke?: (assignment: HomeworkAssignmentListItem) => void
-  /** 撤销请求进行中：禁用撤销图标防重复提交。 */
+  /** 删除请求进行中：禁用删除图标防重复提交。 */
   revoking?: boolean
 }) {
   const [loading, setLoading] = useState(true)
@@ -1820,7 +1814,7 @@ function DayGroupOverview({
       </div>
 
       {/* 仅在 activeFilter === 'all' 时展示顶部各学科概况卡片（更扁更窄，一行约 6 张）：
-          整卡点击进该科明细并默认筛选缺交；右上角 ✏️/🗑 走既有编辑弹窗与撤销流程 */}
+          整卡点击进该科明细并默认筛选缺交；右上角 ✏️/🗑 走既有编辑弹窗与删除流程 */}
       {activeFilter === 'all' ? (
         <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-2">
           {assignments.map((a) => {
@@ -1847,9 +1841,7 @@ function DayGroupOverview({
                 }}
                 className={cn(
                   'rounded-lg border px-2 py-1.5 transition-all cursor-pointer hover:shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  a.status === 'revoked'
-                    ? 'border-slate-200 bg-slate-50/60 opacity-60'
-                    : isAtt
+                  isAtt
                       ? hasAbnormal
                         ? 'border-amber-200 bg-amber-50/40 hover:border-amber-300'
                         : hasExcused
@@ -1864,44 +1856,38 @@ function DayGroupOverview({
                   <span className="truncate text-xs font-medium text-slate-800" title={cardLabel}>
                     {cardLabel}
                   </span>
-                  {a.status === 'active' ? (
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      <button
-                        type="button"
-                        aria-label="编辑批次"
-                        title="编辑批次（改日期/作业名/学科）"
-                        className="rounded p-0.5 text-slate-400 hover:bg-brand-50 hover:text-brand-600 cursor-pointer"
-                        onClick={(e) => {
-                          // 阻止冒泡：图标按钮不触发整卡点击
-                          e.stopPropagation()
-                          onEdit?.(a)
-                        }}
-                      >
-                        <Pencil className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="撤销批次"
-                        title="撤销批次"
-                        disabled={revoking}
-                        className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer disabled:opacity-40"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onRevoke?.(a)
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ) : (
-                    <span className="shrink-0 text-[10px] text-slate-400">已撤销</span>
-                  )}
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      aria-label="编辑批次"
+                      title="编辑批次（改日期/作业名/学科）"
+                      className="rounded p-0.5 text-slate-400 hover:bg-brand-50 hover:text-brand-600 cursor-pointer"
+                      onClick={(e) => {
+                        // 阻止冒泡：图标按钮不触发整卡点击
+                        e.stopPropagation()
+                        onEdit?.(a)
+                      }}
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="删除批次"
+                      title="删除批次（不可恢复）"
+                      disabled={revoking}
+                      className="rounded p-0.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer disabled:opacity-40"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onRevoke?.(a)
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
                 </div>
                 <div className="mt-1 flex items-center justify-between gap-1 text-[11px] text-slate-500">
                   <span className="truncate">
-                    {a.status === 'revoked' ? (
-                      '批次已撤销'
-                    ) : isAtt ? (
+                    {isAtt ? (
                       hasAbnormal ? (
                         <>
                           出勤异常 <span className="font-semibold text-amber-600">{abnormalCount}</span>
@@ -2243,9 +2229,7 @@ function DayGroupRow({
                   }}
                   className={cn(
                     'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs transition-colors cursor-pointer border',
-                    a.status === 'revoked'
-                      ? 'bg-slate-100 text-slate-400 border-slate-200 line-through'
-                      : isAtt
+                    isAtt
                         ? hasAbnormal
                           ? 'bg-amber-50 text-amber-700 border-amber-200 font-medium hover:bg-amber-100'
                           : hasExcused
@@ -2257,9 +2241,7 @@ function DayGroupRow({
                   )}
                 >
                   <span>{isAtt ? '📋 出勤' : subjectWithContent(a.subject, a.homework_type)}</span>
-                  {a.status === 'revoked' ? (
-                    <span className="text-[10px] text-slate-400">已撤销</span>
-                  ) : isAtt ? (
+                  {isAtt ? (
                     hasAbnormal ? (
                       <span className="text-[11px] font-semibold text-amber-600">
                         {`出勤异常 ${abnormalCount}${hasExcused ? ` · 请假 ${excusedCount}` : ''}`}
@@ -2277,9 +2259,6 @@ function DayGroupRow({
                 </button>
               )
             })}
-            {group.hasRevoked && !group.allRevoked ? (
-              <span className="text-[11px] text-slate-400 ml-1">含撤销批次</span>
-            ) : null}
           </div>
         </TableCell>
         <NumberFilterCell
@@ -2338,7 +2317,7 @@ function DayGroupRow({
           <TableCell colSpan={8} className="bg-slate-50/70 p-4">
             <div className="space-y-3">
               {/* 展开区标题行：全科透视只留小标题+提示（原学科页签行已删，点卡片进单科明细）；
-                  单科明细态保留编辑/撤销入口（单批次日没有透视卡片，这里是唯一撤销入口） */}
+                  单科明细态保留编辑/删除入口（单批次日没有透视卡片，这里是唯一删除入口） */}
               <div className={cn('flex flex-wrap items-center justify-between gap-2', !(activeTab === 'overview' && group.assignments.length > 1) && 'border-b border-slate-200/80 pb-2.5')}>
                 {activeTab === 'overview' && group.assignments.length > 1 ? (
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -2366,8 +2345,8 @@ function DayGroupRow({
                       disabled={revoking}
                       onClick={() => onRevoke(activeAssignment)}
                     >
-                      <Undo2 className="h-3.5 w-3.5 mr-1" />
-                      撤销「{activeAssignment.subject}」批次
+                      <Trash2 className="h-3.5 w-3.5 mr-1" />
+                      删除「{activeAssignment.subject}」批次
                     </Button>
                   </div>
                 ) : null}
@@ -2504,33 +2483,27 @@ function FragmentRow({
         />
         <TableCell className="print:hidden" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center gap-1">
-            {item.status === 'active' ? (
-              <>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="编辑批次信息"
-                  title="编辑批次信息（修改种类、日期等）"
-                  onClick={onEdit}
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="撤销批次"
-                  title="撤销批次"
-                  disabled={revoking}
-                  onClick={onRevoke}
-                >
-                  <Undo2 className="h-4 w-4" />
-                </Button>
-              </>
-            ) : (
-              <span className="text-xs text-slate-400">已撤销</span>
-            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="编辑批次信息"
+              title="编辑批次信息（修改种类、日期等）"
+              onClick={onEdit}
+            >
+              <Pencil className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="删除批次"
+              title="删除批次（不可恢复）"
+              disabled={revoking}
+              onClick={onRevoke}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
             <button
               type="button"
               className="p-1 rounded hover:bg-slate-100 cursor-pointer"

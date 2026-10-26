@@ -49,7 +49,7 @@ export function homeworkStatusLabel(status: string): string {
   return STATUS_LABELS[status] ?? '已交'
 }
 
-/** 批次状态标签（active/revoked）。 */
+/** 批次状态标签（2026-10-26 起删除即物理删除，接口只回 active；保留兜底）。 */
 export function assignmentStatusLabel(status: string): string {
   if (status === 'active') return '有效'
   if (status === 'revoked') return '已撤销'

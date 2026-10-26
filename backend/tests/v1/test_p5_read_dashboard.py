@@ -221,10 +221,11 @@ def test_assignment_list_filters(client, v1_seed):
     assert math_none["total"] == 0
 
 
-def test_detail_patch_due_date_revoke_flow(client, v1_seed):
-    """详情 → PATCH due_date（批次级编辑不产生行依赖）→ 撤销成功；
-    撤销后 detail status=revoked，existing_batches 不再计入（指标即时重算）。
-    （行级评价编辑的撤销阻塞见 test_revoke_conflict_lists_edited_submissions。）"""
+def test_detail_patch_due_date_delete_flow(client, v1_seed):
+    """详情 → PATCH due_date（批次级编辑不产生行依赖）→ 删除成功；
+    2026-10-26 起删除是物理删除：detail 随之 404、列表不再返回、
+    existing_batches 不再计入（同日同科同种类可直接重录）。
+    （行级评价编辑的删除阻塞见 test_revoke_conflict_lists_edited_submissions。）"""
     p = _preview(client, v1_seed, assigned_date="2025-09-18", homework_type="背诵默写")
     aid = _confirm(client, p.json()["token"]).json()["assignment_id"]
     params = {"mode": "homeroom", "class_id": v1_seed.h6_id}
@@ -240,12 +241,13 @@ def test_detail_patch_due_date_revoke_flow(client, v1_seed):
     detail = client.get(f"/api/v1/homework/assignments/{aid}", params=params).json()
     assert detail["due_date"] == "2025-09-21"
 
-    revoked = client.delete(f"/api/v1/homework/assignments/{aid}", params=params)
-    assert revoked.status_code == 200, revoked.text
-    assert revoked.json()["status"] == "revoked"
+    deleted = client.delete(f"/api/v1/homework/assignments/{aid}", params=params)
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["status"] == "deleted"
 
-    detail = client.get(f"/api/v1/homework/assignments/{aid}", params=params).json()
-    assert detail["status"] == "revoked"
+    assert client.get(
+        f"/api/v1/homework/assignments/{aid}", params=params
+    ).status_code == 404
 
     again = _preview(client, v1_seed, assigned_date="2025-09-18", homework_type="背诵默写")
     assert again.json()["existing_batches"] == []

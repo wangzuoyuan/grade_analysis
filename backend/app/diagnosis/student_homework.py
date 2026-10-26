@@ -115,17 +115,31 @@ def _correlation(pairs):
 
 def _homework_events(db, ctx, subject, homework_type):
     """Read projected snapshots once per batch, never once per student/exam."""
-    events = []
+    candidates = []
     for a, mapping in hw._visible_assignments(db, ctx, active_only=True):
         if a.subject == "考勤" or a.subject != subject:
             continue
         if homework_type and a.homework_type != homework_type:
             continue
+        candidates.append((a, mapping))
+    # 按天映射（2026-10-26）：当天其他批次登记的请假/出勤异常修正行口径
+    day_flags = hw._day_exception_flags(
+        db, ctx, [a.assigned_date for a, _m in candidates]
+    )
+    events = []
+    for a, mapping in candidates:
         # A legacy reconstructed roster is not a confirmed denominator here.
         known = bool(hw._parse_expected_ids(a.expected_members_json))
         expected = set(hw._projected_expected(db, a, mapping)) if known else (
             set(mapping.values()) if mapping is not None else set(q.members_at(db, ctx.mode, [a.class_ref_id], a.assigned_date)))
         rows = dict((pid, row) for row, pid in hw._projected_submissions(db, a, mapping))
+        flags_by_pid = day_flags.get(a.assigned_date) or {}
+        if flags_by_pid:
+            # 无行的映射成员也要注入合成行，否则 _window 会按默认已交统计
+            for pid in sorted(set(rows) | (expected & set(flags_by_pid))):
+                rows[pid] = hw._adjusted_submission(
+                    a, pid, rows.get(pid), flags_by_pid.get(pid)
+                )
         events.append((a.assigned_date, known, expected, rows))
     return events
 

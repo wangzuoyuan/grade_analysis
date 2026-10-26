@@ -2664,7 +2664,7 @@ export function homeworkPatchAssignment(
   )
 }
 
-/** DELETE /api/v1/homework/assignments/{id}（软撤销；有后续评价编辑 → 409 conflicts 清单）。 */
+/** DELETE /api/v1/homework/assignments/{id}（2026-10-26 起物理删除，不留撤销记录；有后续评价编辑 → 409 conflicts 清单）。 */
 export function homeworkDeleteAssignment(
   assignmentId: number,
   mode: WorkspaceMode,
@@ -2911,7 +2911,7 @@ export function homeworkSetCurrentSemester(semesterId: number): Promise<Homework
 }
 
 /**
- * 从 DELETE 批次的 409 错误体读撤销冲突清单（形状不符/无条目返回 null，
+ * 从 DELETE 批次的 409 错误体读删除冲突清单（形状不符/无条目返回 null，
  * 由页面回退通用文案；readImportConflicts 同款宽容模式）。
  */
 export function readHomeworkRevokeConflicts(err: unknown): HomeworkRevokeConflict[] | null {

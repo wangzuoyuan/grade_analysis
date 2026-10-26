@@ -33,7 +33,7 @@ import json
 import math
 import secrets
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -931,27 +931,38 @@ def _projected_expected(
 def _assignment_status_counts(
     db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
     skip_reader_ids: Optional[Set[int]] = None,
-) -> Tuple[List[int], List[Tuple[HomeworkSubmission, int]], Dict[str, int]]:
+    day_flags: Optional[Dict[int, Dict[str, object]]] = None,
+) -> Tuple[List[int], List[Tuple[HomeworkSubmission, int]], Dict[str, int],
+           Dict[int, str], Dict[int, Optional[str]]]:
     """按例外登记口径统计批次。
 
     应交名单里没有逐人行的人默认已交；旧 unknown 也归为已交。显式缺交和
     请假覆盖默认值。极少数历史快照外的保留行继续计入，避免丢失旧例外。
     skip_reader_ids（ADR-023 统计排除）只影响聚合计数：这些读域 id 的
     应交与逐人行都不计入，行本身仍然保留。
-    """
+    day_flags（2026-10-26 按天映射）：该批次日期上同天其他批次登记的
+    请假/出勤异常，按人修正有效状态；返回值附带逐人有效状态与评价表，
+    供列表项 id 数组与详情行共用同一口径。"""
     expected_reader = _projected_expected(db, a, mapping)
     pairs = _projected_submissions(db, a, mapping)
-    status_by_reader = {rid: _effective_status(s) for s, rid in pairs}
-    reader_ids = sorted(set(expected_reader) | set(status_by_reader))
+    row_by_reader = {rid: s for s, rid in pairs}
+    reader_ids = sorted(set(expected_reader) | set(row_by_reader))
     if skip_reader_ids:
         reader_ids = [rid for rid in reader_ids if rid not in skip_reader_ids]
     counts = {key: 0 for key in _PUBLIC_STATUSES}
+    eff_status: Dict[int, str] = {}
+    eff_eval: Dict[int, Optional[str]] = {}
     for rid in reader_ids:
-        status = status_by_reader.get(rid, "submitted")
+        adjusted = _adjusted_submission(
+            a, rid, row_by_reader.get(rid), (day_flags or {}).get(rid)
+        )
+        status = _effective_status(adjusted)
         if status not in counts:
             status = "submitted"
         counts[status] += 1
-    return reader_ids, pairs, counts
+        eff_status[rid] = status
+        eff_eval[rid] = adjusted.evaluation
+    return reader_ids, pairs, counts, eff_status, eff_eval
 
 
 def _stats_excluded_ids(
@@ -994,6 +1005,107 @@ def _rate_stats_of(
     if expected_count == 0 or denom <= 0:
         return None, True
     return round(submitted / denom, 4), False
+
+
+# ────────────────────────────── 请假/出勤异常按天映射（2026-10-26） ──────────────────────────────
+# 用户拍板：当天任何可见批次上登记的请假（excused）与出勤异常（迟到/没来等，
+# 含考勤批次的缺勤行）是该生当天的出勤事实，自动映射到当天其他可见批次——
+# 请假 → 该生当天非考勤批次一律按请假（无条件覆盖：请假了就不可能有已交，
+# full 台账展开的已交行同样翻转；老师认为确已交付应修正请假记录本身）；
+# 出勤异常 → 该生缺交行补注出勤文本（缺交计数保留、连缺跳过，与同批次
+# 缺交+迟到既有口径一致）。优先级：请假 > 出勤异常 > 原状态。
+# 可见范围 = 当前工作台视角（本域班 + 经作业共享门的关联班批次、仅事件
+# 时点授权成员；请假跨域生效正是班主任班/教学走班两本账合并的自然延伸），
+# 已删除批次不存在、撤销（存量）批次不参与。读取即映射、零数据迁移，
+# 历史记录同样生效；考勤批次是出勤事实本身，只作映射来源、不作映射目标。
+
+
+def _day_exception_flags(
+    db: Session, ctx: WorkspaceContext, dates: Iterable[date]
+) -> Dict[date, Dict[int, Dict[str, object]]]:
+    """聚合当前可见批次在给定日期集合上的请假/出勤异常事实：
+    {date: {reader_person_id: {"excused": bool, "attendance_text": str|None}}}。"""
+    wanted = sorted({d for d in dates if d is not None})
+    day_flags: Dict[date, Dict[int, Dict[str, object]]] = {}
+    if not wanted or not ctx.class_ids:
+        return day_flags
+    sources: List[Tuple[HomeworkAssignment, Optional[Dict[int, int]]]] = []
+    direct = db.query(HomeworkAssignment).filter(
+        HomeworkAssignment.data_domain == ctx.data_domain,
+        HomeworkAssignment.class_ref_id.in_(list(ctx.class_ids)),
+        HomeworkAssignment.assigned_date.in_(wanted),
+        HomeworkAssignment.status == "active",
+    )
+    if ctx.mode == "teaching":
+        direct = direct.filter(HomeworkAssignment.subject == ctx.subject)
+    sources.extend((a, None) for a in direct.all())
+    other_domain = "teaching" if ctx.mode == "homeroom" else "homeroom"
+    for link in _homework_share_links(db, ctx):
+        other_class = (
+            link.teaching_class_id if ctx.mode == "homeroom" else link.admin_class_id
+        )
+        cross = db.query(HomeworkAssignment).filter(
+            HomeworkAssignment.data_domain == other_domain,
+            HomeworkAssignment.class_ref_id == other_class,
+            HomeworkAssignment.subject == link.subject,
+            HomeworkAssignment.assigned_date.in_(wanted),
+            HomeworkAssignment.status == "active",
+        ).all()
+        for a in cross:
+            mapping = _event_time_mapping(db, link, ctx, a)
+            if mapping is not None:
+                sources.append((a, mapping))
+    for a, mapping in sources:
+        for s, rid in _projected_submissions(db, a, mapping):
+            raw = _effective_status(s)
+            att = _attendance_of(s.evaluation) or (
+                a.subject == "考勤" and raw == "missing"
+            )
+            if raw != "excused" and not att:
+                continue
+            flags = day_flags.setdefault(a.assigned_date, {}).setdefault(
+                rid, {"excused": False, "attendance_text": None}
+            )
+            if raw == "excused":
+                flags["excused"] = True
+            if att and not flags["attendance_text"]:
+                # 考勤批次缺勤行可能没有文本；回退词必须含出勤关键词，
+                # 否则下游 _attendance_of/_streak_status 识别不出。
+                flags["attendance_text"] = _attendance_of(s.evaluation) or "缺席"
+    return day_flags
+
+
+def _adjusted_submission(
+    a: HomeworkAssignment,
+    rid: int,
+    row: Optional[HomeworkSubmission],
+    flags: Optional[Dict[str, object]],
+) -> HomeworkSubmission:
+    """按天映射修正一行（row=None 时为应打名单里的合成默认行）。
+    返回临时对象，绝不写库；flags 为空或考勤批次时原样返回。"""
+    if row is not None and not flags:
+        return row
+    raw_status = _effective_status(row) if row is not None else "submitted"
+    raw_eval = row.evaluation if row is not None else None
+    if not flags or a.subject == "考勤":
+        return row or HomeworkSubmission(
+            assignment_id=a.id, person_id=rid, submission_status="submitted"
+        )
+    if flags.get("excused"):
+        return HomeworkSubmission(
+            assignment_id=a.id, person_id=rid, submission_status="excused"
+        )
+    att_text = flags.get("attendance_text")
+    if att_text and raw_status == "missing" and not _attendance_of(raw_eval):
+        return HomeworkSubmission(
+            assignment_id=a.id,
+            person_id=rid,
+            submission_status="missing",
+            evaluation="｜".join(part for part in (raw_eval, att_text) if part),
+        )
+    return row or HomeworkSubmission(
+        assignment_id=a.id, person_id=rid, submission_status="submitted"
+    )
 
 
 def _current_semester_bounds(db: Session, academic_year_id: int) -> Tuple[date, date]:
@@ -1233,6 +1345,34 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
     expected_ids = [item["person_id"] for item in roster]
     name_map = {item["person_id"]: item["name"] for item in roster}
     ordered_ids = [pid for pid in expected_ids if pid in merged]
+    # 按天映射（仅展示装饰，零写入）：当天其他批次已登记的请假/出勤异常
+    # 在预览里按读侧同一口径显示，确认后读取仍会映射，口径一致
+    preview_flags = _day_exception_flags(db, ctx, [assigned_date]).get(assigned_date, {})
+    preview_rows = {
+        pid: _adjusted_submission(
+            HomeworkAssignment(
+                data_domain=ctx.data_domain,
+                subject=subject,
+                assigned_date=assigned_date,
+            ),
+            pid,
+            HomeworkSubmission(
+                person_id=pid,
+                submission_status=merged[pid][0],
+                evaluation=merged[pid][1],
+            ),
+            preview_flags.get(pid),
+        )
+        for pid in ordered_ids
+    }
+    if any(
+        (preview_flags.get(pid) or {}).get("excused")
+        or (preview_flags.get(pid) or {}).get("attendance_text")
+        for pid in ordered_ids
+    ):
+        warnings.append(
+            "当天其他批次已登记的请假/出勤异常将自动映射到本批次显示（映射只改展示口径，不在本批次写行）"
+        )
     token = secrets.token_hex(16)
     expires_at = datetime.utcnow() + timedelta(minutes=q.PREVIEW_TTL_MINUTES)
     snapshot = {
@@ -1282,11 +1422,11 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
                 HomeworkSubmissionBrief(
                     person_id=pid,
                     name=name_map.get(pid),
-                    status=merged[pid][0],
-                    evaluation=_quality_text(merged[pid][1]) or None,
-                    attendance=_attendance_of(merged[pid][1]),
-                    special_note=_special_note_of(merged[pid][1]),
-                    quality_negative=_evaluation_tone(merged[pid][1]) == "negative",
+                    status=_effective_status(preview_rows[pid]),
+                    evaluation=_quality_text(preview_rows[pid].evaluation) or None,
+                    attendance=_attendance_of(preview_rows[pid].evaluation),
+                    special_note=_special_note_of(preview_rows[pid].evaluation),
+                    quality_negative=_evaluation_tone(preview_rows[pid].evaluation) == "negative",
                 )
                 for pid in ordered_ids
             ],
@@ -1304,8 +1444,21 @@ def homework_preview(req: HomeworkPreviewRequest, db: Session = Depends(get_db))
 # ────────────────────────────── §1.2 confirm ──────────────────────────────
 
 
-def _assignment_counts(db: Session, a: HomeworkAssignment) -> HomeworkConfirmResponse:
-    _reader_ids, _pairs, counts = _assignment_status_counts(db, a, None)
+def _assignment_counts(
+    db: Session,
+    a: HomeworkAssignment,
+    ctx: Optional[WorkspaceContext] = None,
+) -> HomeworkConfirmResponse:
+    """confirm/patch 的响应统计；ctx 在场时按天映射修正（与读侧同口径，
+    当天已登记的请假/出勤异常直接反映在确认回执里）。"""
+    day_flags = (
+        _day_exception_flags(db, ctx, [a.assigned_date]).get(a.assigned_date)
+        if ctx is not None
+        else None
+    )
+    _reader_ids, _pairs, counts, _eff_s, _eff_e = _assignment_status_counts(
+        db, a, None, day_flags=day_flags
+    )
     return HomeworkConfirmResponse(
         assignment_id=a.id,
         revision=a.revision,
@@ -1335,7 +1488,14 @@ def homework_confirm(req: HomeworkConfirmRequest, db: Session = Depends(get_db))
                 .one_or_none()
             )
             if a is not None:
-                return _assignment_counts(db, a)
+                ctx0 = _resolve_hw_scope(
+                    db, teacher_id, snap0.get("mode"),
+                    snap0.get("academic_year_id"),
+                    snap0.get("class_ref_id") if snap0.get("mode") == "homeroom" else None,
+                    snap0.get("class_ref_id") if snap0.get("mode") == "teaching" else None,
+                    snap0.get("subject") if snap0.get("mode") == "teaching" else None,
+                )
+                return _assignment_counts(db, a, ctx0)
         # confirmed 但不是作业预览/批次丢失 → 走下方统一 409（已消费）
 
     batch = _load_preview_batch(db, req.token)
@@ -1449,7 +1609,7 @@ def homework_confirm(req: HomeworkConfirmRequest, db: Session = Depends(get_db))
     except Exception:
         db.rollback()
         raise
-    return _assignment_counts(db, assignment)
+    return _assignment_counts(db, assignment, ctx)
 
 
 # ────────────────────────────── §1.3 详情 / 编辑 / 撤销 ──────────────────────────────
@@ -1494,10 +1654,23 @@ def homework_assignment_detail(
         editable_init if mapping is None
         else [mapping[pid] for pid in editable_init if pid in mapping]
     )
-    counted_ids, pairs, counts = _assignment_status_counts(db, a, mapping)
+    day_flags = _day_exception_flags(db, ctx, [a.assigned_date]).get(a.assigned_date)
+    counted_ids, pairs, counts, eff_status, eff_eval = _assignment_status_counts(
+        db, a, mapping, day_flags=day_flags
+    )
     reader_ids = sorted(set(editable_reader) | set(counted_ids))
     names = q.names_for(db, reader_ids)
-    pair_by_reader = {rid: s for s, rid in pairs}
+    pair_by_reader = {
+        rid: _adjusted_submission(a, rid, s, (day_flags or {}).get(rid))
+        for s, rid in pairs
+    }
+    def _row_submission(rid: int) -> HomeworkSubmission:
+        # 应打名单里无行的人 = 合成默认行；映射后可能是 excused
+        if rid in pair_by_reader:
+            return pair_by_reader[rid]
+        return _adjusted_submission(
+            a, rid, None, (day_flags or {}).get(rid)
+        )
     rate, unavailable = _rate_stats_of(
         len(expected_reader),
         counts["submitted"],
@@ -1529,25 +1702,14 @@ def homework_assignment_detail(
             HomeworkSubmissionOut(
                 person_id=rid,
                 name=names.get(rid),
-                status=(
-                    _effective_status(pair_by_reader[rid])
-                    if rid in pair_by_reader else "submitted"
-                ),
+                status=_effective_status(_row_submission(rid)),
                 evaluation=(
-                    _quality_text(pair_by_reader[rid].evaluation) or None
-                    if rid in pair_by_reader else None
+                    _quality_text(_row_submission(rid).evaluation) or None
                 ),
-                attendance=(
-                    _attendance_of(pair_by_reader[rid].evaluation)
-                    if rid in pair_by_reader else None
-                ),
-                special_note=(
-                    _special_note_of(pair_by_reader[rid].evaluation)
-                    if rid in pair_by_reader else None
-                ),
+                attendance=_attendance_of(_row_submission(rid).evaluation),
+                special_note=_special_note_of(_row_submission(rid).evaluation),
                 quality_negative=(
-                    _evaluation_tone(pair_by_reader[rid].evaluation) == "negative"
-                    if rid in pair_by_reader else False
+                    _evaluation_tone(_row_submission(rid).evaluation) == "negative"
                 ),
             )
             for rid in reader_ids
@@ -1730,25 +1892,21 @@ def homework_assignment_delete(
     academic_year_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
-    """软撤销（status='revoked'，绝不物理删行）；其上有晚于批次创建的
-    评价/状态编辑 → 409 列冲突清单。撤销后读侧不再计入指标（自然重算）。
+    """物理删除（2026-10-26 用户拍板：删除即删，不留撤销记录）：逐人行、
+    批次本身与其衍生的忘带/出勤溯源笔记（source=homework:{id}）一并删除；
+    其上有晚于批次创建的评价/状态编辑 → 409 列冲突清单（防误删护栏与原
+    撤销一致）。指标自然重算；同日同科同种类重录不再被存量记录挡住。
 
-    G02 跨域撤销边界：跨域请求只允许作用于共享成员事实——批次内存在
+    G02 跨域边界不变：跨域请求只允许删除共享成员批次——批次内存在
     本工作台无权管理的成员（快照内、事件时点授权交集外的源域独有成员，
-    或快照外的越界行）→ 整批撤销 409，且错误只说明原因，绝不列源域
-    私有学生姓名；全部成员均为共享且无冲突时才允许撤销（此时源域独有
-    成员不存在，整批 revoked 合法）。整批（含非共享成员）的依赖检查
-    由源域 DELETE 承担。"""
+    或快照外的越界行）→ 整批删除 409，且错误只说明原因，绝不列源域
+    私有学生姓名；全部成员均为共享且无冲突时才允许删除。整批（含非
+    共享成员）的依赖检查由源域 DELETE 承担。"""
     teacher_id = current_teacher_id(db)
     ctx = _resolve_hw_scope(
         db, teacher_id, mode, academic_year_id, class_id, teaching_class_id
     )
     a, mapping = _load_accessible_assignment(db, ctx, assignment_id)
-    if a.status == "revoked":
-        # 幂等：重复撤销不重复递增 revision
-        return HomeworkDeleteResponse(
-            success=True, assignment_id=a.id, status="revoked", revision=a.revision
-        )
     if mapping is not None:
         # 跨域：先核验无权管理的成员（含快照外越界行），命中即整批拒绝
         expected_init = set(_parse_expected_ids(a.expected_members_json))
@@ -1762,8 +1920,8 @@ def homework_assignment_delete(
         managed = expected_init | {row[0] for row in all_rows}
         if any(pid not in mapping for pid in managed):
             raise LinkVersionConflict(
-                "该批次含本工作台无权管理的成员，跨域撤销被拒绝"
-                "（整批撤销仅数据归属域可发起）",
+                "该批次含本工作台无权管理的成员，跨域删除被拒绝"
+                "（整批删除仅数据归属域可发起）",
                 details={"assignment_id": a.id},
             )
         conflicts = _revoke_conflicts(
@@ -1774,14 +1932,20 @@ def homework_assignment_delete(
         conflicts = _revoke_conflicts(db, a, _projected_submissions(db, a, None))
     if conflicts:
         raise LinkVersionConflict(
-            "批次存在后续评价编辑，撤销被拒绝（请先确认冲突清单）",
+            "批次存在后续评价编辑，删除被拒绝（请先确认冲突清单）",
             details={"assignment_id": a.id, "conflicts": conflicts},
         )
-    a.status = "revoked"
-    a.revision = (a.revision or 1) + 1
+    revision = a.revision
+    db.query(HomeworkSubmission).filter(
+        HomeworkSubmission.assignment_id == a.id
+    ).delete(synchronize_session=False)
+    db.query(WsStudentNote).filter(
+        WsStudentNote.source == f"homework:{a.id}"
+    ).delete(synchronize_session=False)
+    db.delete(a)
     db.commit()
     return HomeworkDeleteResponse(
-        success=True, assignment_id=a.id, status="revoked", revision=a.revision
+        success=True, assignment_id=a.id, status="deleted", revision=revision
     )
 
 
@@ -1789,33 +1953,35 @@ def homework_assignment_delete(
 
 
 def _list_item_of(
-    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
+    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
+    day_flags: Optional[Dict[int, Dict[str, object]]] = None,
 ) -> HomeworkAssignmentListItem:
     expected_reader = _projected_expected(db, a, mapping)
-    _reader_ids, pairs, counts = _assignment_status_counts(db, a, mapping)
-    attendance_count = sum(1 for s, _rid in pairs if _attendance_of(s.evaluation))
-    negative_count = sum(1 for s, _rid in pairs if _evaluation_tone(s.evaluation) == "negative")
+    _reader_ids, pairs, counts, eff_status, eff_eval = _assignment_status_counts(
+        db, a, mapping, day_flags=day_flags
+    )
     rate, unavailable = _rate_stats_of(
         len(expected_reader),
         counts["submitted"],
         counts["missing"],
         counts["excused"],
     )
-    excused_ids = [rid for s, rid in pairs if _effective_status(s) == "excused"]
+    excused_ids = [rid for rid, s in eff_status.items() if s == "excused"]
     missing_ids = [
-        rid for s, rid in pairs
-        if _effective_status(s) == "missing" and a.subject != "考勤"
+        rid for rid, s in eff_status.items()
+        if s == "missing" and a.subject != "考勤"
     ]
     attendance_ids = [
-        rid for s, rid in pairs
-        if _attendance_of(s.evaluation) or (a.subject == "考勤" and _effective_status(s) == "missing")
+        rid for rid in eff_status
+        if _attendance_of(eff_eval.get(rid))
+        or (a.subject == "考勤" and eff_status[rid] == "missing")
     ]
     negative_ids = [
-        rid for s, rid in pairs
-        if _evaluation_tone(s.evaluation) == "negative"
+        rid for rid in eff_status
+        if _evaluation_tone(eff_eval.get(rid)) == "negative"
     ]
     # 忘带名单与既有 4 类例外 ID 同一套 reader id 映射；仅作标注，不改任何计数口径
-    forgot_ids = [rid for s, rid in pairs if _forgot_of(s.evaluation)]
+    forgot_ids = [rid for rid in eff_status if _forgot_of(eff_eval.get(rid))]
     return HomeworkAssignmentListItem(
         assignment_id=a.id,
         data_domain=a.data_domain,
@@ -1825,8 +1991,8 @@ def _list_item_of(
         due_date=a.due_date.isoformat() if a.due_date else None,
         revision=a.revision,
         status=a.status,
-        attendance_count=attendance_count,
-        negative_count=negative_count,
+        attendance_count=len(attendance_ids),
+        negative_count=len(negative_ids),
         expected_count=len(expected_reader),
         submitted=counts["submitted"],
         missing=counts["missing"],
@@ -1857,7 +2023,9 @@ def homework_assignments_list(
     db: Session = Depends(get_db),
 ):
     """分页列表（assigned_date 降序）：直读本域班 + 经共享门的对侧投影；
-    含计数与 submission_rate（快照为空 → rate null + rate_unavailable）。"""
+    含计数与 submission_rate（快照为空 → rate null + rate_unavailable）。
+    2026-10-26 起只返回 active 批次：删除即物理删除，列表不再出现撤销
+    记录（存量 revoked 行保留在库但不再下发）。"""
     if limit < 1 or offset < 0:
         raise InvalidScopeParam(
             "limit must be >= 1 and offset >= 0",
@@ -1873,7 +2041,7 @@ def homework_assignments_list(
     type_f = (homework_type or "").strip() or None
 
     entries = []
-    for a, mapping in _visible_assignments(db, ctx):
+    for a, mapping in _visible_assignments(db, ctx, active_only=True):
         if subject_f is not None and a.subject != subject_f:
             continue
         if type_f is not None and a.homework_type != type_f:
@@ -1886,10 +2054,14 @@ def homework_assignments_list(
     entries.sort(key=lambda item: (item[0].assigned_date, item[0].id), reverse=True)
     total = len(entries)
     page = entries[offset : offset + limit]
+    day_flags = _day_exception_flags(db, ctx, [a.assigned_date for a, _m in page])
     return HomeworkAssignmentListResponse(
         metadata=_metadata(ctx),
         total=total,
-        items=[_list_item_of(db, a, mapping) for a, mapping in page],
+        items=[
+            _list_item_of(db, a, mapping, day_flags.get(a.assigned_date))
+            for a, mapping in page
+        ],
     )
 
 
@@ -1928,6 +2100,7 @@ def homework_dashboard(
         return d.replace(day=1).isoformat()
 
     groups: Dict[str, dict] = {}
+    visible = []
     for a, mapping in _visible_assignments(db, ctx, active_only=True):
         if a.assigned_date < period_start or a.assigned_date > period_end:
             continue
@@ -1935,13 +2108,17 @@ def homework_dashboard(
             continue
         if type_f is not None and a.homework_type != type_f:
             continue
+        visible.append((a, mapping))
+    day_flags = _day_exception_flags(db, ctx, [a.assigned_date for a, _m in visible])
+    for a, mapping in visible:
         # ADR-023：被排除学生的应交与逐人行都不计入看板聚合
         skip_ids = _excluded_readers_of(db, a, mapping)
         expected_reader = [
             pid for pid in _projected_expected(db, a, mapping) if pid not in skip_ids
         ]
-        _reader_ids, pairs, counts = _assignment_status_counts(
-            db, a, mapping, skip_reader_ids=skip_ids
+        _reader_ids, pairs, counts, _eff_s, _eff_e = _assignment_status_counts(
+            db, a, mapping, skip_reader_ids=skip_ids,
+            day_flags=day_flags.get(a.assigned_date),
         )
         neg_count = sum(
             1 for s, rid in pairs
@@ -2079,6 +2256,14 @@ def _person_events(
                 submission_status="submitted",
             )))
     events.sort(key=lambda item: (item[0].assigned_date, item[0].id))
+    # 按天映射：该生当天其他批次登记的请假/出勤异常修正本行展示口径
+    day_flags = _day_exception_flags(db, ctx, {a.assigned_date for a, _s in events})
+    events = [
+        (a, _adjusted_submission(
+            a, person_id, s, day_flags.get(a.assigned_date, {}).get(person_id)
+        ))
+        for a, s in events
+    ]
     return events, line_axis_map
 
 
@@ -2171,6 +2356,24 @@ def _person_events_for_members(
 
     for events, _axis in result.values():
         events.sort(key=lambda item: (item[0].assigned_date, item[0].id))
+    # 按天映射：每个学生当天其他批次登记的请假/出勤异常修正本行展示口径
+    # （flags 以读域 person_id 为键；跨域行保留原 source person_id 不受影响）
+    all_dates = {
+        a.assigned_date
+        for events, _axis in result.values()
+        for a, _s in events
+    }
+    day_flags = _day_exception_flags(db, ctx, all_dates)
+    for pid, (events, axis) in result.items():
+        result[pid] = (
+            [
+                (a, _adjusted_submission(
+                    a, pid, s, day_flags.get(a.assigned_date, {}).get(pid)
+                ))
+                for a, s in events
+            ],
+            axis,
+        )
     return result
 
 
@@ -2359,6 +2562,19 @@ def homework_warnings(
         visible_rows.append((a, projected))
         for s, rid in projected:
             events_by_person.setdefault(rid, []).append((a, s))
+
+    # 按天映射（2026-10-26）：当天其他批次（含本循环跳过的考勤批次）登记的
+    # 请假/出勤异常，修正每人的行口径——请假行改 excused、缺交行补注出勤。
+    day_flags = _day_exception_flags(
+        db, ctx, {a.assigned_date for a, _projected in visible_rows}
+    )
+    for rid, evs in events_by_person.items():
+        events_by_person[rid] = [
+            (a, _adjusted_submission(
+                a, rid, s, day_flags.get(a.assigned_date, {}).get(rid)
+            ))
+            for a, s in evs
+        ]
 
     # 连缺线批次轴与快照解析预计算（原实现把两件事放在「每学生 × 每维度」
     # 循环里，对同一 expected_members_json 反复 json.loads，班额大时是数万次
@@ -2784,20 +3000,28 @@ def _submission_rates_by_person(
     为空（分母不可用）的批次整批剔除并计数（响应 caveats 注明）。"""
     contrib: Dict[int, List[int]] = {}
     excluded = 0
+    batch_list = []
     for a, mapping in _visible_assignments(db, ctx, active_only=True):
         if a.subject != subject:
             continue
         if homework_type is not None and a.homework_type != homework_type:
             continue
+        batch_list.append((a, mapping))
+    day_flags = _day_exception_flags(db, ctx, [a.assigned_date for a, _m in batch_list])
+    for a, mapping in batch_list:
         expected_init = set(_parse_expected_ids(a.expected_members_json))
         if not expected_init:
             excluded += 1
             continue
         pairs = _projected_submissions(db, a, mapping)
-        status_by_reader = {rid: _effective_status(s) for s, rid in pairs}
+        row_by_reader = {rid: s for s, rid in pairs}
         expected_reader = _projected_expected(db, a, mapping)
         for rid in expected_reader:
-            status = status_by_reader.get(rid, "submitted")
+            adjusted = _adjusted_submission(
+                a, rid, row_by_reader.get(rid),
+                day_flags.get(a.assigned_date, {}).get(rid),
+            )
+            status = _effective_status(adjusted)
             if status == "excused":
                 continue
             contrib.setdefault(rid, []).append(1 if status == "submitted" else 0)

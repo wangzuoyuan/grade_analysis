@@ -328,8 +328,9 @@ def test_g02_cross_delete_with_nonshared_member_rejected_without_name_leak(
 def test_g02_cross_delete_all_shared_no_conflict_allowed(
     client, v1_seed, db_session
 ):
-    """全部成员均为共享（快照仅甲乙）且无后续编辑：T DELETE 允许撤销
-    （此时源域独有成员不存在，整批 revoked 合法）。"""
+    """全部成员均为共享（快照仅甲乙）且无后续编辑：T DELETE 允许删除
+    （此时源域独有成员不存在，整批删除合法）。2026-10-26 起删除是物理
+    删除：批次与逐人行一并消失，对侧详情 404。"""
     aid = _synth_h_assignment(
         db_session, v1_seed, "g02-all-shared", date(2025, 9, 18),
         [v1_seed.jia_h_id, v1_seed.yi_h_id],
@@ -338,11 +339,15 @@ def test_g02_cross_delete_all_shared_no_conflict_allowed(
 
     resp = _t_delete(client, v1_seed, aid)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "revoked"
+    assert resp.json()["status"] == "deleted"
 
-    h_body = _h_detail(client, v1_seed, aid).json()
-    assert h_body["status"] == "revoked"
-    assert h_body["revision"] == 2
+    # 物理删除：对侧详情 404，库里不再有该批次与逐人行
+    assert _h_detail(client, v1_seed, aid).status_code == 404
+    from app.db.workspace_models import HomeworkAssignment, HomeworkSubmission
+    assert db_session.query(HomeworkAssignment).filter(
+        HomeworkAssignment.id == aid).count() == 0
+    assert db_session.query(HomeworkSubmission).filter(
+        HomeworkSubmission.assignment_id == aid).count() == 0
 
 
 # ────────────────────── G03 跨域可写集 ∩ 快照 ──────────────────────
