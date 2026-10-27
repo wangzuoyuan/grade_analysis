@@ -1007,7 +1007,7 @@ def _rate_stats_of(
     return round(submitted / denom, 4), False
 
 
-# ────────────────────────────── 请假/出勤异常按天映射（2026-10-26） ──────────────────────────────
+# ────────────────────────────── 请假/出勤异常按天映射（2026-10-26，2026-10-27 跨学科扩展） ──────────────────────────────
 # 用户拍板：当天任何可见批次上登记的请假（excused）与出勤异常（迟到/没来等，
 # 含考勤批次的缺勤行）是该生当天的出勤事实，自动映射到当天其他可见批次——
 # 请假 → 该生当天非考勤批次一律按请假（无条件覆盖：请假了就不可能有已交，
@@ -1015,16 +1015,27 @@ def _rate_stats_of(
 # 出勤异常 → 该生缺交行补注出勤文本（缺交计数保留、连缺跳过，与同批次
 # 缺交+迟到既有口径一致）。优先级：请假 > 出勤异常 > 原状态。
 # 可见范围 = 当前工作台视角（本域班 + 经作业共享门的关联班批次、仅事件
-# 时点授权成员；请假跨域生效正是班主任班/教学走班两本账合并的自然延伸），
-# 已删除批次不存在、撤销（存量）批次不参与。读取即映射、零数据迁移，
-# 历史记录同样生效；考勤批次是出勤事实本身，只作映射来源、不作映射目标。
+# 时点授权成员），已删除批次不存在、撤销（存量）批次不参与。读取即映射、
+# 零数据迁移，历史记录同样生效；考勤批次是出勤事实本身，只作映射来源、
+# 不作映射目标。
+# **2026-10-27 跨学科扩展（用户拍板：其他学科老师用系统不该被冤枉）**：
+# 跨域事实采集不再限定 link.subject——对侧关联班**任意学科**批次上登记的
+# 请假/出勤异常（尤其考勤批次）都按 link 成员交集映射到本侧（班主任记考勤
+# 请假 → 教学侧物理批次同样显示请假；反向同理）。仍然只摘取出勤事实本身
+# （excused 状态/出勤词/考勤缺勤行），对侧其他学科的作业内容、名单、计数
+# 一律不外泄；共享关闭（share_categories 不含 current_subject_homework）
+# 时依旧不跨域。
 
 
 def _day_exception_flags(
     db: Session, ctx: WorkspaceContext, dates: Iterable[date]
 ) -> Dict[date, Dict[int, Dict[str, object]]]:
     """聚合当前可见批次在给定日期集合上的请假/出勤异常事实：
-    {date: {reader_person_id: {"excused": bool, "attendance_text": str|None}}}。"""
+    {date: {reader_person_id: {"excused": bool, "attendance_text": str|None}}}。
+
+    跨域源 = 对侧关联班**任意学科**的 active 批次（2026-10-27 起不限
+    link.subject：班主任考勤/数学上记的请假，教学侧物理同样映射），但只
+    摘取出勤事实本身，作业内容/名单/计数不外泄。"""
     wanted = sorted({d for d in dates if d is not None})
     day_flags: Dict[date, Dict[int, Dict[str, object]]] = {}
     if not wanted or not ctx.class_ids:
@@ -1044,10 +1055,11 @@ def _day_exception_flags(
         other_class = (
             link.teaching_class_id if ctx.mode == "homeroom" else link.admin_class_id
         )
+        # 2026-10-27 起不限学科：请假/出勤是出勤事实，不是作业数据；
+        # 下方逐行只摘 excused/出勤词/考勤缺勤行，其余行一律不读不外泄。
         cross = db.query(HomeworkAssignment).filter(
             HomeworkAssignment.data_domain == other_domain,
             HomeworkAssignment.class_ref_id == other_class,
-            HomeworkAssignment.subject == link.subject,
             HomeworkAssignment.assigned_date.in_(wanted),
             HomeworkAssignment.status == "active",
         ).all()

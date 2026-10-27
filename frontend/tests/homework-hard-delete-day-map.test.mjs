@@ -73,7 +73,7 @@ test('请假/出勤异常按天映射（2026-10-26）：后端单一实现，前
   assert.doesNotMatch(table, /dayFlags|day_flags/)
 
   // 5. 契约文档已升版记载两条口径
-  assert.match(contract, /按天映射（2026-10-26）/)
+  assert.match(contract, /按天映射（2026-10-26）/)  // §1.4 节头；跨学科扩展另见 v1.5 头注
   assert.match(contract, /删除即物理删除/)
-  assert.match(contract, /v1\.4，2026-10-26/)
+  assert.match(contract, /v1\.5，2026-10-27/)
 })

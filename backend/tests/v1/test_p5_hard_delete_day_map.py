@@ -365,3 +365,61 @@ def test_day_map_needs_active_share_gate(client, v1_seed, db_session):
     item = next(i for i in body["items"] if i["assignment_id"] == math.id)
     assert v1_seed.jia_h_id in item["missing_ids"]
     assert item["excused_ids"] == []
+
+
+def test_cross_subject_leave_maps_both_directions(client, v1_seed, db_session):
+    """2026-10-27 跨学科扩展：请假/出勤异常是跨域共享的出勤事实，不限
+    link.subject——班主任考勤/数学批次上记的请假与迟到，教学侧物理批次同样
+    映射；教学侧批次（任意学科）记的请假也映射回班主任批次。作业内容与
+    名单不外泄（只共享出勤事实）。"""
+    _set_scope(client, v1_seed, ["roster", "current_subject_homework"])
+    # 班主任侧：考勤批次（jia 请假）+ 数学批次（yi 缺交+迟到）
+    _insert_batch(
+        db_session, domain="homeroom", class_id=v1_seed.h6_id, ay_id=v1_seed.ay_id,
+        subject="考勤", homework_type="日报", day=DAY,
+        expected_ids=v1_seed.h_person_ids,
+        rows=[(v1_seed.jia_h_id, "excused", None)],
+        token_suffix=_token_suffix(),
+    )
+    homeroom_math = _insert_batch(
+        db_session, domain="homeroom", class_id=v1_seed.h6_id, ay_id=v1_seed.ay_id,
+        subject="数学", homework_type="卷子", day=DAY,
+        expected_ids=v1_seed.h_person_ids,
+        rows=[(v1_seed.yi_h_id, "missing", "迟到"), (v1_seed.jia_h_id, "missing", None)],
+        token_suffix=_token_suffix(),
+    )
+    # 教学侧：物理批次（jia/yi 均缺交，无任何注记）
+    teaching_physics = _insert_batch(
+        db_session, domain="teaching", class_id=v1_seed.t6_id, ay_id=v1_seed.ay_id,
+        subject="物理", homework_type="练习", day=DAY,
+        expected_ids=v1_seed.t6_person_ids,
+        rows=[(v1_seed.jia_t_id, "missing", None), (v1_seed.yi_t_id, "missing", None)],
+        token_suffix=_token_suffix(),
+    )
+    # 教学侧另一学科批次（语文走班形态，任意学科）：jia 请假
+    teaching_other = _insert_batch(
+        db_session, domain="teaching", class_id=v1_seed.t6_id, ay_id=v1_seed.ay_id,
+        subject="语文", homework_type="阅读", day=DAY,
+        expected_ids=v1_seed.t6_person_ids,
+        rows=[(v1_seed.jia_t_id, "excused", None)],
+        token_suffix=_token_suffix(),
+    )
+
+    # 教学视角：物理批次上 jia 请假（自班主任考勤）、yi 补注迟到（自班主任数学）
+    t_body = _list_items(client, v1_seed, mode="teaching")
+    physics = next(i for i in t_body["items"] if i["assignment_id"] == teaching_physics.id)
+    assert v1_seed.jia_t_id in physics["excused_ids"]
+    assert v1_seed.jia_t_id not in physics["missing_ids"]
+    assert v1_seed.yi_t_id in physics["missing_ids"]
+    assert v1_seed.yi_t_id in physics["attendance_ids"]
+    warn = _warnings(client, v1_seed, mode="teaching")
+    t_by_pid = {s["person_id"]: s for s in warn["students"]}
+    assert v1_seed.jia_t_id not in t_by_pid
+    assert v1_seed.yi_t_id not in t_by_pid
+
+    # 班主任视角：数学批次上 jia 请假（自教学侧语文字批次映射）、yi 维持迟到注记
+    h_body = _list_items(client, v1_seed, mode="homeroom")
+    math = next(i for i in h_body["items"] if i["assignment_id"] == homeroom_math.id)
+    assert v1_seed.jia_h_id in math["excused_ids"]
+    assert v1_seed.jia_h_id not in math["missing_ids"]
+    assert v1_seed.yi_h_id in math["attendance_ids"]
