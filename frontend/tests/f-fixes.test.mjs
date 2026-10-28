@@ -159,7 +159,7 @@ test('段位分布口径收窄 + 悬浮学生名单（2026-10-23）', () => {
 test('展开区两张排名折线已换成历次雷达，+3 无名次不进总分轴（2026-10-25）', () => {
   // 2026-10-25 用户裁决：明细表展开区「单科年级排名趋势/总分排名趋势」折线整体换成
   // 历次重叠雷达（StudentScoreRadar）；+3 排除逻辑内聚到雷达组件
-  assert.match(homeroomScores, /<StudentScoreRadar rows=\{radarRowsFromTrendYear\(year\)\} \/>/, '展开区渲染雷达')
+  assert.match(homeroomScores, /<StudentScoreRadar rows=\{radarRowsFromTrendYear\(year\)\} groupClassName="max-w-\[560px\]" \/>/, '展开区渲染雷达（2026-10-28 起限宽紧凑）')
   assert.match(homeroomScores, /function radarRowsFromTrendYear/, 'trends 响应 → 雷达行适配器')
   assert.match(homeroomScores, /percentile: p\.percentile \?\? \(p\.rank_basis === 'grade_percentile' \? p\.rank : null\)/, '旧后端兼容：percentile 缺失回退前%')
   assert.doesNotMatch(homeroomScores, /单科年级排名趋势|总分排名趋势|TrendChart/, '旧两张排名折线不得残留')

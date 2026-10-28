@@ -78,6 +78,9 @@ test('源码契约：总分轴口径优先级/排除+3、轴数>7 拆分、筛�
   // 径向刻度统一 0-100
   assert.match(source, /domain=\{\[0, 100\]\}/, 'PolarRadiusAxis 0-100')
   assert.match(source, /connectNulls=\{false\}/, '缺考点不连多边形')
+  // 2026-10-28：groupClassName 可选 prop——明细表展开区限每张雷达 max-w（两张相邻紧凑），档案页不传随卡片宽
+  assert.match(source, /groupClassName\?: string/, 'groupClassName 可选 prop')
+  assert.match(source, /cn\('space-y-1', groupClassName\)/, '分组容器应用 groupClassName')
 })
 
 const grade23Row = (exam_name, date, pct, gs, totalPct, totalRank) => ({

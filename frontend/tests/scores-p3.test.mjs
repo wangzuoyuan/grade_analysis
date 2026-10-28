@@ -184,6 +184,8 @@ test('班主任考试详情恢复旧版六板块与顶部排名分段图', () =>
   assert.match(homeroomScores, /学籍/, '明细表须有学籍列')
   assert.match(homeroomScores, /班名次/, '明细表须有班名次（本班口径前端计算）')
   assert.match(homeroomScores, /classRanksByTotal/, '班名次须由前端按本班总分计算')
+  // 2026-10-28：学科分数旁加年级百分位（高一 9 科 + 高二/三语数英；percentiles 单科键接口本就下发）
+  assert.match(homeroomScores, /s\.percentiles\?\.\[g\.subject\]/, '学科百分位取 percentiles 单科键')
   assert.match(uploadPage, /学生成绩明细表.*班级均分表.*名次段表/, '上传页须明确支持同场三类 Excel')
 })
 

@@ -185,7 +185,16 @@ interface RadarGroup {
   axes: AxisDef[]
 }
 
-export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; className?: string }) {
+export function StudentScoreRadar({
+  rows,
+  className,
+  groupClassName,
+}: {
+  rows: RadarExamRow[]
+  className?: string
+  /** 每张雷达分组容器的附加 class（明细表展开区传 max-w 限宽，两张雷达相邻紧凑；档案页不传随卡片宽）。 */
+  groupClassName?: string
+}) {
   const [hiddenExams, setHiddenExams] = useState<Set<string>>(() => new Set())
 
   const { axes, totalLabels, groups } = useMemo(() => {
@@ -291,7 +300,7 @@ export function StudentScoreRadar({ rows, className }: { rows: RadarExamRow[]; c
             return item
           })
           return (
-            <div key={group.caption ?? 'all'} className="space-y-1">
+            <div key={group.caption ?? 'all'} className={cn('space-y-1', groupClassName)}>
               {group.caption && <p className="text-center text-xs font-medium text-slate-600">{group.caption}</p>}
               <div className="h-72 w-full">
                 <ResponsiveContainer width="100%" height="100%">

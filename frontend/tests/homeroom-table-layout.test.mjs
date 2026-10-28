@@ -10,7 +10,7 @@ import ts from 'typescript'
 const source = readFileSync(new URL('../src/components/scores/HomeroomScores.tsx', import.meta.url), 'utf8')
 const tableCss = readFileSync(new URL('../src/components/scores/homeroom-tables.module.css', import.meta.url), 'utf8')
 const ast = ts.createSourceFile('HomeroomScores.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
-const names = new Set(['subjectColumnGroups', 'summaryNumber', 'ClassAveragesTable'])
+const names = new Set(['formatGradePct', 'subjectColumnGroups', 'summaryNumber', 'ClassAveragesTable'])
 const extracted = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
 assert.equal(extracted.length, names.size)
 const code = ts.transpileModule(extracted.map(node => node.getText(ast)).join('\n'), {
@@ -122,6 +122,31 @@ test('2026-10-22 明细表尺寸：限高容器+粘性表头+冻结学号/姓名
   assert.match(source, /sticky left-24 z-10 w-20 whitespace-nowrap border-r text-sm font-medium/, '姓名数据格冻结')
   // +3 口径脚注
   assert.match(source, /\+3总分为选修三门等级分之和（学校导出口径），与各科原始分列不直接相加。/, '+3 口径脚注必须在场')
+})
+
+test('2026-10-28 明细表学科百分位列 + 高一五门/九门4子列 + 展开雷达脱滚', () => {
+  // 学科百分位：非选科组 = 分数/百分位 两个子列（表头 + 数据格），与总分组同口径（年级前%）
+  assert.match(source, /\$\{g\.subject\}-score`} aria-sort=\{isStudentSort\('scores', g\.subject\)/, '非选科组子列表头：分数（排序按钮移到子列）')
+  assert.match(source, /\$\{g\.subject\}-pct`} className="whitespace-nowrap border-r text-center text-xs">百分位</, '非选科组子列表头：百分位')
+  assert.match(source, /s\.percentiles\?\.\[g\.subject\]/, '学科百分位取 percentiles 单科键（接口本就下发，纯前端展示）')
+  assert.match(source, /\$\{g\.subject\}-pct`} className="whitespace-nowrap border-r text-right tabular-nums text-xs text-slate-500"/, '学科百分位数据格（缺失上游已灰显「—」）')
+  assert.equal(scope.formatGradePct(0.5696), '56.96%', '0–1 小数 → 「56.96%」前% 文案')
+  assert.equal(scope.formatGradePct(0.0778), '7.78%', '前导 0 百分位不丢精度')
+  assert.match(source, /formatGradePct\(pct\)/, '学科与总分组共用同一格式化 helper')
+  // 高一五门/九门扩为 总分/百分位/名次/班名次 4 子列；+3 等级和无名次恒单列
+  assert.match(source, /RANK_CAPABLE_TOTALS = new Set<string>\(\['主三门', '3\+3', '五门', '九门'\]\)/, '带百分位/名次的总分口径集合（totalCols 本身按年级下发）')
+  assert.match(source, /totalCols\.filter\(\(tt\) => RANK_CAPABLE_TOTALS\.has\(tt\)\)/, 'rankTotalCols 按集合过滤')
+  assert.match(source, /RANKLESS_TOTALS = new Set<string>\(\['\+3'\]\)/, '+3 不在名次口径集合（段位分布排除集仍在）')
+  // 学科组恒 2 子列 → 展开行 colSpan 公式同步
+  assert.match(source, /studentGroups\.length \* 2/, '展开行 colSpan：学科组恒 2 格')
+  // 展开雷达脱滚：sticky 挂内层 div（不是 td——td 横跨全列=行宽零余量，sticky 不能越出包含块故永不钉住，
+  // 真实浏览器实测 left=-571 随表滚走）+ 内层宽度=滚动容器可视宽（ResizeObserver 跟随）
+  assert.match(source, /ref=\{studentsViewportRef\} className="max-h-\[70vh\] overflow-auto rounded-lg border border-slate-200"/, '滚动容器挂测宽 ref（class 原样保留供既有断言）')
+  assert.match(source, /new ResizeObserver\(/, 'ResizeObserver 跟随容器尺寸变化')
+  assert.match(source, /className="bg-white p-0 align-top"\s*>\s*<div\s+className="sticky left-0 z-10 border-t border-slate-100 bg-slate-50\/70 p-4"/, '展开行：td 不 sticky，sticky 挂在内层限宽 div 上')
+  assert.doesNotMatch(source, /className="sticky left-0 z-10 bg-white p-0 align-top"/, 'td 上挂 sticky 是无效写法（包含块零余量），不得回退')
+  assert.match(source, /width: Math\.max\(\(studentsViewportW \?\? 1124\) - 24, 480\), maxWidth: '100%'/, '面板宽度=容器可视宽−24px 余量（未测得前回退 1100px；不留余量滚到最右端会被钉出 ~10px）')
+  assert.match(source, /groupClassName="max-w-\[560px\]"/, '展开区每张雷达限宽，两张相邻紧凑（档案页不传不受影响）')
 })
 
 test('2026-10-23 冻结表头 z 层级：冻结格必须高于同排滑动表头（否则被后画的滑动格盖住，横向滚动看似错位）', () => {

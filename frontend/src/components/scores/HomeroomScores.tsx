@@ -118,6 +118,16 @@ const SCORES_TABS = new Set(['averages', 'students', 'bands', 'duanwei', 'freque
  *  内聚在 StudentScoreRadar（RADAR_EXCLUDED_TOTALS），此处不再重复过滤。 */
 const RANKLESS_TOTALS = new Set<string>(['+3'])
 
+/** 明细表带「百分位/名次/班名次」4 子列的总分口径：高二/三 主三门/3+3，高一 主三门/五门/九门
+ *  （2026-10-28 用户拍板：五门/九门总分行同样导入了年级百分位与学籍/年级名次，与学校表一致）；
+ *  +3 为等级和无名次恒单列。totalCols 本身按年级下发，无需再判年级。 */
+const RANK_CAPABLE_TOTALS = new Set<string>(['主三门', '3+3', '五门', '九门'])
+
+/** 年级百分位（接口 0–1 小数）→「77.81%」前%文案；缺失交调用方按「—」灰显，不转 0。 */
+function formatGradePct(pct: number): string {
+  return `${String(Math.round(pct * 10000) / 100)}%`
+}
+
 /** 趋势响应的一个学年段 → 雷达数据行（2026-10-25 用户裁决：展开区两张排名
  *  折线换成历次重叠雷达；percentile 兼容旧后端——缺失时单科回退 rank
  *  （rank_basis=grade_percentile 时它就是前%），总分行只有 school 名次不回退）。 */
@@ -188,7 +198,9 @@ function TrendPanel({
           <div key={year.academic_year_id} className="rounded-lg border border-slate-100 bg-white px-4 py-3">
             <p className="mb-3 text-sm font-semibold text-slate-700">{year.academic_year_name}</p>
             {hasLines ? (
-              <StudentScoreRadar rows={radarRowsFromTrendYear(year)} />
+              // max-w 限每张雷达 560px（2026-10-28 用户反馈「雷达分太开」）：
+              // 展开区面板已被限到可视宽，两组雷达相邻排布而非扯到两端
+              <StudentScoreRadar rows={radarRowsFromTrendYear(year)} groupClassName="max-w-[560px]" />
             ) : (
               <p className="mt-1 text-xs text-slate-400">本学年暂无成绩</p>
             )}
@@ -634,6 +646,24 @@ export function HomeroomScores() {
   const [trendsError, setTrendsError] = useState<string | null>(null)
   const [trendsNonce, setTrendsNonce] = useState(0)
 
+  // 展开区雷达脱滚（2026-10-28 用户反馈：表格可左右滚动，但雷达必须钉在可视区
+  // 完整显示）——展开行 td sticky left-0，内层宽度=滚动容器可视宽，ResizeObserver 跟随。
+  const [studentsViewportW, setStudentsViewportW] = useState<number | null>(null)
+  const studentsRoRef = useRef<ResizeObserver | null>(null)
+  const studentsViewportRef = useCallback((el: HTMLDivElement | null) => {
+    studentsRoRef.current?.disconnect()
+    studentsRoRef.current = null
+    if (el == null) return
+    setStudentsViewportW(el.clientWidth)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width
+      if (width != null) setStudentsViewportW(Math.round(width))
+    })
+    ro.observe(el)
+    studentsRoRef.current = ro
+  }, [])
+
   // 请求序号按资源分离（F11）：考试清单、stats+students、bands、trends 各自比对各自
   // 序号——共用一个序号时，切考试后同轮 bands/trends effect 的递增会把 stats/students
   // 的合法回包当作过期丢弃，造成统计卡与学生表骨架永久加载。
@@ -906,7 +936,7 @@ export function HomeroomScores() {
   // 班名次（2026-10-19 明细表新列）：按各总分口径对本班有总分学生计算，
   // 同分同名次（1,2,2,4 语义）、缺考不参与不编造；仅为浏览名次。
   const rankTotalCols = useMemo<string[]>(
-    () => totalCols.filter((tt) => tt === '主三门' || tt === '3+3'),
+    () => totalCols.filter((tt) => RANK_CAPABLE_TOTALS.has(tt)),
     [totalCols],
   )
   const classRanksByTotal = useMemo(() => {
@@ -1097,9 +1127,11 @@ export function HomeroomScores() {
                 </TabsContent>
 
                 <TabsContent value="students">
-              {/* 学生成绩明细表（2026-10-19 表头按学校导出重制）：
-                  学号/班级/学籍/姓名 + 语数英单列 + 六选科(原始/等级) +
-                  +3总分 + 主三门/3+3(总分/百分位/名次/班名次)；行点击展开趋势 */}
+              {/* 学生成绩明细表（2026-10-19 表头按学校导出重制；2026-10-28 学科分数旁
+                  加年级百分位、高一五门/九门总分扩 4 子列）：
+                  学号/班级/学籍/姓名 + 各学科组 2 子列（选科=原始分/等级分，
+                  其余=分数/百分位）+ +3总分单列 + 主三门/3+3/五门/九门(总分/百分位/名次/班名次)；
+                  行点击展开趋势（展开区 sticky 脱滚限宽） */}
               <Card>
                 <CardHeader>
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1115,7 +1147,7 @@ export function HomeroomScores() {
                   </div>
                   <CardDescription>
                     {stats ? `${selectedExamLabel} · 范围 ${String(stats.cohort_size)} 人 · ` : ''}
-                    缺考显示「—」；班名次按本班同口径总分计算（同分同名次），名次来自导入明细——学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名；点击行可展开跨学年趋势。
+                    缺考显示「—」；学科与总分的百分位均为年级前%（越小越靠前）；班名次按本班同口径总分计算（同分同名次），名次来自导入明细——学籍=1（闵中学籍）取学籍排名、学籍非1取年级排名、学籍未采集取学籍排名；点击行可展开跨学年趋势。
                     {stats?.small_sample === true ? <Badge variant="warning" className="ml-2">样本&lt;5</Badge> : null}
                   </CardDescription>
                 </CardHeader>
@@ -1135,10 +1167,11 @@ export function HomeroomScores() {
                       </p>
                     </div>
                   ) : (
-                    <div className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200">
+                    <div ref={studentsViewportRef} className="max-h-[70vh] overflow-auto rounded-lg border border-slate-200">
                       {/* 2026-10-22 尺寸改造：限高双轴滚动 + 两级粘性表头 + 冻结学号/姓名列
                           （班级/学籍两列在其下横向滑过）；内层 Table 包装以 overflow-visible
-                          交还外层滚动容器，sticky 才能同时吸顶/冻结 */}
+                          交还外层滚动容器，sticky 才能同时吸顶/冻结。
+                          ref 供展开区雷达测可视宽（2026-10-28 脱滚） */}
                       <Table wrapperClassName="overflow-visible" className={cn('min-w-max', tableStyles.table)}>
                         <TableHeader>
                           <TableRow className="bg-slate-100">
@@ -1150,12 +1183,10 @@ export function HomeroomScores() {
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">班级</TableHead>
                             <TableHead rowSpan={2} className="whitespace-nowrap border-r text-center text-xs">学籍</TableHead>
                             <TableHead rowSpan={2} className={cn('sticky left-24 w-20 whitespace-nowrap border-r text-center text-xs', tableStyles.freezeCol)}>姓名</TableHead>
-                            {studentGroups.map((g) => g.paired ? (
+                            {/* 2026-10-28：学科组恒 2 子列——选科=原始分/等级分，
+                                其余（高一全科+高二/三语数英）=分数/百分位（排序按钮在分数子列） */}
+                            {studentGroups.map((g) => (
                               <TableHead key={g.subject} colSpan={2} className="whitespace-nowrap border-r text-center text-xs">{g.subject}</TableHead>
-                            ) : (
-                              <TableHead key={g.subject} rowSpan={2} aria-sort={isStudentSort('scores', g.subject) ? 'descending' : 'none'} className={cn('whitespace-nowrap border-r text-center text-xs', isStudentSort('scores', g.subject) && tableStyles.sortedHead)}>
-                                <ScoreSortButton label={`${g.subject}原始分`} active={isStudentSort('scores', g.subject)} onClick={() => setStudentSort({ kind: 'scores', key: g.subject })}>{g.subject}</ScoreSortButton>
-                              </TableHead>
                             ))}
                             {totalCols.filter((tt) => !rankTotalCols.includes(tt)).map((tt) => (
                               <TableHead key={tt} rowSpan={2} aria-sort={isStudentSort('totals', tt) ? 'descending' : 'none'} className={cn('whitespace-nowrap border-r text-center text-xs font-semibold', isStudentSort('totals', tt) && tableStyles.sortedHead)}>
@@ -1175,7 +1206,12 @@ export function HomeroomScores() {
                               <TableHead key={`${g.subject}-graded`} aria-sort={isStudentSort('grade_scores', g.subject) ? 'descending' : 'none'} className={cn('whitespace-nowrap border-r text-center text-xs', isStudentSort('grade_scores', g.subject) && tableStyles.sortedHead)}>
                                 <ScoreSortButton label={`${g.subject}等级分`} active={isStudentSort('grade_scores', g.subject)} onClick={() => setStudentSort({ kind: 'grade_scores', key: g.subject })}>等级分</ScoreSortButton>
                               </TableHead>,
-                            ] : [])}
+                            ] : [
+                              <TableHead key={`${g.subject}-score`} aria-sort={isStudentSort('scores', g.subject) ? 'descending' : 'none'} className={cn('whitespace-nowrap text-center text-xs', isStudentSort('scores', g.subject) && tableStyles.sortedHead)}>
+                                <ScoreSortButton label={`${g.subject}分数`} active={isStudentSort('scores', g.subject)} onClick={() => setStudentSort({ kind: 'scores', key: g.subject })}>分数</ScoreSortButton>
+                              </TableHead>,
+                              <TableHead key={`${g.subject}-pct`} className="whitespace-nowrap border-r text-center text-xs">百分位</TableHead>,
+                            ])}
                             {rankTotalCols.flatMap((tt) => [
                               <TableHead key={`${tt}-score`} aria-sort={isStudentSort('totals', tt) ? 'descending' : 'none'} className={cn('whitespace-nowrap text-center text-xs', isStudentSort('totals', tt) && tableStyles.sortedHead)}>
                                 <ScoreSortButton label={`${tt}总分`} active={isStudentSort('totals', tt)} onClick={() => setStudentSort({ kind: 'totals', key: tt })}>总分</ScoreSortButton>
@@ -1216,16 +1252,22 @@ export function HomeroomScores() {
                                   {studentGroups.flatMap((g) => {
                                     if (!g.paired) {
                                       const v = s.scores?.[g.subject] ?? null
+                                      const pct = s.percentiles?.[g.subject] ?? null
                                       return [
                                         <TableCell
-                                          key={g.subject}
+                                          key={`${g.subject}-score`}
                                           className={cn(
-                                            'whitespace-nowrap border-r text-right tabular-nums text-sm',
+                                            'whitespace-nowrap text-right tabular-nums text-sm',
                                             v == null ? 'text-slate-300' : 'text-slate-900',
                                             isStudentSort('scores', g.subject) && tableStyles.sortedCell,
                                           )}
                                         >
                                           {v == null ? '—' : formatScore(v)}
+                                        </TableCell>,
+                                        // 学科年级百分位（2026-10-28）：与总分组同口径（年级前%，0–1 → %），
+                                        // 缺失显示「—」不转 0；高二三选科无此列（源表不带）
+                                        <TableCell key={`${g.subject}-pct`} className="whitespace-nowrap border-r text-right tabular-nums text-xs text-slate-500">
+                                          {pct == null ? <span className="text-slate-300">—</span> : formatGradePct(pct)}
                                         </TableCell>,
                                       ]
                                     }
@@ -1265,7 +1307,7 @@ export function HomeroomScores() {
                                         {v == null ? '—' : formatScore(v)}
                                       </TableCell>,
                                       <TableCell key={`${tt}-pct`} className="whitespace-nowrap text-right tabular-nums text-xs">
-                                        {pct == null ? <span className="text-slate-300">—</span> : `${String(Math.round(pct * 10000) / 100)}%`}
+                                        {pct == null ? <span className="text-slate-300">—</span> : formatGradePct(pct)}
                                       </TableCell>,
                                       <TableCell key={`${tt}-school`} className="whitespace-nowrap text-right tabular-nums text-xs">
                                         {schoolRank == null ? <span className="text-slate-300">—</span> : String(schoolRank)}
@@ -1286,26 +1328,38 @@ export function HomeroomScores() {
                                 </TableRow>
                                 {expanded ? (
                                   <TableRow className="hover:bg-transparent">
+                                    {/* 2026-10-28 雷达脱滚：面板钉在滚动容器可视区——横向滚动时不动、
+                                        其余行数据从两侧滑过；内层宽度=容器可视宽（ResizeObserver 跟随），
+                                        雷达不再被几千像素的宽表扯开。sticky 必须挂在内层 div 而不是 td：
+                                        sticky 元素不能越出包含块（td 的包含块是整行、td 本身横跨全列=行宽，
+                                        零余量故永不钉住；div 的包含块是 td，余量=表宽−面板宽=最大滚动距离）。
+                                        z-10 与冻结数据格同级，纵向滚动时从两级粘性表头（z 30/20/40）下方穿过 */}
                                     <TableCell
                                       colSpan={
                                         4 +
-                                        studentGroups.reduce((n, g) => n + (g.paired ? 2 : 1), 0) +
+                                        studentGroups.length * 2 +
                                         (totalCols.length - rankTotalCols.length) +
                                         rankTotalCols.length * 4 +
                                         1
                                       }
-                                      className="bg-slate-50/70 p-4"
+                                      className="bg-white p-0 align-top"
                                     >
-                                      <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                                        <TrendingUp className="h-4 w-4 text-brand-500" />
-                                        跨学年趋势 · {s.name ?? '（未命名）'}
-                                      </div>
-                                      <div className="mt-2">
-                                        <TrendPanel
-                                          trends={trendsForPerson}
-                                          error={trendsError}
-                                          onRetry={() => setTrendsNonce((n) => n + 1)}
-                                        />
+                                      <div
+                                        className="sticky left-0 z-10 border-t border-slate-100 bg-slate-50/70 p-4"
+                                        // 比可视宽少 24px：td 起始有十余像素自然偏移，不留余量滚到最右端面板会被钉出 ~10px
+                                        style={{ width: Math.max((studentsViewportW ?? 1124) - 24, 480), maxWidth: '100%' }}
+                                      >
+                                        <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                                          <TrendingUp className="h-4 w-4 text-brand-500" />
+                                          跨学年趋势 · {s.name ?? '（未命名）'}
+                                        </div>
+                                        <div className="mt-2">
+                                          <TrendPanel
+                                            trends={trendsForPerson}
+                                            error={trendsError}
+                                            onRetry={() => setTrendsNonce((n) => n + 1)}
+                                          />
+                                        </div>
                                       </div>
                                     </TableCell>
                                   </TableRow>

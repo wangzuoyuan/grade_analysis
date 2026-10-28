@@ -82,11 +82,16 @@ test('高二/三普通学科键必须展开六选科原始分/等级分，即使
     const result = groups(subjects, [student(1, null)], grade)
     assert.deepEqual(Array.from(result, group => group.subject), subjects)
     assert.deepEqual(Array.from(result, group => group.paired), [false, false, false, true, true, true, true, true, true])
+    // 2026-10-28：组恒 2 子列——选科=原始分/等级分，语数英=分数/百分位（学校源表仅语数英带百分位）
+    assert.deepEqual(Array.from(result, group => group.showPercentile), [true, true, true, false, false, false, false, false, false])
   }
 })
 
 test('高一不展开等级分；未知年级仅按实际等级分展开，不猜年级或补值', () => {
-  assert(groups(subjects, [student(1, 90)], 1).every(group => !group.paired))
+  const grade1 = groups(subjects, [student(1, 90)], 1)
+  assert(grade1.every(group => !group.paired))
+  // 2026-10-28：高一全科都带年级百分位（学校源表 9 科各一列），全部显示 分数/百分位
+  assert(grade1.every(group => group.showPercentile))
   const result = groups(subjects, [student(1, 90)], null)
   assert.deepEqual(Array.from(result.filter(group => group.paired), group => group.subject), ['物理'])
   assert.equal(groups(['物理_原始', '物理_等级'], [student(1, 90)], 2).length, 1)
