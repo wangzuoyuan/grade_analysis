@@ -1,3 +1,4 @@
+import type {InterventionTarget, ReviewContrast} from "@/lib/api-v1"
 export interface FocusCohort {
   cohort: string; kind: 'focus'; type_name: string; exam_name: string | null
   membership_basis: 'exam_anchor' | 'current_time_point'; student_count: number; person_ids: number[]
@@ -32,7 +33,8 @@ export interface FollowUpRecord {
   problem: string | null; measures: string | null; subject: string | null
   start_date: string; review_date: string | null; record_status: string; due: boolean
   metric: string | null; metric_label: string; priority: number
-  contrast: {status: 'ready' | 'pending'; reason?: string; note: string; baseline?: ContrastValue; latest?: ContrastValue
+  targets?: InterventionTarget[]
+  contrast: {results?: ReviewContrast["results"]; status: 'ready' | 'pending'; reason?: string; note: string; baseline?: ContrastValue; latest?: ContrastValue
     unit?: string; change?: {value: number; smaller_is_better: boolean}}
 }
 export interface FollowUps {calc_version: string; as_of: string; records: FollowUpRecord[]; summary: {total_n: number; due_n: number; ready_n: number; pending_n: number}; limitations: string[]}

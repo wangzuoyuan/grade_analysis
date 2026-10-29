@@ -233,7 +233,7 @@ def _is_strictly_before(point: dict, anchor: date) -> bool:
 # ────────────────────────── 复查对照主服务 ──────────────────────────
 
 
-def review_contrast(
+def _single_review_contrast(
     db: Session, ctx: WorkspaceContext, note: WsStudentNote, as_of: Optional[date] = None
 ) -> dict:
     """复查对照主服务（契约 §5.2）。
@@ -407,3 +407,38 @@ def _pending(envelope: dict, reason: str, human: str) -> dict:
     envelope["reason"] = reason
     envelope["note"] = human + _NOTE_DISCLAIMER
     return envelope
+
+
+def review_contrast(db, ctx, note, as_of=None):
+    """Per-metric results plus a compatible representative at the root."""
+    from types import SimpleNamespace
+    from app.diagnosis.interventions import target_items
+    results = []
+    for item in target_items(note):
+        proxy = SimpleNamespace(id=note.id, person_id=note.person_id, date=note.date,
+            start_date=note.start_date, review_date=note.review_date,
+            target_metric=item['metric'], baseline_value=item['baseline_value'])
+        # Preserve compatibility for old callers which edit the legacy first baseline.
+        if item['metric'] == note.target_metric and (note.baseline_value or {}).get('source') != 'attention-v1':
+            proxy.baseline_value = note.baseline_value
+        try:
+            result = _single_review_contrast(db, ctx, proxy, as_of)
+        except InvalidScopeParam:
+            result = {'calc_version': CALC_VERSION, 'follow_up_id': note.id, 'person_id': note.person_id,
+                      'as_of': (as_of or ctx.as_of).isoformat(),
+                      'review': {'start_date': note.start_date.isoformat() if note.start_date else None,
+                                 'review_date': note.review_date.isoformat() if note.review_date else None,
+                                 'due': bool(note.review_date and (as_of or ctx.as_of) >= note.review_date)},
+                      'status': 'pending', 'reason': 'unsupported_metric',
+                      'note': '目标指标不适用于当前学段，请核对。'}
+        results.append(dict(result, metric=item['metric'], target_status=item['status'], closed_at=item['closed_at']))
+    if not results:
+        return _single_review_contrast(db, ctx, note, as_of)
+    active = [r for r in results if r['target_status'] == 'open'] or results
+    representative = next((r for r in active if r['status'] == 'ready'), active[0])
+    body = {k: v for k, v in representative.items() if k not in ('target_status', 'closed_at')}
+    body['results'] = results
+    body['target_summary'] = dict(total_n=len(results), open_n=sum(r['target_status']=='open' for r in results),
+        ready_n=sum(r['target_status']=='open' and r['status']=='ready' for r in results),
+        pending_n=sum(r['target_status']=='open' and r['status']=='pending' for r in results))
+    return body

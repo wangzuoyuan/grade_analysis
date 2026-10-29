@@ -1957,11 +1957,23 @@ export interface StudentNote {
   problem?: string | null
   subject_scope?: string | null
   measures?: string | null
+  targets?: InterventionTarget[] | null
   target_metric?: string | null
   baseline_value?: BaselineValue | null
   start_date?: string | null
   review_date?: string | null
   status?: 'open' | 'done' | 'dismissed' | null
+}
+
+export interface InterventionTarget {
+  metric: string
+  baseline_value?: BaselineValue | null
+  status: 'open' | 'done' | 'dismissed'
+  closed_at?: string | null
+}
+
+export function fetchInterventionMetrics(mode: WorkspaceMode, q: NoteScopeQuery = {}): Promise<{options: Array<{value: string; label: string; kind: string}>}> {
+  return request(withQuery(`${API_V1_BASE}/${mode}/diagnosis/intervention-metrics`, {...q}))
 }
 
 /** 干预基线值+口径（后端 JSON 列；value 为指标数值，unit 见 ReviewContrast）。 */
@@ -2020,6 +2032,7 @@ export interface FollowUpCreateRequest {
   problem?: string | null
   subject_scope?: string | null
   measures?: string | null
+  targets?: InterventionTarget[] | null
   target_metric?: string | null
   baseline_value?: BaselineValue | null
   start_date?: string | null
@@ -2047,9 +2060,11 @@ export function patchFollowUp(
   noteId: number,
   req: {
     status?: 'open' | 'done' | 'dismissed'
+    content?: string
     problem?: string | null
     subject_scope?: string | null
     measures?: string | null
+    targets?: InterventionTarget[] | null
     target_metric?: string | null
     baseline_value?: BaselineValue | null
     start_date?: string | null
@@ -2085,6 +2100,8 @@ export function finishAttentionFollowUp(noteId: number, result: string, q: Atten
 
 /** 复查对照（契约 §5.2）：ready={baseline,latest,change,note}；pending+reason 绝不判定成败。 */
 export interface ReviewContrast {
+  results?: Array<ReviewContrast & {target_status: InterventionTarget["status"]; closed_at?: string | null}>
+  target_summary?: {total_n: number; open_n: number; ready_n: number; pending_n: number}
   calc_version: string
   follow_up_id: number
   person_id: number

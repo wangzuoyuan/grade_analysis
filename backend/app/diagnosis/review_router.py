@@ -92,3 +92,18 @@ def _contrast_payload(
 ) -> dict:
     note = _note_or_404(db, mode, follow_up_id, ctx)
     return review_contrast(db, ctx, note)
+
+
+@router.get("/{mode}/diagnosis/intervention-metrics")
+@domain_endpoint
+def intervention_metrics(mode: str, academic_year_id: Optional[int] = None,
+    class_id: Optional[int] = None, term_id: Optional[int] = None,
+    teaching_class_id: Optional[int] = None, subject: Optional[str] = None,
+    db: Session = Depends(get_db)) -> dict:
+    from app.diagnosis.interventions import options_for
+    from app.core.errors import InvalidScopeParam
+    if mode not in ('homeroom', 'teaching'):
+        raise InvalidScopeParam('invalid mode', details={'param': 'mode'})
+    ctx = _resolve_ctx(db, current_teacher_id(db), mode, academic_year_id,
+        class_id, term_id, teaching_class_id, subject)
+    return {'options': options_for(db, ctx)}

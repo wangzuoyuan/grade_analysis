@@ -306,5 +306,8 @@ def finish_attention_followup(db, ctx, note_id, req):
         raise InvalidScopeParam("请填写复查观察")
     note.content += f"\n复查（{ctx.as_of.isoformat()}）：{req.result.strip()}"
     note.status, note.follow_up_done = "done", 1
+    from app.diagnosis.interventions import sync_legacy_edit
+    from types import SimpleNamespace
+    sync_legacy_edit(note, SimpleNamespace(model_fields_set={'status'}))
     db.commit()
     return dict(id=note.id, status="done")

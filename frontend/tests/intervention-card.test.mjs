@@ -30,11 +30,11 @@ test('P2-C4：干预卡取数只走契约端点（notes 域内 + review-contrast
 
 test('P2-C4：创建/查看/关闭三态齐备（契约 §5.1/§5.3）', () => {
   // §5.1 全部可选字段在创建表单齐备
-  for (const field of ['problem', 'subject_scope', 'measures', 'target_metric', 'baseline_value', 'start_date', 'review_date']) {
+  for (const field of ['problem', 'subject_scope', 'measures', 'targets', 'start_date', 'review_date']) {
     assert.match(card, new RegExp(`${field}:`), `创建请求携带 ${field}`)
   }
   assert.match(card, /新建干预/, '创建入口')
-  assert.match(card, /标记完成并关闭/, '关闭入口（done）')
+  assert.match(card, /完成跟进/, '关闭入口（done）')
   assert.match(card, /不再跟进/, '关闭入口（dismissed）')
   assert.match(apiV1, /status\?: 'open' \| 'done' \| 'dismissed'/, 'status 三态类型')
 })
@@ -103,9 +103,9 @@ test('P2-C4：api-v1 类型与后端契约字段逐一对齐', () => {
 test('Codex 复审 #3：名次手填基线拒绝非整数（前端第一道防线）', () => {
   const card = readFileSync(new URL('../src/components/student/InterventionCard.tsx', import.meta.url), 'utf8')
   assert.match(
-    card,
-    /!Number\.isInteger\(baselineNum\)/,
+    readFileSync(new URL('../src/components/student/intervention-targets.ts', import.meta.url), 'utf8'),
+    /!Number\.isInteger\(value\)/,
     '名次基线须做整数校验',
   )
-  assert.match(card, /名次为整数（如 300），不支持小数。/, '非整数给出中文提示')
+  assert.match(readFileSync(new URL('../src/components/student/intervention-targets.ts', import.meta.url), 'utf8'), /名次填正整数/, '非整数给出中文提示')
 })

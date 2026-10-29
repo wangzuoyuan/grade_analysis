@@ -84,3 +84,6 @@ def exam_homework_correlation(db, scope, exam_name, window_days=14, metric="tota
 - **真实数据上相关性 not_computable 属诚实纪律**：旧系统导入的作业批次 expected_members_json 均为空数组（无应交名单 → 无分母），旧实现同样整批剔除；应用内新录入作业自带应交名单后相关性逐步可算。
 - C2 due_this_week 2026-09-29 起按计划复查日（review_date 缺省回落档案日期）落在近 7 天窗口计数；C3 建议确认上限 3 条由 items 承载。
 - C4 基线锚点（2026-09-29）：自动捕获只取 start_date（缺省回落档案日期）**之前**的可比点，补录过去开始的干预不取干预后成绩；PATCH 改 target_metric / 改期致基线失效时自动按新口径重取，复查对照另对基线 metric 不符兜底 pending/baseline_incomparable。
+
+## 2026-10-29 C4 多指标扩展
+notes 新增 targets=[{metric, baseline_value, status, closed_at}]；写入按 metric 唯一，targets 与旧 target_metric/baseline_value 不得混用。PATCH targets 以完整集合编辑，省略已存项保留为 dismissed；未传 baseline_value 保留原值，新项自动取开始日前基线。整条 open=存在 open 项，否则任一 done→done，全 dismissed→dismissed。旧关闭入口结束全部未结束项。复查 results 逐项独立返回，顶层保留兼容投影；整条 ready 以未关闭项中任一 ready 判定（全结束则看历史项）。旧无指标记录继续保留。

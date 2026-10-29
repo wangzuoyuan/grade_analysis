@@ -21,6 +21,7 @@ from app.diagnosis.research import (
     _check_year, _metric_options, _metric_change_of, _intervention_notes,
     LIMITATIONS_RETROSPECTIVE,
 )
+from app.diagnosis.interventions import target_items
 from app.diagnosis.review import metric_meta_or_422, unit_of_metric, metric_points, review_contrast
 from app.diagnosis.types import classify_student
 
@@ -310,6 +311,8 @@ def follow_ups(db, ctx):
                         "subject": note.subject_scope, "start_date": (note.start_date or note.date).isoformat(),
                         "review_date": note.review_date.isoformat() if note.review_date else None,
                         "record_status": note.status, "due": due, "metric": note.target_metric,
+                        "targets": target_items(note),
+                        "target_summary": contrast.get("target_summary"),
                         "metric_label": options.get(note.target_metric, "未设定或不适用的目标指标"), "contrast": contrast,
                         "priority": 3 if closed else 0 if due else 1 if contrast["status"] == "ready" else 2})
     records.sort(key=lambda r: (r["priority"], r["review_date"] or "9999", r["id"]))

@@ -214,6 +214,11 @@ export default function HomeworkCard({
     }
   }, [personId, mode, scopeQ, allHistory])
 
+  const recentCutoff = useMemo(
+    () => new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    [],
+  )
+
   if (loaded && (!data || !data.events || data.events.length === 0)) {
     return (
       <Card>
@@ -314,10 +319,6 @@ export default function HomeworkCard({
 
   // 近 2 周折叠（默认异常视图）：近 14 天异常直接展示，更早异常收进 <details> 默认收起。
   // assigned_date 为 ISO 日期串（或 ISO 时间串），与 cutoff 做字符串比较即可。
-  const recentCutoff = useMemo(
-    () => new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-    [],
-  )
   const recentAnomalies = anomaliesList.filter((e) => e.assigned_date >= recentCutoff)
   const olderAnomalies = anomaliesList.filter((e) => e.assigned_date < recentCutoff)
 

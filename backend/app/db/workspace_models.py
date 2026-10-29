@@ -35,7 +35,7 @@ from sqlalchemy import (
     event,
     text,
 )
-from sqlalchemy.orm import validates
+from sqlalchemy.orm import validates, relationship
 
 from app.db.models import Base, engine
 
@@ -781,6 +781,7 @@ class WsStudentNote(Base):
     start_date = Column(Date, nullable=True)          # 干预开始日（复查对照锚点）
     review_date = Column(Date, nullable=True)         # 计划复查日
     status = Column(String(16), nullable=True)        # open/done/dismissed；NULL=非干预
+    targets = relationship("WsInterventionTarget", cascade="all, delete-orphan", order_by="WsInterventionTarget.id")
     source = Column(String(32), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # Q06 回退增量依赖 updated_at 越界发现"已存在行的修改"；档案 PATCH
@@ -897,3 +898,18 @@ class ChatMessage(Base):
 # 供 API 层与测试按契约引用，不改任何表结构。
 StudentIdentity = WsStudentIdentity
 StudentAlias = WsStudentAlias
+
+
+class WsInterventionTarget(Base):
+    """Each metric retains its own baseline and follow-up state."""
+    __tablename__ = "ws_intervention_target"
+    id = Column(Integer, primary_key=True)
+    note_id = Column(Integer, ForeignKey("ws_student_note.id", ondelete="CASCADE"), nullable=False)
+    metric = Column(String(64), nullable=False)
+    baseline_value = Column(JSON, nullable=True)
+    status = Column(String(16), nullable=False, default="open")
+    closed_at = Column(DateTime, nullable=True)
+    __table_args__ = (
+        UniqueConstraint("note_id", "metric", name="uq_intervention_target_metric"),
+        CheckConstraint("status IN ('open','done','dismissed')", name="ck_intervention_target_status"),
+    )

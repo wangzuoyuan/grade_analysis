@@ -533,11 +533,15 @@ def _review_summary(db: Session, ctx: WorkspaceContext, member_ids: List[int]) -
     ``review.review_contrast`` 逐条对照，只计数，绝不复制对照逻辑。"""
     member_set = set(member_ids)
     ready = pending = 0
+    target_ready = target_pending = 0
     by_reason: Dict[str, int] = {}
     for note in _intervention_notes(db, ctx):
         if note.person_id not in member_set:
             continue
         contrast = review_contrast(db, ctx, note)
+        totals = contrast.get("target_summary", {})
+        target_ready += totals.get("ready_n", 0)
+        target_pending += totals.get("pending_n", 0)
         if contrast.get("status") == "ready":
             ready += 1
         else:
@@ -549,6 +553,7 @@ def _review_summary(db: Session, ctx: WorkspaceContext, member_ids: List[int]) -
         "pending_n": pending,
         "total_n": ready + pending,
         "pending_reasons": dict(sorted(by_reason.items())),
+        "target_ready_n": target_ready, "target_pending_n": target_pending,
     }
 
 

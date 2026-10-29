@@ -6,7 +6,7 @@ ISO 字符串（格式校验在端点内执行，保证 422 统一 {"error": cod
 缺考/空值保持 null 绝不转 0。
 """
 
-from typing import Dict, List, Optional
+from typing import Literal, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -340,6 +340,7 @@ NOTE_FOLLOW_UP_STATUSES = ("open", "done", "dismissed")
 # P2-C4 干预扩展列（创建请求出现任一列 → 该档案按干预建档：status=open、
 # 防重复校验、target_metric 合法性校验 + 基线自动捕获）
 NOTE_INTERVENTION_FIELDS = (
+    "targets",
     "problem",
     "subject_scope",
     "measures",
@@ -348,6 +349,19 @@ NOTE_INTERVENTION_FIELDS = (
     "start_date",
     "review_date",
 )
+
+
+class InterventionTargetInput(BaseModel):
+    metric: str
+    baseline_value: Optional[Dict] = None
+    status: Literal["open", "done", "dismissed"] = "open"
+
+
+class InterventionTargetItem(BaseModel):
+    metric: str
+    baseline_value: Optional[Dict] = None
+    status: str
+    closed_at: Optional[str] = None
 
 
 class NoteItem(BaseModel):
@@ -362,6 +376,7 @@ class NoteItem(BaseModel):
     problem: Optional[str] = None
     subject_scope: Optional[str] = None
     measures: Optional[str] = None
+    targets: Optional[List[InterventionTargetItem]] = None
     target_metric: Optional[str] = None
     baseline_value: Optional[Dict] = None
     start_date: Optional[str] = None
@@ -399,6 +414,7 @@ class NoteCreateRequest(BaseModel):
     problem: Optional[str] = None
     subject_scope: Optional[str] = None
     measures: Optional[str] = None
+    targets: Optional[List[InterventionTargetInput]] = None
     target_metric: Optional[str] = None
     baseline_value: Optional[Dict] = None
     start_date: Optional[str] = None
@@ -418,6 +434,7 @@ class NotePatchRequest(BaseModel):
     problem: Optional[str] = None
     subject_scope: Optional[str] = None
     measures: Optional[str] = None
+    targets: Optional[List[InterventionTargetInput]] = None
     target_metric: Optional[str] = None
     baseline_value: Optional[Dict] = None
     start_date: Optional[str] = None

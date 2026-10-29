@@ -80,6 +80,7 @@ from app.core.errors import (
     ResourceOutOfScope,
     WorkspaceNotConfigured,
 )
+from app.diagnosis.interventions import target_items
 from app.db.models import get_db
 from app.db.workspace_models import (
     AcademicYear,
@@ -337,6 +338,7 @@ def _note_item(note: WsStudentNote) -> NoteItem:
         problem=note.problem,
         subject_scope=note.subject_scope,
         measures=note.measures,
+        targets=target_items(note),
         target_metric=note.target_metric,
         baseline_value=note.baseline_value,
         start_date=note.start_date.isoformat() if note.start_date else None,
@@ -3067,6 +3069,8 @@ def create_note(
     content = (req.content or "").strip()
     if not content:
         raise InvalidScopeParam("content must be a non-empty string", details={"param": "content"})
+    from app.diagnosis.interventions import check_input
+    check_input(req)
     # ── P2-C4 干预建档（契约 §5.1）：防重复录入 + target_metric 校验 +
     # 基线自动捕获（复用 app.diagnosis.review 服务，成绩口径同源）。──
     start_date = (
@@ -3086,6 +3090,8 @@ def create_note(
         if target_metric:
             from app.diagnosis.review import capture_baseline, metric_meta_or_422
 
+            if ctx.mode == 'teaching' and target_metric not in (f'subject:{ctx.subject}', f'subject_grade:{ctx.subject}'):
+                raise InvalidScopeParam('目标指标超出任教学科', details={'param': 'target_metric'})
             metric_meta_or_422(db, ctx, target_metric)  # 不支持的指标 → 422（唯一口径解析）
             if req.baseline_value is not None:
                 # 教师手填基线：单位范围先校验（percentile 0–1 小数等，见
@@ -3127,6 +3133,11 @@ def create_note(
         review_date=review_date,
         status="open" if _is_intervention_request(req) else None,
     )
+    from app.diagnosis.interventions import apply_targets, ensure_legacy_target
+    if req.targets is not None:
+        apply_targets(db, ctx, note, req.targets)
+    else:
+        ensure_legacy_target(note)
     db.add(note)
     db.commit()
     return _note_item(note)
@@ -3155,6 +3166,8 @@ def patch_note(
         subject=subject,
     )
     note = _note_or_404(db, mode, note_id, ctx)
+    from app.diagnosis.interventions import check_input
+    check_input(req)
     fields = req.model_fields_set or set()
 
     if "category" in fields and req.category is not None:
@@ -3205,6 +3218,8 @@ def patch_note(
         if new_metric and note.status in ("open", "done", "dismissed"):
             from app.diagnosis.review import metric_meta_or_422
 
+            if ctx.mode == 'teaching' and new_metric not in (f'subject:{ctx.subject}', f'subject_grade:{ctx.subject}'):
+                raise InvalidScopeParam('目标指标超出任教学科', details={'param': 'target_metric'})
             metric_meta_or_422(db, ctx, new_metric)  # 与创建同口径：不支持 → 422
         note.target_metric = new_metric
     if "baseline_value" in fields:
@@ -3242,7 +3257,8 @@ def patch_note(
     # 基线不再早于新锚点时，按当前指标与锚点重取；重取不到 → None（复查
     # 对照如实 pending/no_baseline，教师可手填）。同请求显式手填
     # baseline_value 的以手填为准，不覆盖。旧档案（status=NULL）不动。──
-    if note.status in ("open", "done", "dismissed") and note.target_metric:
+    if (note.status in ("open", "done", "dismissed") and note.target_metric
+            and req.targets is None and (note.baseline_value or {}).get('source') != 'attention-v1'):
         anchor = note.start_date or note.date
         # start_date 为空时锚点随档案 date 移动：改 date 同样可能使既有
         # 基线落在锚点之后（如补录过去开始的干预），须一并检查。
@@ -3255,7 +3271,7 @@ def patch_note(
                 dict(note.baseline_value) if isinstance(note.baseline_value, dict) else {}
             )
             exam_date = baseline.get("exam_date")
-            if baseline and (exam_date is None or not _exam_date_before(exam_date, anchor)):
+            if baseline and baseline.get("source") != "teacher" and (exam_date is None or not _exam_date_before(exam_date, anchor)):
                 needs_recapture = True
         if needs_recapture and not (
             "baseline_value" in fields and req.baseline_value is not None
@@ -3265,6 +3281,13 @@ def patch_note(
             note.baseline_value = capture_baseline(
                 db, ctx, note.person_id, note.target_metric, anchor=anchor
             )
+    from app.diagnosis.interventions import apply_targets, sync_legacy_edit
+    if req.targets is not None:
+        if {'status', 'follow_up_done'} & fields:
+            raise InvalidScopeParam('逐指标编辑不可同时更改整条状态', details={'param': 'targets'})
+        apply_targets(db, ctx, note, req.targets, anchor_changed=bool({'start_date', 'date'} & fields))
+    else:
+        sync_legacy_edit(note, req, db, ctx)
     db.commit()
     return _note_item(note)
 
