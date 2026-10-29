@@ -320,12 +320,16 @@ _GRADE23_FIXED_SUBJECT_PCT = {"语文": 27, "数学": 28, "英语": 29}
 
 
 def _grade23_total_of(label: str) -> str | None:
-    """列标签（表头顶标签或整列名）→ 总分口径。"""
+    """列标签（表头顶标签或整列名）→ 总分口径。
+
+    2026-10-28 学校再版明细表：主三门块合并头改标「三门」（与名次段表
+    detect_total_type 的 三门/主三 词汇一致）、3+3 块标「所有（3+3）」
+    （含 3+3 子串本就命中）。"""
     if not label:
         return None
     if label.startswith("+3") or label in {"加3", "加3总分"}:
         return "+3"
-    if "主三门" in label or "主三" in label:
+    if "主三门" in label or "主三" in label or "三门" in label:
         return "主三门"
     if "3+3" in label:
         return "3+3"
@@ -333,10 +337,12 @@ def _grade23_total_of(label: str) -> str | None:
 
 
 def _grade23_slot_of(text: str) -> str | None:
-    """列的子标签/后缀 → 槽位（总分/百分位/学籍排名/年级排名）。"""
+    """列的子标签/后缀 → 槽位（总分/百分位/学籍排名/年级排名）。
+
+    百分位与百分比同义（学校 2026-10-28 版明细表子标签写「年级百分比」）。"""
     if not text:
         return "score"
-    if "百分位" in text:
+    if "百分位" in text or "百分比" in text:
         return "percentile"
     if "学籍排名" in text or "学籍名次" in text or "校名次" in text:
         return "xueji_rank"
@@ -385,19 +391,28 @@ def _grade23_layout(ws) -> dict[str, Any] | None:
                 if slot in {"xueji_rank", "grade_rank"}:
                     rank_label_seen = True
             continue
-        # 语数英年级百分位列（新版可能随总分块平移，同样按名定位）
+        # 语数英年级百分位列（新版可能随总分块平移，同样按名定位；
+        # 2026-10-28 版子标签为「百分比」，与「百分位」同义）
         for subject in ("语文", "数学", "英语"):
-            if (flat.startswith(subject) or top.startswith(subject)) and "百分位" in (sub or flat or top):
+            if (flat.startswith(subject) or top.startswith(subject)) and any(
+                "百分位" in part or "百分比" in part
+                for part in (sub, flat, top)
+                if part
+            ):
                 pcts.setdefault(subject, col)
                 break
 
     if not rank_label_seen:
         return None
     # 槽位兜底：缺标签的槽按旧固定列位补（该列标签须仍属同一总分块；
-    # 列数不足（如 3+3 块整块缺失）不兜底——保持槽缺失）
+    # 列数不足（如 3+3 块整块缺失）不兜底——保持槽缺失。
+    # 固定列若已被本块既有槽位占用（典型：总分列）则跳过——2026-10-28
+    # 实测块平移后百分位兜底曾指到 3+3 总分列，装进 422÷100=4.22 的假百分位）
     for total_type, fixed in _GRADE23_FIXED_TOTALS.items():
         for slot, fixed_col in fixed.items():
             if slot in totals[total_type] or fixed_col > len(flats):
+                continue
+            if fixed_col in totals[total_type].values():
                 continue
             label = flats[fixed_col - 1] or tops[fixed_col - 1]
             if _grade23_total_of(label) == total_type:

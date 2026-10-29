@@ -217,6 +217,76 @@ def test_parse_grade23_new_format_partial_columns(tmp_path):
     assert "3+3" not in totals
 
 
+def make_grade23_20261028_variant(path: Path):
+    """2026-10-28 学校再版明细表（真实文件复刻，匿名化数据）：
+    主三门合并头标「三门」、3+3 块标「所有（3+3）」、子标签写
+    「年级百分比」「百分比」（非「年级百分位」）。修复前三处错位：
+    主三门整块丢失 / 语数英百分位落到旧固定列 27-29 装进名次 /
+    3+3 百分位兜底撞总分列（score÷100 假百分位）。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "学生成绩明细"
+    for c, t in {1: "学号", 2: "班级", 3: "学籍", 4: "姓名", 5: "语文", 6: "数学", 7: "英语",
+                 8: "物理", 10: "化学", 12: "生物", 14: "政治", 16: "历史", 18: "地理",
+                 20: "+3总分", 21: "三门", 25: "所有（3+3）",
+                 29: "语文", 30: "数学", 31: "英语"}.items():
+        ws.cell(2, c, t)
+    for c, s in {8: "原始", 9: "等级", 10: "原始", 11: "等级", 12: "原始", 13: "等级",
+                 14: "原始", 15: "等级", 16: "原始", 17: "等级", 18: "原始", 19: "等级",
+                 21: "总分", 22: "年级百分比", 23: "学籍排名", 24: "年级排名",
+                 25: "总分", 26: "年级百分比", 27: "学籍排名", 28: "年级排名",
+                 29: "百分比", 30: "百分比", 31: "百分比"}.items():
+        ws.cell(3, c, s)
+    ws.merge_cells(start_row=2, start_column=21, end_row=2, end_column=24)
+    ws.merge_cells(start_row=2, start_column=25, end_row=2, end_column=28)
+    # 两行数据：数值取真实文件形状（名次 3 位数、百分位 0-1 小数）
+    for r, (sid, cls, xj, name, cols) in {
+        4: ("7240101", "06", 1, "卞幻", {5: 89, 6: 80, 7: 88, 8: 58, 9: 52, 10: 41, 11: 46,
+                                         20: 165, 21: 257, 22: 0.7781, 23: 477, 24: 480,
+                                         25: 422, 26: 0.8206, 27: 503, 28: 505,
+                                         29: 0.6476, 30: 0.7798, 31: 0.6977}),
+        5: ("7240102", "06", 2, "学生乙", {5: 86, 6: 76, 7: 77,
+                                          20: 159, 21: 239, 22: 0.7863, 23: 485, 24: 488,
+                                          25: 415, 26: 0.8288, 27: 522, 28: 524,
+                                          29: 0.7749, 30: 0.6234, 31: 0.5566}),
+    }.items():
+        ws.cell(r, 1, sid)
+        ws.cell(r, 2, cls)
+        ws.cell(r, 3, xj)
+        ws.cell(r, 4, name)
+        for c, v in cols.items():
+            ws.cell(r, c, v)
+    wb.save(path)
+
+
+def test_parse_grade23_20261028_variant_labels(tmp_path):
+    """2026-10-28 变体标签全解析：三门/所有（3+3）/百分比 词汇兼容，
+    主三门块在场、百分位各归各列（修复前主三门丢失+百分位装名次/总分）。"""
+    sample = tmp_path / "高二再版明细表.xlsx"
+    make_grade23_20261028_variant(sample)
+    assert is_grade23_student_sheet(sample)
+
+    result = parse_excel_grade23(str(sample), grade=2)
+    assert result["kind"] == "student_scores"
+
+    totals = {row["total_type"]: row for row in result["total_scores"] if row["student_id"] == "7240101"}
+    assert set(totals) == {"+3", "主三门", "3+3"}, "主三门整块不得再丢失"
+    assert totals["主三门"]["total_score"] == 257
+    assert abs(totals["主三门"]["grade_percentile"] - 0.7781) < 1e-9
+    assert totals["主三门"]["xueji_rank"] == 477
+    assert totals["主三门"]["grade_rank"] == 480
+    assert totals["3+3"]["total_score"] == 422
+    assert abs(totals["3+3"]["grade_percentile"] - 0.8206) < 1e-9, "3+3 百分位不得再撞总分列（422÷100=4.22）"
+    assert totals["3+3"]["xueji_rank"] == 503
+    assert totals["3+3"]["grade_rank"] == 505
+
+    subjects = {row["subject"]: row for row in result["subject_scores"] if row["student_id"] == "7240101"}
+    assert abs(subjects["语文"]["grade_percentile"] - 0.6476) < 1e-9, "语文百分位不得再装进 3+3 学籍排名（503÷100）"
+    assert abs(subjects["数学"]["grade_percentile"] - 0.7798) < 1e-9, "数学百分位不得再装进 3+3 年级排名（505÷100）"
+    assert abs(subjects["英语"]["grade_percentile"] - 0.6977) < 1e-9, "英语百分位不得再装进语文百分位列"
+    assert subjects["物理"]["grade_score"] == 52
+
+
 def test_parse_grade1_percentiles(tmp_path):
     workbook = Workbook()
     ws = workbook.active
