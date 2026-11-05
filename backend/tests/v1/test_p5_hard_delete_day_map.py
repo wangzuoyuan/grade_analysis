@@ -5,11 +5,12 @@
   保持不变；存量 revoked 行保留在库但列表不再下发。
 - 按天映射：当天任何可见批次登记的请假（excused）与出勤异常（迟到/
   没来等，含考勤批次缺勤行）按人映射到当天其他可见批次——请假 → 非考勤
-  批次一律按请假（显式已交行除外）；出勤异常 → 缺交行补注出勤文本
-  （缺交计数保留、连缺跳过）。可见范围 = 本域班 + 经作业共享门的关联班
-  批次（请假跨域生效），读取即映射、零数据迁移，考勤批次只作来源不作
-  映射目标。计数/详情/列表 id 数组/预警/连缺/画像/确认回执/预览装饰
-  同一口径。
+  批次一律按请假（显式已交行除外）；出勤异常 → 行补注出勤文本
+  （2026-11-05 起不限缺交行：缺交行维持缺交计数、连缺跳过；已交行保持
+  已交仅挂注记，收交状态与提交率不翻转）。可见范围 = 本域班 + 经作业共
+  享门的关联班批次（请假跨域生效），读取即映射、零数据迁移，考勤批次
+  只作来源不作映射目标。计数/详情/列表 id 数组/预警/连缺/画像/确认回执/
+  预览装饰同一口径。
 """
 
 import json
@@ -324,7 +325,7 @@ def test_day_map_counts_warnings_streaks_and_rates(client, v1_seed, db_session):
     assert p.status_code == 200, p.text
     preview_rows = {s["person_id"]: s for s in p.json()["assignment"]["submissions"]}
     assert preview_rows[v1_seed.jia_h_id]["status"] == "excused"
-    assert preview_rows[v1_seed.yi_h_id]["status"] == "submitted"  # 出勤注记只落缺交行
+    assert preview_rows[v1_seed.yi_h_id]["status"] == "submitted"  # 已交行也只挂注记不翻转
     assert any("请假" in w for w in p.json()["assignment"]["warnings"])
     confirmed = _confirm(client, p.json()["token"]).json()
     assert confirmed["excused"] == 1 and confirmed["submitted"] == 2
@@ -423,3 +424,95 @@ def test_cross_subject_leave_maps_both_directions(client, v1_seed, db_session):
     assert v1_seed.jia_h_id in math["excused_ids"]
     assert v1_seed.jia_h_id not in math["missing_ids"]
     assert v1_seed.yi_h_id in math["attendance_ids"]
+
+
+def test_adjusted_submission_attendance_extends_to_submitted_rows():
+    """单元级（2026-11-05 扩展）：出勤注记挂到已交行（状态不翻转）、缺交行
+    维持缺交、行上已有出勤词不重复追加、合成默认行同样注记、请假优先、
+    原行对象绝不被改写（临时对象零写库）。"""
+    from app.api.homework import _adjusted_submission
+
+    a = wm.HomeworkAssignment(data_domain="teaching", subject="物理")
+    flags = {"excused": False, "attendance_text": "迟到"}
+
+    submitted = wm.HomeworkSubmission(person_id=1, submission_status="submitted")
+    adj = _adjusted_submission(a, 1, submitted, flags)
+    assert adj.submission_status == "submitted"
+    assert adj.evaluation == "迟到"
+    assert submitted.evaluation is None  # 原行未被改写
+
+    missing = wm.HomeworkSubmission(person_id=2, submission_status="missing")
+    adj_missing = _adjusted_submission(a, 2, missing, flags)
+    assert adj_missing.submission_status == "missing"
+    assert adj_missing.evaluation == "迟到"
+
+    already = wm.HomeworkSubmission(
+        person_id=3, submission_status="submitted", evaluation="迟到"
+    )
+    assert _adjusted_submission(a, 3, already, flags).evaluation == "迟到"  # 不重复追加
+
+    synthetic = _adjusted_submission(a, 4, None, flags)
+    assert synthetic.submission_status == "submitted"
+    assert synthetic.evaluation == "迟到"
+
+    leave = _adjusted_submission(
+        a, 5, submitted, {"excused": True, "attendance_text": "迟到"}
+    )
+    assert leave.submission_status == "excused"  # 请假优先，不带注记
+
+
+def test_day_attendance_annotates_submitted_rows(client, v1_seed, db_session):
+    """2026-11-05 扩展（用户拍板，班主任考勤迟到 → 教学物理已交行场景）：
+    出勤异常注记不再限于缺交行——已交行同样挂注记，收交状态不翻转
+    （submitted 计数与提交率不变）；缺交行维持缺交；考勤批次自身不被标注；
+    画像事件流评价带出勤文本。"""
+    _set_scope(client, v1_seed, ["roster", "current_subject_homework"])
+    day2 = "2025-10-23"  # 独立日期，避免与 _seed_day 的同日事实互相污染
+    attend = _insert_batch(
+        db_session, domain="homeroom", class_id=v1_seed.h6_id, ay_id=v1_seed.ay_id,
+        subject="考勤", homework_type="日报", day=day2,
+        expected_ids=v1_seed.h_person_ids,
+        rows=[
+            (v1_seed.jia_h_id, "missing", None),   # 考勤缺勤无文本 → 回退「缺席」
+            (v1_seed.yi_h_id, "missing", "迟到"),   # 考勤缺勤带文本
+        ],
+        token_suffix=_token_suffix(),
+    )
+    physics = _insert_batch(
+        db_session, domain="teaching", class_id=v1_seed.t6_id, ay_id=v1_seed.ay_id,
+        subject="物理", homework_type="回复力和能量", day=day2,
+        expected_ids=v1_seed.t6_person_ids,
+        rows=[
+            (v1_seed.jia_t_id, "submitted", None),  # 已交 → 挂缺席注记、状态不变
+            (v1_seed.yi_t_id, "submitted", None),   # 已交 → 挂迟到注记、状态不变
+            (v1_seed.ding_t_id, "submitted", None),  # 无出勤事实 → 无注记
+        ],
+        token_suffix=_token_suffix(),
+    )
+
+    body = _list_items(client, v1_seed, mode="teaching", day=day2)
+    item = next(i for i in body["items"] if i["assignment_id"] == physics.id)
+    assert set(item["attendance_ids"]) == {v1_seed.jia_t_id, v1_seed.yi_t_id}
+    assert item["submitted"] == 3 and item["missing"] == 0 and item["excused"] == 0
+    assert item["submission_rate"] == 1.0
+
+    detail = _detail(client, v1_seed, physics.id, mode="teaching").json()
+    rows = {s["person_id"]: s for s in detail["submissions"]}
+    assert rows[v1_seed.jia_t_id]["status"] == "submitted"
+    assert rows[v1_seed.jia_t_id]["attendance"] == "缺席"
+    assert rows[v1_seed.yi_t_id]["status"] == "submitted"
+    assert rows[v1_seed.yi_t_id]["attendance"] == "迟到"
+    assert rows[v1_seed.ding_t_id]["status"] == "submitted"
+    assert rows[v1_seed.ding_t_id]["attendance"] is None
+
+    # 画像事件流同口径：已交事件评价带出勤文本（档案卡出勤徽标数据源）
+    profile = _profile(client, v1_seed, v1_seed.yi_t_id, mode="teaching")
+    event = next(e for e in profile["events"] if e["assignment_id"] == physics.id)
+    assert event["status"] == "submitted"
+    assert "迟到" in (event["evaluation"] or "")
+
+    # 考勤批次自身不被标注（只作来源不作目标），缺勤行不进学科缺交名单
+    h_body = _list_items(client, v1_seed, mode="homeroom", day=day2)
+    h_attend = next(i for i in h_body["items"] if i["assignment_id"] == attend.id)
+    assert set(h_attend["attendance_ids"]) == {v1_seed.jia_h_id, v1_seed.yi_h_id}
+    assert h_attend["missing_ids"] == []

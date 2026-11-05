@@ -1012,8 +1012,10 @@ def _rate_stats_of(
 # 含考勤批次的缺勤行）是该生当天的出勤事实，自动映射到当天其他可见批次——
 # 请假 → 该生当天非考勤批次一律按请假（无条件覆盖：请假了就不可能有已交，
 # full 台账展开的已交行同样翻转；老师认为确已交付应修正请假记录本身）；
-# 出勤异常 → 该生缺交行补注出勤文本（缺交计数保留、连缺跳过，与同批次
-# 缺交+迟到既有口径一致）。优先级：请假 > 出勤异常 > 原状态。
+# 出勤异常 → 该生行补注出勤文本（2026-11-05 起不限缺交行：缺交行维持缺交
+# 计数、连缺跳过，与同批次缺交+迟到既有口径一致；已交行保持已交仅挂注记，
+# 收交状态与提交率不翻转——迟到但补交了作业仍算已交）。优先级：
+# 请假 > 出勤异常 > 原状态。
 # 可见范围 = 当前工作台视角（本域班 + 经作业共享门的关联班批次、仅事件
 # 时点授权成员），已删除批次不存在、撤销（存量）批次不参与。读取即映射、
 # 零数据迁移，历史记录同样生效；考勤批次是出勤事实本身，只作映射来源、
@@ -1108,11 +1110,14 @@ def _adjusted_submission(
             assignment_id=a.id, person_id=rid, submission_status="excused"
         )
     att_text = flags.get("attendance_text")
-    if att_text and raw_status == "missing" and not _attendance_of(raw_eval):
+    # 2026-11-05 扩展（用户拍板）：出勤异常注记不再限于缺交行——已交行同样
+    # 挂注记，收交状态原样保留（迟到但补交了作业仍算已交，提交率分母分子
+    # 均不变）；缺交行维持缺交；行上已有出勤词不重复追加。
+    if att_text and not _attendance_of(raw_eval):
         return HomeworkSubmission(
             assignment_id=a.id,
             person_id=rid,
-            submission_status="missing",
+            submission_status=raw_status,
             evaluation="｜".join(part for part in (raw_eval, att_text) if part),
         )
     return row or HomeworkSubmission(
@@ -2576,7 +2581,8 @@ def homework_warnings(
             events_by_person.setdefault(rid, []).append((a, s))
 
     # 按天映射（2026-10-26）：当天其他批次（含本循环跳过的考勤批次）登记的
-    # 请假/出勤异常，修正每人的行口径——请假行改 excused、缺交行补注出勤。
+    # 请假/出勤异常，修正每人的行口径——请假行改 excused、其余行补注出勤
+    # （2026-11-05 起已交行也标注，收交状态不翻转）。
     day_flags = _day_exception_flags(
         db, ctx, {a.assigned_date for a, _projected in visible_rows}
     )
