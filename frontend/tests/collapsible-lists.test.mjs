@@ -94,6 +94,12 @@ test('BackupCard：备份列表收起 6 份，MoreToggle（份备份）', () => 
   assert.match(backupCard, /<MoreToggle/, '')
 })
 
+test('BackupCard 接线设置页（2026-11-10）：合并版前端恢复备份 UI 入口', () => {
+  const settingsPage = readFileSync(new URL('../src/app/settings/page.tsx', import.meta.url), 'utf8')
+  assert.match(settingsPage, /import BackupCard from '@\/components\/BackupCard'/, '设置页必须引入 BackupCard')
+  assert.match(settingsPage, /<BackupCard \/>/, '设置页必须渲染 BackupCard（此前为无引用死组件、前端无备份入口）')
+})
+
 test('BackupCard 恢复二次凭据（2026-11-09）：确认密码输入 + confirm_password 随请求提交', () => {
   assert.match(backupCard, /confirm_password: confirmPassword/, '恢复请求须携带 confirm_password')
   assert.match(backupCard, /type="password"/, '确认密码输入框为 password 型')

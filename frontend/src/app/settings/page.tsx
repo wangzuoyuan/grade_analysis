@@ -1,6 +1,7 @@
 import { SemesterSettingsCard } from '@/components/homework/SemesterSettingsCard'
 import { RankBandsSettingsCard } from '@/components/settings/RankBandsSettingsCard'
 import { DiagnosisThresholdSettingsCard } from '@/components/settings/DiagnosisThresholdSettingsCard'
+import BackupCard from '@/components/BackupCard'
 
 export default function SemesterSettingsPage() {
   return (
@@ -12,6 +13,10 @@ export default function SemesterSettingsPage() {
       <SemesterSettingsCard />
       <RankBandsSettingsCard />
       <DiagnosisThresholdSettingsCard />
+      {/* 2026-11-10：备份/恢复入口接线（此前 BackupCard 为无引用死组件，
+          合并版前端一直没有备份 UI 入口）；恢复走 /api/restore，开启登录后
+          须确认密码（v1.0.13 加固），恢复成功会话失效需重登一次。 */}
+      <BackupCard />
     </div>
   )
 }

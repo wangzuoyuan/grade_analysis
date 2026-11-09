@@ -64,7 +64,7 @@ export default function BackupCard() {
       })
       const data = await res.json()
       if (res.ok && data.success) {
-        setMsg('已恢复，请执行 run.py stop && start 重启应用。')
+        setMsg('已恢复。页面数据以该备份为准，建议刷新页面；开启登录时需重新登录一次。')
         setRestoreTarget(null)
         setRestorePassword('')
         await load()
@@ -128,7 +128,7 @@ export default function BackupCard() {
                 {restoreTarget === b.filename ? (
                   <div className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2">
                     <p className="mb-1.5 text-xs text-slate-600">
-                      用「{b.filename}」覆盖当前数据库（当前数据会先自动备份，恢复后需重启应用）。
+                      用「{b.filename}」覆盖当前数据库。当前数据会先自动备份；恢复即时生效无需重启，开启登录时所有会话将失效（需重新登录一次）。
                     </p>
                     <div className="flex flex-wrap items-center gap-2">
                       <input
@@ -171,7 +171,7 @@ export default function BackupCard() {
           </div>
         )}
         <p className="text-xs text-slate-400">
-          备份存于 ~/.exam-tracker-backups（不会被「初始化」清空）；初始化前也会自动快照。
+          备份存于数据目录旁的 backups/（本地默认 ~/.exam-tracker-backups，Docker 部署为 /data/backups）；恢复前会自动再快照一次当前库，误操作可回退。
         </p>
       </CardContent>
     </Card>
