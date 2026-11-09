@@ -389,7 +389,10 @@ export function DiagnosisReportView({
         </p>
       </div>
 
-      {/* 三层图例（事实/规则判断/建议的标注说明，随报告打印） */}
+      {/* 三层图例（事实/规则判断/建议的标注说明，随报告打印）。
+          2026-11-09（遗留③拍板落地）：仅班主任域渲染——教学域无总分口径，
+          报告头已示「类型不可计算」徽章，三层图例在教学域只添噪声。 */}
+      {mode === 'homeroom' && (
       <section aria-label="层级图例">
         <div className="space-y-1 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2.5">
           {LAYER_ORDER.map((key) => (
@@ -402,6 +405,7 @@ export function DiagnosisReportView({
           ))}
         </div>
       </section>
+      )}
 
       {/* 一、学习状态（规则判断层） */}
       <section>

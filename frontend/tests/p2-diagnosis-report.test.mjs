@@ -56,6 +56,8 @@ test('P2-C3：事实/规则判断/建议三层分节标注齐备（layer 徽标 
   assert.match(reportView, /layer_legend/, '渲染响应自带的 layer_legend 图例')
   assert.match(reportView, /LAYER_ORDER = \['fact', 'rule_judgment', 'suggestion'\]/, '三层顺序固定')
   assert.match(reportView, /SectionHeading/, '每节标题携带层级徽标的分节组件')
+  // 2026-11-09（遗留③拍板落地）：三层图例仅班主任域渲染，教学域隐藏
+  assert.match(reportView, /mode === 'homeroom' && \(\s*<section aria-label="层级图例">/, '图例区块须以 mode===homeroom 守卫（教学域隐藏）')
   for (const section of ['学习状态', '各科表现', '作业行为', '教师观察摘录', '值得关注事项']) {
     assert.match(reportView, new RegExp(section), `四节+建议标题齐备：${section}`)
   }

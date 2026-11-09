@@ -1860,10 +1860,14 @@ def homework_assignment_patch(
             raise InvalidScopeParam(
                 "subject cannot be empty", details={"param": "subject"}
             )
-        if ctx.data_domain == "teaching" and new_sub not in ctx.authorized_subjects:
+        if ctx.data_domain == "teaching" and new_sub != (ctx.subject or "").strip():
+            # 教学域批次学科只能保持当前任教学科：ctx.subject 由
+            # resolve_workspace_context 经 build_teaching_params 解析并校验
+            # 过与教学班一致，是本工作台唯一授权学科（mode 不是权限凭证）。
+            # 换学科需先在教学班配置侧调整，不通过批次 PATCH 越权改写。
             raise InvalidScopeParam(
                 f"subject {new_sub} is not authorized for current teacher",
-                details={"param": "subject"},
+                details={"param": "subject", "authorized_subject": ctx.subject},
             )
         a.subject = new_sub
     a.revision = (a.revision or 1) + 1

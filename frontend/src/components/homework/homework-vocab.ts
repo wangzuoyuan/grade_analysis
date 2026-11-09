@@ -29,10 +29,23 @@ export const SUBMITTED_LINE = /^(?:已交名单|已交|交名单)[\s：:,，、]
 export const SUBMITTED_LEFT_SUFFIX = /^(.+?)[\s]*(?:已交名单|已交|交名单)[\s]*$/
 /** 列表分隔：顿号/逗号/分号（学生优先行的学科项里空格可能是状态的一部分，不切）。 */
 export const TOKEN_SPLIT = /[、，,；;]+/
-/** 纯姓名名单分隔：额外允许空格（「迟到：刘雨琪 王五」）。 */
-export const NAME_SPLIT = /[、，,；;\s]+/
+/** 纯姓名名单分隔：额外允许空格与冒号（「迟到：刘雨琪 王五」「请假：张三：李四」）。
+ * 冒号纳入分隔（2026-11-09 冒号截断修复）：名单里的第二个冒号不再把姓名挤进同一段。 */
+export const NAME_SPLIT = /[、，,；;：:\s]+/
 /** 整段只是一个出勤词。 */
 export const ATTENDANCE_ONLY = /^(?:没来|迟到|早退|旷课|缺课|缺席)$/
+
+/** 首个冒号切分（maxsplit 语义）：返回冒号左右两侧，右侧保留余下**全部**内容；无冒号返回 null。
+ *
+ * 2026-11-09 冒号截断修复：JS 的 String.split(sep, 2) 的 limit 语义是**丢弃**第二个
+ * 冒号之后的全部片段（而非 Python maxsplit 的并入末段），曾导致「数学：张三：请假」
+ * 丢状态、「听力第四周：第2课：张三、李四」静默丢人。所有「前缀：内容」解析一律
+ * 改用本函数。 */
+export function splitAtFirstColon(line: string): { left: string; right: string } | null {
+  const idx = line.search(/[:：]/)
+  if (idx < 0) return null
+  return { left: line.slice(0, idx), right: line.slice(idx + 1) }
+}
 
 export function lineHasAction(text: string): boolean {
   return (

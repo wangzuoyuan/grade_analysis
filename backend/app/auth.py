@@ -59,9 +59,27 @@ def _secret() -> bytes:
         return secrets.token_bytes(32)
 
 
+def _password_fingerprint() -> str:
+    """密码指纹（2026-11-09 P1 修复）：混入 token 签名消息，改 APP_PASSWORD
+    即全量失效既有会话——此前 token 只签 exp，密码泄露后改密码也无法踢出
+    已签发的 30 天 token。未设密码（本地免登）返回空串，签名消息保持旧
+    格式，免登开发不受影响。"""
+    pw = _password()
+    if not pw:
+        return ""
+    return hashlib.sha256(pw.encode("utf-8")).hexdigest()[:16]
+
+
+def _signing_message(exp: bytes) -> bytes:
+    fp = _password_fingerprint()
+    if not fp:
+        return exp
+    return exp + b"|" + fp.encode("ascii")
+
+
 def make_token(ttl: int = TOKEN_TTL) -> str:
     exp = str(int(time.time()) + ttl).encode()
-    sig = hmac.new(_secret(), exp, hashlib.sha256).digest()
+    sig = hmac.new(_secret(), _signing_message(exp), hashlib.sha256).digest()
     return (
         base64.urlsafe_b64encode(exp).decode()
         + "."
@@ -78,7 +96,7 @@ def verify_token(token: str) -> bool:
         sig = base64.urlsafe_b64decode(sig_b64)
     except Exception:
         return False
-    expected = hmac.new(_secret(), exp, hashlib.sha256).digest()
+    expected = hmac.new(_secret(), _signing_message(exp), hashlib.sha256).digest()
     if not hmac.compare_digest(sig, expected):
         return False
     try:

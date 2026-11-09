@@ -545,3 +545,107 @@ test('无学科前缀的反向行走 plainLines（由默认学科兜底），不
   assert.equal(split.unmarkedGroups.length, 0, '「已交」是状态词，不得当作业名建待定组')
   assert.deepEqual([...split.plainLines], ['已交：秦三，秦二'])
 })
+
+/* ------------------------------------------------------------------ */
+/* 2026-11-09 冒号截断修复回归（P1）：JS split(/[:：]/, 2) 的 limit 语义
+ * 是丢弃第二个冒号后的全部内容——曾致请假定缺交、整段学生静默丢失、
+ * 教学端缺交反转为已交。以下用例锁死「首个冒号切分、右侧保留全部」。 */
+
+test('冒号回归（班主任）：学科：姓名：状态 → 状态不再丢失，请假=excused', () => {
+  const split = loadSplitter()('数学：张三：请假')
+  assert.equal(split.error, null)
+  assert.equal(split.subjectGroups.length, 1)
+  const g = split.subjectGroups[0]
+  assert.equal(g.subject, '数学')
+  const rows = g.input.kind === 'detailed' ? g.input.rows : []
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].name_or_alias, '张三')
+  assert.equal(rows[0].status, 'excused', '「请假」不得被丢弃后误判为缺交')
+})
+
+test('冒号回归（班主任）：作业：小节：名单 → 学生一个不丢', () => {
+  const split = loadSplitter()('听力第四周：第2课：张三、李四')
+  assert.equal(split.error, null)
+  const g = split.unmarkedGroups[0] ?? split.subjectGroups[0]
+  const rows = g.input.kind === 'detailed' ? g.input.rows : []
+  const names = rows.map((r) => r.name_or_alias)
+  assert.ok(names.includes('张三'), '张三不得静默丢失')
+  assert.ok(names.includes('李四'), '李四不得静默丢失')
+  // 「第2课」非学生名：必须显式透传交后端名册裁决报错，绝不静默吞掉
+  assert.ok(names.includes('第2课'), '无法识别的小节词须显式透传（预览报错），不得静默丢弃')
+})
+
+test('冒号回归（班主任）：旧基本形态不受影响', () => {
+  const split = loadSplitter()('物理：秦三，秦二')
+  assert.equal(split.error, null)
+  const g = split.subjectGroups[0]
+  const rows = g.input.rows
+  assert.equal(
+    JSON.stringify(rows.map((r) => [r.name_or_alias, r.status])),
+    JSON.stringify([['秦三', 'missing'], ['秦二', 'missing']]),
+  )
+})
+
+test('冒号回归（教学端）：作业：姓名：未交 → 不再反转为已交', () => {
+  // 教学端解析器走真实源码执行（加载方式同 homework-entry-error.test.mjs）
+  const compile = (src, jsx) =>
+    ts.transpileModule(src, {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2020,
+        ...(jsx ? { jsx: ts.JsxEmit.ReactJSX } : {}),
+      },
+    }).outputText
+  const vocabModule = { exports: {} }
+  vm.runInNewContext(compile(vocabSrc), {
+    module: vocabModule,
+    exports: vocabModule.exports,
+    require: () => ({}),
+    Date,
+    console,
+    setTimeout,
+    clearTimeout,
+  })
+  const entrySrc = readFileSync(new URL('../src/components/homework/HomeworkEntryPanel.tsx', import.meta.url), 'utf8')
+  const compiled = ts.transpileModule(entrySrc, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      jsx: ts.JsxEmit.ReactJSX,
+      target: ts.ScriptTarget.ES2020,
+    },
+  }).outputText
+  const entryModule = { exports: {} }
+  vm.runInNewContext(compiled, {
+    module: entryModule,
+    exports: entryModule.exports,
+    require: (id) => (String(id).includes('homework-vocab') ? vocabModule.exports : ({})),
+    Date,
+    console,
+    setTimeout,
+    clearTimeout,
+  })
+  const parseSmart = entryModule.exports.parseSmartHomeworkText
+
+  // P1 核心：修复前「校本作业：张三：未交」右侧只剩「张三」→ names 形态=已交
+  const r1 = parseSmart('校本作业：张三：未交')
+  assert.equal(r1.error, null)
+  assert.equal(r1.homeworkType, '校本作业')
+  assert.equal(r1.input.kind, 'detailed')
+  assert.equal(r1.input.rows[0].name_or_alias, '张三')
+  assert.equal(r1.input.rows[0].status, 'missing', '「未交」不得丢失，更不得反转为已交')
+
+  // 状态+评价复合：练习册：李四：忘带 → missing + 评价忘带
+  const r2 = parseSmart('练习册：李四：忘带')
+  assert.equal(r2.error, null)
+  assert.equal(r2.input.rows[0].status, 'missing')
+  assert.equal(r2.input.rows[0].evaluation, '忘带')
+
+  // 旧基本形态回归：动作词左置（未交：名单）→ 逐名展开为缺交行
+  const r3 = parseSmart('未交：王五、赵六')
+  assert.equal(r3.error, null)
+  assert.equal(
+    JSON.stringify(r3.input.rows.map((x) => [x.name_or_alias, x.status])),
+    JSON.stringify([['王五', 'missing'], ['赵六', 'missing']]),
+    '动作词左置形态不受影响',
+  )
+})

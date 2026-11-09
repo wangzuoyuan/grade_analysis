@@ -483,3 +483,34 @@ def test_grade23_rank_band_detection_is_exclusive(tmp_path):
     assert is_grade23_rank_band_sheet(averages) is False
     assert parse_excel_grade23(str(band), grade=2)["kind"] == "rank_bands"
     assert parse_excel_grade23(str(averages), grade=2)["kind"] == "class_averages"
+
+
+# ---------- 2026-11-09 P2 修复：percentile >100 一律拒绝（防错位洗白） ----------
+# v1.0.10 假百分位事故的放大器收口：名次 503 / 总分 422 不再被 ÷100
+# 伪装成合法百分位。两份解析器（高二/三明细 + 教学平台明细）同款同测。
+
+from app.ingest.excel_parser import percentile as grade23_percentile
+from app.ingest.teaching_excel import percentile as teaching_percentile
+
+_BOTH_PERCENTILE_FNS = [grade23_percentile, teaching_percentile]
+
+
+@pytest.mark.parametrize("fn", _BOTH_PERCENTILE_FNS)
+def test_percentile_rejects_values_over_100(fn):
+    """>100 一律 None：百分位不可能超过 100，错位名次/总分宁缺毋假。"""
+    assert fn(503) is None          # 名次（v1.0.10 事故形态：503÷100=5.03）
+    assert fn(422.0) is None        # 总分（422÷100=4.22 假百分位）
+    assert fn(999) is None
+    assert fn("999%") is None       # 百分比刻度同样不可能 >100
+
+
+@pytest.mark.parametrize("fn", _BOTH_PERCENTILE_FNS)
+def test_percentile_normalizes_legal_scales(fn):
+    """(1,100] 按百分比刻度 ÷100；≤1 视为 0-1 小数原样；缺失 None。"""
+    assert fn(100) == 1.0
+    assert fn(64.76) == pytest.approx(0.6476)
+    assert fn("25.08%") == pytest.approx(0.2508)
+    assert fn(1) == 1
+    assert fn(0.6476) == pytest.approx(0.6476)
+    assert fn(None) is None
+    assert fn("") is None

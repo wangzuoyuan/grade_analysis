@@ -36,6 +36,7 @@ import {
   SUBMITTED_LINE,
   TOKEN_SPLIT,
   lineHasAction,
+  splitAtFirstColon,
 } from './homework-vocab'
 
 export interface HomeroomSubjectGroup {
@@ -115,7 +116,9 @@ function expandNameToken(token: string): string[] {
   const text = token.trim()
   if (!text) return []
   if (lineHasAction(text)) return [text]
-  return text.split(/\s+/).filter(Boolean)
+  // 冒号同为姓名分隔（2026-11-09 修复）：「第2课：张三」拆出真姓名，
+  // 前段「第2课」作为裸姓名透传交后端名册裁决，绝不静默丢弃任何一段。
+  return text.split(/[\s：:]+/).filter(Boolean)
 }
 
 /** 剥掉全部状态/出勤/评价词与分隔符后的残留（非空 → 有姓名或学科内容）。 */
@@ -128,6 +131,12 @@ function nameResidue(text: string): string {
     .trim()
 }
 
+/** 姓名残渣清理：剥掉混入姓名边缘的冒号/分隔符（「张三：请假」的姓名段是「张三：」）。
+ * 只清边缘不清内部——身份零猜测，内部残渣交后端名册裁决显式报错。 */
+function cleanNameEdges(name: string): string {
+  return name.replace(/^[\s：:，,、；;]+|[\s：:，,、；;]+$/g, '')
+}
+
 /** 单个 token（姓名 或 姓名+状态/出勤/评价）→ 逐人行（学科行右侧名单使用）。
  * submittedBase=true 时为反向行（已交：名单）：裸姓名=已交而非缺交例外。 */
 function tokenToRow(token: string, submittedBase = false): HomeworkRowInput | null {
@@ -135,7 +144,7 @@ function tokenToRow(token: string, submittedBase = false): HomeworkRowInput | nu
   if (!text || FULL_PHRASE.test(text)) return null
   const attendanceMatch = text.match(ATTENDANCE_WORDS)
   if (attendanceMatch) {
-    const name = text.slice(0, attendanceMatch.index ?? 0).replace(/[（(].*?[）)]/g, '').trim()
+    const name = cleanNameEdges(text.slice(0, attendanceMatch.index ?? 0).replace(/[（(].*?[）)]/g, ''))
     if (!name) return null
     // 迟到、没来等出勤异常不计入已交，按缺交例外登记并携带出勤标记
     return { name_or_alias: name, status: 'missing', attendance: attendanceMatch[0] }
@@ -143,27 +152,27 @@ function tokenToRow(token: string, submittedBase = false): HomeworkRowInput | nu
   const action = STATUS_OF_ACTION.find((item) => item.pattern.test(text))
   if (action) {
     const match = action.pattern.exec(text)
-    const name = text.slice(0, match?.index ?? 0).replace(/[（(].*?[）)]/g, '').trim()
+    const name = cleanNameEdges(text.slice(0, match?.index ?? 0).replace(/[（(].*?[）)]/g, ''))
     if (!name) return null
     const evaluation = text.slice((match?.index ?? 0) + (match?.[0].length ?? 0)).replace(/^[\s，,：:;（）()-]+/, '').trim()
     return { name_or_alias: name, status: action.status, evaluation: evaluation || null }
   }
   const forgotMatch = text.match(FORGOT_WORDS)
   if (forgotMatch) {
-    const name = text.slice(0, forgotMatch.index ?? 0).replace(/[（(].*?[）)]/g, '').trim()
+    const name = cleanNameEdges(text.slice(0, forgotMatch.index ?? 0).replace(/[（(].*?[）)]/g, ''))
     if (!name) return null
     // 忘带/没带不计入已交，按缺交例外登记并携带忘带评价
     return { name_or_alias: name, status: 'missing', evaluation: text.slice(forgotMatch.index ?? 0).replace(/[（）()]/g, '').trim() }
   }
   const qualityMatch = text.match(QUALITY_WORDS)
   if (qualityMatch) {
-    const name = text.slice(0, qualityMatch.index ?? 0).replace(/[（(].*?[）)]/g, '').trim()
+    const name = cleanNameEdges(text.slice(0, qualityMatch.index ?? 0).replace(/[（(].*?[）)]/g, ''))
     if (!name) return null
     return { name_or_alias: name, status: 'submitted', evaluation: text.slice(qualityMatch.index ?? 0).replace(/[（）()]/g, '').trim() }
   }
   // 学科行内的裸姓名：默认缺交例外（班主任只记谁没交）；反向行（已交：名单）里=已交
   return {
-    name_or_alias: text.replace(/[（）()]/g, '').trim(),
+    name_or_alias: cleanNameEdges(text.replace(/[（）()]/g, '')),
     status: submittedBase ? 'submitted' : 'missing',
   }
 }
@@ -214,7 +223,7 @@ function parseStudentSubjectItem(token: string): ParsedSubjectItem | null {
   // 4. 剥离状态和括号，提取学科/作业内容
   const subjectPart = clean
     .replace(
-      /未交|缺交|请假|免交|已交|交了|完成|没来|迟到|早退|旷课|缺课|缺席|忘带|没带|未带|优秀|良好|合格|不合格|不认真|马虎|潦草|敷衍|不工整|退步|作业乱|作业没做|错误率高|差|[（）()]/g,
+      /未交|缺交|请假|免交|已交|交了|完成|没来|迟到|早退|旷课|缺课|缺席|忘带|没带|未带|优秀|良好|合格|不合格|不认真|马虎|潦草|敷衍|不工整|退步|作业乱|作业没做|错误率高|差|[（）()：:]/g,
       '',
     )
     .trim()
@@ -287,10 +296,12 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
   // 预扫描：是否有明确的学科行或包含学科的按人行
   let hasAnySubjectContext = false
   for (const line of lines) {
-    const parts = line.split(/[:：]/, 2)
-    if (parts.length === 2) {
-      const left = parts[0].trim()
-      const right = parts[1].trim()
+    // 2026-11-09 冒号截断修复：split(/[:：]/, 2) 会丢弃第二个冒号后的内容，
+    // 改用 splitAtFirstColon（右侧保留余下全部）。
+    const parts = splitAtFirstColon(line)
+    if (parts) {
+      const left = parts.left.trim()
+      const right = parts.right.trim()
       if (isPureSubjectName(left) || matchCanonicalSubject(left) !== null) {
         hasAnySubjectContext = true
         break
@@ -304,11 +315,12 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
   }
 
   for (const line of lines) {
-    const parts = line.split(/[:：]/, 2)
+    // 2026-11-09 冒号截断修复：同上，改用首个冒号切分（maxsplit 语义）。
+    const parts = splitAtFirstColon(line)
     let handled = false
-    if (parts.length === 2) {
-      const left = parts[0].trim()
-      const right = parts[1].trim()
+    if (parts) {
+      const left = parts.left.trim()
+      const right = parts.right.trim()
       const rightIsFull = FULL_PHRASE.test(right)
       const rightTokens = right.split(TOKEN_SPLIT).map((s) => s.trim()).filter(Boolean)
 
@@ -342,7 +354,13 @@ export function splitHomeroomHomeworkText(text: string): HomeroomSmartSplit {
         matchCanonicalSubject(left) === null &&
         tokensWithConcreteSubject.length === 0 &&
         rightTokens.length > 0 &&
-        rightTokens.every((t) => ATTENDANCE_WORDS.test(t) || /(?:请假|免交)/.test(t))
+        // 2026-11-09：token 须为纯状态词（无姓名残渣）——「张三：请假」这类
+        // 复合 token 不得进入本分支，否则左侧学科词（如「数学」）会被当学生名。
+        rightTokens.every(
+          (t) =>
+            (ATTENDANCE_WORDS.test(t) || /(?:请假|免交)/.test(t)) &&
+            nameResidue(t) === '',
+        )
       if (rightIsPureAttendance) {
         const studentName = left
         for (const token of rightTokens) {

@@ -183,3 +183,81 @@ def test_cors_env_origins_appended(monkeypatch):
     finally:
         monkeypatch.delenv("CORS_ORIGINS", raising=False)
         _fresh_main()
+
+
+# ---------- 2026-11-09 P1/P2 修复：token 密码指纹 / docs 关闭 / 登录锁定 ----------
+
+
+def test_password_fingerprint_rotates_tokens_on_change(monkeypatch):
+    """改 APP_PASSWORD → 旧 token 立即失效（修复前只签 exp，改密码不踢旧会话）。"""
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.setenv("APP_PASSWORD", "first-secret")
+    from app import auth
+
+    token = auth.make_token(ttl=3600)
+    assert auth.verify_token(token) is True
+    # 改密码：签名消息混入的密码指纹变化 → 旧 token 全量失效
+    monkeypatch.setenv("APP_PASSWORD", "second-secret")
+    assert auth.verify_token(token) is False
+    fresh = auth.make_token(ttl=3600)
+    assert auth.verify_token(fresh) is True
+
+
+def test_token_format_without_password_unchanged(monkeypatch):
+    """免登模式（未设 APP_PASSWORD）签名消息保持旧格式，token 语义不受影响。"""
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    from app import auth
+
+    token = auth.make_token(ttl=3600)
+    assert auth.verify_token(token) is True
+
+
+def test_interactive_docs_disabled(client, monkeypatch):
+    """docs/redoc/openapi.json 端点已关闭：公网未登录不再暴露 API 面。"""
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
+def test_login_lockout_after_five_failures(client, monkeypatch):
+    """连续 5 次失败 → 锁定 10 分钟：锁内正确密码也 429（不泄露猜中信号）。"""
+    from app import auth_router
+
+    auth_router.reset_login_lock()
+    monkeypatch.setattr(auth_router.time, "sleep", lambda _s: None)  # 免真实等待
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    try:
+        for i in range(5):
+            r = client.post("/api/login", json={"password": "wrong"})
+            assert r.status_code == 401, i
+        # 第 5 次失败已触发锁定：正确密码也被拒
+        locked = client.post("/api/login", json={"password": "s3cret"})
+        assert locked.status_code == 429
+        assert "过多" in locked.json()["error"]
+    finally:
+        auth_router.reset_login_lock()
+
+
+def test_login_lockout_expires_and_success_resets(client, monkeypatch):
+    """锁定窗口过期后恢复登录；成功登录清零失败计数。"""
+    from app import auth_router
+
+    auth_router.reset_login_lock()
+    monkeypatch.setattr(auth_router.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("APP_PASSWORD", "s3cret")
+    fake = {"t": 1000.0}
+    monkeypatch.setattr(auth_router, "_now", lambda: fake["t"])
+    try:
+        for _ in range(5):
+            assert client.post("/api/login", json={"password": "wrong"}).status_code == 401
+        assert client.post("/api/login", json={"password": "s3cret"}).status_code == 429
+        # 时间越过锁定窗口 → 正确密码恢复可用，且成功清零计数
+        fake["t"] += auth_router.LOGIN_LOCK_SECONDS + 1
+        ok = client.post("/api/login", json={"password": "s3cret"})
+        assert ok.status_code == 200
+        assert client.post("/api/login", json={"password": "wrong"}).status_code == 401
+        assert client.post("/api/login", json={"password": "s3cret"}).status_code == 200
+    finally:
+        auth_router.reset_login_lock()

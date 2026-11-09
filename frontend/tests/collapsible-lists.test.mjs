@@ -94,6 +94,24 @@ test('BackupCard：备份列表收起 6 份，MoreToggle（份备份）', () => 
   assert.match(backupCard, /<MoreToggle/, '')
 })
 
+test('BackupCard 恢复二次凭据（2026-11-09）：确认密码输入 + confirm_password 随请求提交', () => {
+  assert.match(backupCard, /confirm_password: confirmPassword/, '恢复请求须携带 confirm_password')
+  assert.match(backupCard, /type="password"/, '确认密码输入框为 password 型')
+  assert.match(backupCard, /aria-label="恢复确认密码"/, '输入框有无障碍标签')
+  assert.match(backupCard, /恢复确认密码错误或缺失|typeof data\.detail === 'string'/, '后端 401 detail 优先展示')
+  assert.doesNotMatch(backupCard, /confirm\(/, '恢复不再走浏览器原生 confirm（内嵌凭据表单替代）')
+})
+
+test('401 全局处理（2026-11-09）：api-v1 派发 dsh:auth-expired，AuthGate 监听切登录屏', () => {
+  const apiV1 = readFileSync(new URL('../src/lib/api-v1.ts', import.meta.url), 'utf8')
+  const authGate = readFileSync(new URL('../src/components/AuthGate.tsx', import.meta.url), 'utf8')
+  assert.match(apiV1, /notifyAuthExpiredIf401\(res\.status\)/, 'request/requestMultipart 401 时派发通知')
+  assert.match(apiV1, /AUTH_EXPIRED_THROTTLE_MS = 60_000/, '事件风暴按 60 秒节流')
+  assert.match(apiV1, /new CustomEvent\(AUTH_EXPIRED_EVENT\)/, '派发 CustomEvent')
+  assert.match(authGate, /addEventListener\('dsh:auth-expired'/, 'AuthGate 监听全局 401 事件')
+  assert.match(authGate, /removeEventListener\('dsh:auth-expired'/, '监听随卸载清理')
+})
+
 test('教学学生报告页：沟通摘要收起 4 条，MoreToggle（条记录）', () => {
   assert.match(studentReport, /notesExpanded \? notes : notes\.slice\(0, 4\)/, '收起默认 4 条')
   assert.match(studentReport, /hiddenCount=\{notes\.length - 4\}/, '')

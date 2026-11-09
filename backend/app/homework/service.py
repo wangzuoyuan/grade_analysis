@@ -6,6 +6,7 @@ Flask 应用一致：缺交有效记录 = remark 为空 且 subject != '全科'�
 excluded=1 的学生（指定具体学生查询时不排除）。
 """
 
+import logging
 from collections import defaultdict
 from datetime import date
 
@@ -17,6 +18,8 @@ from app.db.models import (
     SpecialRecord,
 )
 from app.homework.parser import SUBJECT_GROUPS, normalize_subject
+
+logger = logging.getLogger(__name__)
 
 
 def derive_semester(today=None):
@@ -732,7 +735,9 @@ def weekly_focus(db, class_num=None, today=None):
                 if sid in roster and row.get("issues"):
                     add(sid, "、".join(row["issues"]), 1)
     except Exception:
-        pass
+        # 2026-11-09 P2 修复：静默 pass → 记日志（对齐新版
+        # api/analysis.py weekly-focus 的降级口径：信号缺一块可查因）
+        logger.exception("weekly-focus 最近考试关注信号计算失败")
 
     # ④ 谈话跟进待办
     note_rows = (

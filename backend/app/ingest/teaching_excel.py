@@ -61,8 +61,15 @@ def number(value: Any) -> float | None:
 
 
 def percentile(value: Any) -> float | None:
+    """百分位归一：≤1 视为 0-1 小数原样返回；(1,100] 视为 0-100 百分比
+    刻度 ÷100（学校导出的合法格式，100 → 1.0）；**>100 一律返回 None**
+    （2026-11-09 P2 修复，宁缺毋假——百分位不可能超过 100，名次 503、
+    总分 422 这类错位值此前会被静默 ÷100 洗白成 5.03/4.22 的假百分位，
+    v1.0.10 假百分位事故的放大器就此收口）。"""
     value_num = number(value)
     if value_num is None:
+        return None
+    if value_num > 100:
         return None
     return value_num / 100 if value_num > 1 else value_num
 

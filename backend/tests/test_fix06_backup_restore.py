@@ -279,3 +279,67 @@ def test_restore_failure_keeps_original_db(client, paths, monkeypatch):
 def test_restore_missing_file_404(client, paths):
     r = client.post("/api/restore", json={"filename": "no-such-backup.zip"})
     assert r.status_code == 404
+
+
+# ---------- 2026-11-09 P2 修复：restore 二次凭据 + 恢复成功即失效会话 ----------
+
+
+def test_restore_requires_confirm_password_when_auth_enabled(client, paths, monkeypatch):
+    """开启登录密码后：缺失/错误 confirm_password → 401；正确 → 恢复成功。"""
+    monkeypatch.setenv("APP_PASSWORD", "restore-pass")
+    con = _make_app_db(paths.db, marker_row=True)
+    con.close()
+    filename = br.create_backup("pw-audit")
+    # 全局登录中间件在先：先登录拿会话 cookie，才能到达 restore 的二次凭据层
+    assert client.post("/api/login", json={"password": "restore-pass"}).status_code == 200
+
+    missing = client.post("/api/restore", json={"filename": filename})
+    assert missing.status_code == 401
+    assert "恢复确认密码错误或缺失" in missing.json()["detail"]
+
+    wrong = client.post(
+        "/api/restore", json={"filename": filename, "confirm_password": "wrong"}
+    )
+    assert wrong.status_code == 401
+    # 401 在触库之前拦截：原库未被触碰
+    assert _db_score_rows(paths.db) == 1
+
+    ok = client.post(
+        "/api/restore", json={"filename": filename, "confirm_password": "restore-pass"}
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["success"] is True
+
+
+def test_restore_free_mode_keeps_legacy_behavior(client, paths, monkeypatch):
+    """免登模式（未设 APP_PASSWORD）不带 confirm_password 仍可恢复（存量行为）。"""
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    con = _make_app_db(paths.db, marker_row=True)
+    con.close()
+    filename = br.create_backup("free-audit")
+    resp = client.post("/api/restore", json={"filename": filename})
+    assert resp.status_code == 200, resp.text
+
+
+def test_restore_success_invalidates_sessions(client, paths, monkeypatch):
+    """恢复成功后删除持久化会话密钥：既有 token 全量失效（需重登一次）。"""
+    monkeypatch.delenv("APP_PASSWORD", raising=False)
+    monkeypatch.delenv("SESSION_SECRET", raising=False)
+    secret_dir = paths.scratch / "authdir"
+    secret_dir.mkdir()
+    monkeypatch.setattr(br, "DATA_DIR", str(secret_dir))
+    from app import auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "DATA_DIR", str(secret_dir))
+    old_token = auth_mod.make_token(ttl=3600)  # 写下 .session_secret
+    assert auth_mod.verify_token(old_token) is True
+    assert (secret_dir / ".session_secret").exists()
+
+    con = _make_app_db(paths.db, marker_row=True)
+    con.close()
+    filename = br.create_backup("session-audit")
+    resp = client.post("/api/restore", json={"filename": filename})
+    assert resp.status_code == 200, resp.text
+
+    assert not (secret_dir / ".session_secret").exists()
+    assert auth_mod.verify_token(old_token) is False

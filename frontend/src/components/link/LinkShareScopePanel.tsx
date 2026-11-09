@@ -3,9 +3,10 @@
 /**
  * 共享范围面板（契约 §1.2.2，P2）。
  *
- * share_categories 复选 + share_history_from 日期（可清空）；收紧（移除成绩共享/
+ * share_categories 复选 + share_history_from 日期（可清空）；收紧（移除共享类别/
  * 撤回历史授权）保存前需确认，保存后即时生效。表单未提交修改经 lib/link-draft
  * 落 sessionStorage（S07 草稿不丢），并在 dirty 时挂 beforeunload 提示。
+ * 2026-11-09：任教学科成绩选项已随 Q10 裁决移除（见 SHARE_CATEGORY_OPTIONS 注）。
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -29,19 +30,22 @@ import { Input } from '@/components/ui/input'
 
 import { apiErrorMessage } from './error-text'
 
-/** 契约 §1.2.2：share_categories 仅识别这三类。 */
+/** 契约 §1.2.2（v2.4 状态注，2026-11-09）：共享类别只提供名册与任教学科作业两类。
+ * current_subject_score 已按 2026-10 Q10 裁决（两工作台成绩不互通）移除——读侧
+ * 零消费者，勾选与否对任何数据流无影响；存量库值回显时静默忽略。 */
 const SHARE_CATEGORY_OPTIONS: Array<{ value: string; label: string; hint: string }> = [
   { value: 'roster', label: '名册', hint: '双方班级成员交集' },
-  {
-    value: 'current_subject_score',
-    label: '任教学科成绩',
-    hint: '不勾选时班主任侧不做任何跨域成绩投影',
-  },
   { value: 'current_subject_homework', label: '任教学科作业', hint: '作业提交情况' },
 ]
 
-/** 默认共享范围：名册、任教学科成绩、任教学科作业。 */
-const DEFAULT_SHARE_CATEGORIES: string[] = ['roster', 'current_subject_score', 'current_subject_homework']
+/** 默认共享范围：名册、任教学科作业。 */
+const DEFAULT_SHARE_CATEGORIES: string[] = ['roster', 'current_subject_homework']
+
+/** 只保留面板仍提供的类别：存量库值中的 current_subject_score 静默忽略（不再展示/提交）。 */
+function knownCategories(values: string[] | null | undefined): string[] {
+  const base = values ?? DEFAULT_SHARE_CATEGORIES
+  return base.filter((c) => SHARE_CATEGORY_OPTIONS.some((o) => o.value === c))
+}
 
 function sameCategories(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false
@@ -68,10 +72,10 @@ export function LinkShareScopePanel({ link, onUpdated }: LinkShareScopePanelProp
   // 切换 link 或后端摘要字段更新时重置表单；有未提交草稿（S07）则优先恢复草稿
   useEffect(() => {
     const draft = loadLinkDraft(link.id).shareScope
-    const baseCategories = link.share_categories ?? DEFAULT_SHARE_CATEGORIES
+    const baseCategories = knownCategories(link.share_categories)
     const baseHistory = link.share_history_from ?? null
     if (draft) {
-      setCategories(draft.share_categories ?? baseCategories)
+      setCategories(knownCategories(draft.share_categories ?? baseCategories))
       setHistoryFrom(draft.share_history_from ?? null)
     } else {
       setCategories(baseCategories)
@@ -82,7 +86,9 @@ export function LinkShareScopePanel({ link, onUpdated }: LinkShareScopePanelProp
     setNotice(null)
   }, [link.id, link.share_categories, link.share_history_from])
 
-  const initialCategories = serverValues?.share_categories ?? link.share_categories ?? DEFAULT_SHARE_CATEGORIES
+  const initialCategories = knownCategories(
+    serverValues?.share_categories ?? link.share_categories,
+  )
   const initialHistoryFrom = serverValues ? serverValues.share_history_from : (link.share_history_from ?? null)
   const dirty = !sameCategories(categories, initialCategories) || historyFrom !== initialHistoryFrom
 
@@ -140,7 +146,7 @@ export function LinkShareScopePanel({ link, onUpdated }: LinkShareScopePanelProp
     const tightening =
       initialCategories.some((c) => !categories.includes(c)) ||
       (initialHistoryFrom != null && (historyFrom == null || historyFrom > initialHistoryFrom))
-    if (tightening && !window.confirm('取消成绩共享后立即生效，确定要保存收紧后的共享范围吗？')) {
+    if (tightening && !window.confirm('取消共享（名册/作业）后立即生效，确定要保存收紧后的共享范围吗？')) {
       return
     }
     setSaving(true)
@@ -215,7 +221,7 @@ export function LinkShareScopePanel({ link, onUpdated }: LinkShareScopePanelProp
           ))}
           {link.share_categories == null && serverValues == null ? (
             <p className="text-xs text-slate-400">
-              后端摘要未返回当前共享类别，先按契约默认（名册、任教学科成绩）展示；保存后以回执为准。
+              后端摘要未返回当前共享类别，先按契约默认（名册、任教学科作业）展示；保存后以回执为准。
             </p>
           ) : null}
         </fieldset>

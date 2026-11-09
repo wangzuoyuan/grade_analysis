@@ -436,3 +436,87 @@ def test_h01_name_ambiguity_and_alias_disambiguation(client, v1_seed, db_session
     )
     assert by_pid.status_code == 200
     assert by_pid.json()["assignment"]["submissions"][0]["status"] == "excused"
+
+
+# ---------- 2026-11-09 P1 修复：教学域 PATCH 改学科的授权校验 ----------
+# 修复前：homework_assignment_patch 访问 WorkspaceContext 不存在的
+# authorized_subjects 属性 → AttributeError → 500（授权校验从未生效）。
+
+
+def _teach_preview_confirm(client, seed, assigned_date):
+    p = client.post(
+        "/api/v1/homework/preview",
+        json={
+            "mode": "teaching",
+            "teaching_class_id": seed.t6_id,
+            "academic_year_id": seed.ay_id,
+            "subject": "物理",
+            "homework_type": "练习册",
+            "assigned_date": assigned_date,
+            "input": {"kind": "full"},
+        },
+    )
+    assert p.status_code == 200, p.text
+    c = client.post("/api/v1/homework/confirm", json={"token": p.json()["token"]})
+    assert c.status_code == 200, c.text
+    return c.json()["assignment_id"]
+
+
+def test_patch_teaching_subject_change_rejected_422(client, v1_seed):
+    """教学域 PATCH 改成其他学科 → 422 invalid_scope_param（修复前是 500）。"""
+    aid = _teach_preview_confirm(client, v1_seed, "2025-09-28")
+    resp = client.patch(
+        f"/api/v1/homework/assignments/{aid}",
+        params={"mode": "teaching", "teaching_class_id": v1_seed.t6_id},
+        json={"revision": 1, "subject": "化学"},
+    )
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["error"] == "invalid_scope_param"
+    # 授权学科就是 ctx.subject（任教学科），响应带出便于前端提示
+    assert body["authorized_subject"] == "物理"
+    # 学科未被改写
+    detail = client.get(
+        f"/api/v1/homework/assignments/{aid}",
+        params={"mode": "teaching", "teaching_class_id": v1_seed.t6_id},
+    )
+    assert detail.json()["subject"] == "物理"
+
+
+def test_patch_teaching_same_subject_ok(client, v1_seed):
+    """教学域 PATCH 写同学科（含首尾空白）→ 正常生效。"""
+    aid = _teach_preview_confirm(client, v1_seed, "2025-09-29")
+    resp = client.patch(
+        f"/api/v1/homework/assignments/{aid}",
+        params={"mode": "teaching", "teaching_class_id": v1_seed.t6_id},
+        json={"revision": 1, "subject": " 物理 "},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["revision"] == 2
+
+
+def test_patch_homeroom_subject_not_restricted(client, v1_seed):
+    """班主任域 PATCH 改学科不受限（维持原行为：本域全科台账自有数据）。"""
+    p = client.post(
+        "/api/v1/homework/preview",
+        json={
+            "mode": "homeroom",
+            "class_id": v1_seed.h6_id,
+            "academic_year_id": v1_seed.ay_id,
+            "subject": "数学",
+            "homework_type": "练习册",
+            "assigned_date": "2025-09-30",
+            "input": {"kind": "full"},
+        },
+    )
+    assert p.status_code == 200, p.text
+    c = client.post("/api/v1/homework/confirm", json={"token": p.json()["token"]})
+    assert c.status_code == 200, c.text
+    aid = c.json()["assignment_id"]
+    resp = client.patch(
+        f"/api/v1/homework/assignments/{aid}",
+        params={"mode": "homeroom", "class_id": v1_seed.h6_id},
+        json={"revision": 1, "subject": "物理"},
+    )
+    assert resp.status_code == 200, resp.text
+

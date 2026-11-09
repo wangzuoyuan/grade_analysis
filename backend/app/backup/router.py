@@ -14,10 +14,13 @@ import sqlite3
 import tempfile
 import zipfile
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from app.auth import auth_enabled, check_password
 
 router = APIRouter(tags=["backup"])
 
@@ -139,6 +142,9 @@ async def download_backup(filename: str):
 
 class RestorePayload(BaseModel):
     filename: str
+    # 2026-11-09 P2 修复：开启登录密码后，恢复（整库覆盖）需二次确认凭据；
+    # 免登模式（本地开发）不要求，保持存量行为。
+    confirm_password: Optional[str] = None
 
 
 def _stage_db_from_zip(zip_path: str) -> str:
@@ -183,6 +189,11 @@ def _validate_staged_db(staged: str) -> None:
 
 @router.post("/restore")
 async def restore(payload: RestorePayload):
+    # 二次凭据：恢复会整库覆盖，凭登录会话即可触发风险过高；开启密码后
+    # 必须同时提供正确密码（缺失/错误一律 401，不区分两种情况防探测）。
+    if auth_enabled():
+        if not payload.confirm_password or not check_password(payload.confirm_password):
+            raise HTTPException(401, "恢复确认密码错误或缺失")
     path = os.path.join(BACKUP_DIR, os.path.basename(payload.filename))
     if not os.path.exists(path):
         raise HTTPException(404, "备份不存在")
@@ -222,6 +233,16 @@ async def restore(payload: RestorePayload):
             os.unlink(staged)
         raise HTTPException(500, f"恢复失败（{exc}）：当前数据库未被改动，可重试或先下载安全备份 {safety}")
 
+    # 恢复成功即全量失效现有会话：删除持久化会话密钥文件，下次请求
+    # verify_token 会自动重新生成新密钥（旧 token 全部失效，恢复者本人也
+    # 需重新登录一次）。注意：部署若通过 SESSION_SECRET 环境变量固定密钥，
+    # 删文件不影响该来源——那类部署需运维手工轮换环境变量（此处尽力而为）。
+    secret_path = os.path.join(DATA_DIR, ".session_secret")
+    try:
+        if os.path.exists(secret_path):
+            os.remove(secret_path)
+    except OSError:
+        pass  # 会话失效是加固动作，失败不阻断恢复成功的响应
     return {
         "success": True,
         "restored_from": payload.filename,

@@ -35,7 +35,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
 
 
-app = FastAPI(title="学情追踪 API", version="2.2.4", lifespan=_lifespan)
+# 2026-11-09 P2 修复：关闭交互式文档与 OpenAPI schema 端点。它们不在
+# /api 前缀下、不受登录中间件覆盖，公网未登录即可拿到全部端点清单与
+# 参数模型（信息泄露面）；单用户内部系统不需要对外 API 文档。
+app = FastAPI(
+    title="学情追踪 API",
+    version="2.2.4",
+    lifespan=_lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 if _MCP_MOUNT is not None:
     app.mount(MCP_MOUNT_PATH, _MCP_MOUNT.app)
@@ -89,7 +99,7 @@ def health():
 
 @app.get("/")
 def root():
-    return {"message": "学情追踪 API", "docs": "/docs"}
+    return {"message": "学情追踪 API"}
 
 @app.get("/api/teacher")
 def get_teacher():

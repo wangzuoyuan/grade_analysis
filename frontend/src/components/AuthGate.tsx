@@ -33,6 +33,17 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     refresh()
   }, [])
 
+  // 2026-11-09 P2 修复：api-v1 请求层遇 401（会话过期/被吊销）派发全局事件，
+  // 这里重查登录状态——已打开的页面不再「逐卡报错假死」，而是切回登录屏，
+  // 登录成功后原地恢复（不跳转、不丢当前 URL）。
+  useEffect(() => {
+    const onAuthExpired = () => {
+      refresh()
+    }
+    window.addEventListener('dsh:auth-expired', onAuthExpired)
+    return () => window.removeEventListener('dsh:auth-expired', onAuthExpired)
+  }, [])
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     setSubmitting(true)

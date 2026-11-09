@@ -1,4 +1,4 @@
-# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.6，2026-11-05 出勤异常注记扩展到已交行；v1.5=2026-10-27 按天映射跨学科扩展；v1.4=2026-10-26 删除改物理删除 + 按天映射；v1.3=2026-10-25 冲突配对收窄到同作业种类）
+# P5 接口契约：作业批次 / 双向共享 / 预警 / 相关性 / 学期（v1.7，2026-11-09 PATCH 学科修改补教学域授权校验（原校验引用不存在的 ctx.authorized_subjects 必 500，从未生效）；v1.6=2026-11-05 出勤异常注记扩展到已交行；v1.5=2026-10-27 按天映射跨学科扩展；v1.4=2026-10-26 删除改物理删除 + 按天映射；v1.3=2026-10-25 冲突配对收窄到同作业种类）
 
 依 `docs/planning/03-architecture.md` §4、`05-acceptance.md`（H01–H06）、
 ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-api.md v2 §2.1（R10 已落地，
@@ -81,8 +81,12 @@ ADR-008 与 `docs/baseline/api-diff.md`（B5/D3）起草；表结构沿用 p1-ap
 
 ### 1.3 编辑 / 撤销
 
-- `PATCH /api/v1/homework/assignments/{id}` `{revision, rows?: [...], due_date?}`：revision 不符 409；
+- `PATCH /api/v1/homework/assignments/{id}` `{revision, rows?: [...], due_date?, subject?}`：revision 不符 409；
   逐行 upsert submission（唯一键 (assignment_id, person_id)）；行内矛盾（同人同批两种状态）422。
+  **v1.7（2026-11-09）学科修改授权**：`subject` 可选——教学域批次只允许改为该教师任教学科
+  （与解析出的 ctx.subject 一致），否则 422 `invalid_scope_param`；班主任域批次学科修改不受限
+  （本班各学科批次可改科）。修复前该校验引用不存在的 `ctx.authorized_subjects`，教学域带
+  subject 的 PATCH 一律 500，校验从未生效。
 - `DELETE /api/v1/homework/assignments/{id}`：**物理删除**（2026-10-26）：逐人行、
   批次与 `homework:{id}` 溯源笔记一并删除；其上有**晚于创建的**评价编辑 → 409 列冲突清单；
   否则成功，响应 `status="deleted"`。指标即时重算；对侧详情随之 404。

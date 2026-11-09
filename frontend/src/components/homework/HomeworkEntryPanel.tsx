@@ -66,6 +66,7 @@ import {
   FULL_PHRASE,
   SUBMITTED_LINE,
   pureEvaluation,
+  splitAtFirstColon,
 } from './homework-vocab'
 import { HOMEWORK_STATUS_OPTIONS, HOMEROOM_HOMEWORK_TYPE, homeworkStatusLabel } from './shared'
 
@@ -214,10 +215,12 @@ export function parseSmartHomeworkText(text: string): SmartInputResult {
         }
         continue
       }
-      const parts = line.split(/[:：]/, 2)
-      if (parts.length === 2) {
-        const left = parts[0].trim()
-        const right = parts[1].trim()
+      // 2026-11-09 冒号截断修复：split(/[:：]/, 2) 会丢弃第二个冒号后的内容
+      // （「校本作业：张三：未交」曾反转为已交），改用首个冒号切分（maxsplit 语义）。
+      const parts = splitAtFirstColon(line)
+      if (parts) {
+        const left = parts.left.trim()
+        const right = parts.right.trim()
         const rightIsFull = FULL_PHRASE.test(right)
         const leftHasAction = isSmartAction(left)
         const rightHasAction = isSmartAction(right)
@@ -239,11 +242,36 @@ export function parseSmartHomeworkText(text: string): SmartInputResult {
           if (!actionText) {
             return { homeworkType, input: null, error: `无法识别状态：${left}` }
           }
-          const studentNames = right.split(TOKEN_SPLIT).filter(Boolean)
+          // 2026-11-09：名单分隔纳入冒号——「缺交：张三：李四」逐名展开动作
+          const studentNames = right.split(/[、，,；;：:\s]+/).filter(Boolean)
           for (const name of studentNames) {
             expanded.push(`${name} ${actionText}`)
           }
           continue
+        }
+
+        // 2.5 左侧为作业种类、右侧内含「名单：状态」（2026-11-09 冒号截断修复新增）：
+        // 如「校本作业：张三：未交」「练习册：李四：忘带」——原先右侧只剩「张三」被当
+        // 裸姓名反转为已交；现拆出名单与纯状态词逐名展开，左侧按作业种类归一记忆。
+        if (!leftHasAction) {
+          const inner = splitAtFirstColon(right)
+          if (inner) {
+            const innerLeft = inner.left.trim()
+            const innerRight = inner.right.trim()
+            if (
+              innerLeft !== '' &&
+              innerRight !== '' &&
+              isSmartAction(innerRight) &&
+              extractSmartActionText(innerRight) === innerRight &&
+              /(?:作业|练习|默写|试卷|校本)/.test(left)
+            ) {
+              homeworkType = rememberHomeworkType(homeworkType, canonicalHomeworkType(left) ?? left)
+              for (const name of innerLeft.split(/[、，,；;：:\s]+/).filter(Boolean)) {
+                expanded.push(`${name} ${innerRight}`)
+              }
+              continue
+            }
+          }
         }
 
         // 3. 学生在前，右侧为状态动作词（如「秦五：迟到」「宋彦瞳：没来」「秦二十六：缺交」）

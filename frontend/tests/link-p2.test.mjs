@@ -56,11 +56,14 @@ test('学生配对面板只显式建对，绝不按同名/同号自动配对或�
   assert.match(studentsPanel, /deleteLinkStudent\(link\.id, /, '既有配对必须可撤销')
 })
 
-test('共享范围面板覆盖三类共享与历史授权，收紧需确认且立即生效', () => {
+test('共享范围面板覆盖两类共享与历史授权，收紧需确认且立即生效', () => {
   assert.match(shareScopePanel, /value: 'roster'/, '须包含名册共享选项')
-  assert.match(shareScopePanel, /value: 'current_subject_score'/, '须包含任教学科成绩选项')
   assert.match(shareScopePanel, /value: 'current_subject_homework'/, '须包含任教学科作业选项')
-  assert.match(shareScopePanel, /window\.confirm\('取消成绩共享后立即生效/, '收紧共享前必须确认')
+  // 2026-11-09（Q10 裁决落实）：任教学科成绩选项移除——读侧零消费者的死配置
+  assert.doesNotMatch(shareScopePanel, /value: 'current_subject_score'/, '选项表不得再有任教学科成绩')
+  assert.doesNotMatch(shareScopePanel, /DEFAULT_SHARE_CATEGORIES: string\[\] = \['roster', 'current_subject_score/, '默认集不得再含任教学科成绩')
+  assert.match(shareScopePanel, /knownCategories/, '存量库值回显须过滤未知类别')
+  assert.match(shareScopePanel, /window\.confirm\('取消共享（名册\/作业）后立即生效/, '收紧共享前必须确认')
   assert.match(shareScopePanel, /updateLinkShareScope\(link\.id, \{/, '保存必须调用共享范围端点')
   assert.match(shareScopePanel, /share_history_from: historyFrom/, '历史授权日期随表单提交')
   assert.match(shareScopePanel, /beforeunload/, '未保存修改时离开页面需提示')

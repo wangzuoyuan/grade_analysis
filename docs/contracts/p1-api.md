@@ -79,6 +79,10 @@ v1 其余条款未列出者继续有效。变更须经集成者修订本文件�
 
 - `HomeroomTeachingLink.share_categories`（逗号分隔）仅识别：`roster`、`current_subject_score`、`current_subject_homework`。
   默认 `roster,current_subject_score`；不含 `current_subject_score` 时，成绩读接口不得做任何跨域成绩投影。
+  **v2.4 状态注（2026-11-09）**：随 2026-10 Q10 裁决「两工作台成绩不互通」（见 §1.3 v2.3 注），
+  `current_subject_score` 读侧已无任何消费者（存储白名单保留仅为兼容存量库值）；共享范围面板
+  不再提供该选项、新保存默认集为 `roster,current_subject_homework`，回显时静默忽略存量库值
+  中的该类别。`roster` 与 `current_subject_homework` 两类授权行为不变。
 - `share_history_from`（Date，可空）：显式历史授权日期，**可以早于 valid_from**（用于重新开放关联生效前的历史）。有效共享下限 = `share_history_from ?? valid_from`；考试日期早于该下限的事实不得共享。为空时等于 valid_from（默认不开放关联生效前历史）。考试日期未知（exam_date IS NULL）的事实**不得共享**（不得默认放开）。
 - `POST /api/v1/shared/links/{link_id}/share-scope`
   请求：`{share_categories?: [str], share_history_from?: date | null}`；仅 active link 可改；响应 `{link_id, version, share_categories, share_history_from}`。

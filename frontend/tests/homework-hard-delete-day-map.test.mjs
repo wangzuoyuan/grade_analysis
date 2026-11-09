@@ -72,10 +72,11 @@ test('请假/出勤异常按天映射（2026-10-26）：后端单一实现，前
   // 4. 前端零映射逻辑：数据全部来自后端列表项 id 数组（既有链路），无撤销残留即可
   assert.doesNotMatch(table, /dayFlags|day_flags/)
 
-  // 5. 契约文档已升版记载口径（v1.6=2026-11-05 出勤注记扩展到已交行）
+  // 5. 契约文档已升版记载口径（v1.7=2026-11-09 PATCH 学科授权；v1.6=2026-11-05 出勤注记扩展到已交行）
   assert.match(contract, /按天映射（2026-10-26）/)  // §1.4 节头
   assert.match(contract, /删除即物理删除/)
-  assert.match(contract, /v1\.6，2026-11-05/)
+  assert.match(contract, /v1\.7，2026-11-09/)
+  assert.match(contract, /v1\.6=2026-11-05/)
   assert.match(contract, /v1\.5=2026-10-27/)
 
   // 6. 2026-11-05 扩展：出勤注记挂到已交行（收交状态不翻转），后端单点实现

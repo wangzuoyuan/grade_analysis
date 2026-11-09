@@ -931,6 +931,21 @@ export function withQuery(path: string, query: Record<string, QueryValue>): stri
   return qs ? `${path}?${qs}` : path
 }
 
+/** 401 全局通知（2026-11-09 P2 修复）：请求层遇 401 派发全局事件，AuthGate
+ * 监听后重查登录状态并切回登录屏（保持当前 URL，登录后原地恢复）。
+ * 60 秒节流：会话过期时在开页面会同时打出大量 401，事件风暴没有意义。 */
+const AUTH_EXPIRED_EVENT = 'dsh:auth-expired'
+const AUTH_EXPIRED_THROTTLE_MS = 60_000
+let lastAuthExpiredAt = 0
+
+function notifyAuthExpiredIf401(status: number): void {
+  if (status !== 401 || typeof window === 'undefined') return
+  const now = Date.now()
+  if (now - lastAuthExpiredAt < AUTH_EXPIRED_THROTTLE_MS) return
+  lastAuthExpiredAt = now
+  window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
@@ -946,6 +961,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiV1Error(0, 'network_error', '网络请求失败，请检查连接后重试')
   }
   if (!res.ok) {
+    notifyAuthExpiredIf401(res.status)
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null
     throw new ApiV1Error(
       res.status,
@@ -969,6 +985,7 @@ async function requestMultipart<T>(path: string, form: FormData): Promise<T> {
     throw new ApiV1Error(0, 'network_error', '网络请求失败，请检查连接后重试')
   }
   if (!res.ok) {
+    notifyAuthExpiredIf401(res.status)
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null
     throw new ApiV1Error(
       res.status,
