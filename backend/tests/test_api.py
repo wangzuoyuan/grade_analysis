@@ -220,8 +220,5 @@ def test_grade_score_frequency_bins_are_exact_scores():
     assert _grade_score_bin(66) is None
 
 
-def test_ingest_uploads_get(client):
-    """Step 6: 上传列表"""
-    response = client.get("/api/uploads")
-    assert response.status_code == 200
-    assert "uploads" in response.json()
+# 2026-11-10 旧路由退役：/api/uploads 已随 ingest 路由族下线（前端零调用），
+# 本用例移除；其余 analysis/teacher/exams 端点仍在线。

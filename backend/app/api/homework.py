@@ -876,18 +876,55 @@ def _load_accessible_assignment(
 
 
 def _projected_submissions(
-    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
+    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
+    prefetched: Optional[List[HomeworkSubmission]] = None,
 ) -> List[Tuple[HomeworkSubmission, int]]:
     """批次的逐人行投影为读域视角 [(submission, 读域 person_id)]。
-    跨域时只保留 LinkedStudent 交集内的行（其余成员是对方域私有名册）。"""
-    subs = (
-        db.query(HomeworkSubmission)
-        .filter(HomeworkSubmission.assignment_id == a.id)
-        .all()
-    )
+    跨域时只保留 LinkedStudent 交集内的行（其余成员是对方域私有名册）。
+    prefetched（2026-11-09 审查 P2-3 列表端点批量预取）：非 None 时直接
+    使用预取行、不再按批查询（[] 表示该批次确无逐人行）；None 走原单批
+    查询——详情/看板/预警/诊断等既有调用方行为不变。"""
+    if prefetched is None:
+        subs = (
+            db.query(HomeworkSubmission)
+            .filter(HomeworkSubmission.assignment_id == a.id)
+            .all()
+        )
+    else:
+        subs = prefetched
     if mapping is None:
         return [(s, s.person_id) for s in subs]
     return [(s, mapping[s.person_id]) for s in subs if s.person_id in mapping]
+
+
+# IN 预取分片上限：SQLite 宿主参数上限（999）的保守值；页大小超限时
+# 仍按片批量查询，远少于每批一查。
+_PREFETCH_CHUNK = 500
+
+
+def _submissions_by_assignment(
+    db: Session, assignment_ids: Sequence[int]
+) -> Dict[int, List[HomeworkSubmission]]:
+    """多批次逐人行一次 IN 预取，按 assignment_id 分组（N+1 消除）。
+
+    每个请求的 id 都有条目（无行批次为空列表），调用方用 .get(a.id)
+    即可区分「未预取」（None → 回退单批查询）与「预取为空」（[]）。
+    组内行序与 _projected_submissions 的单批查询一致：
+    homework_submission 的 assignment_id 索引下，等值与 IN 查询同按
+    (assignment_id, rowid) 序返回；且 uq_homework_submission 保证
+    同人同批次唯一，下游对行序不敏感。"""
+    grouped: Dict[int, List[HomeworkSubmission]] = {
+        aid: [] for aid in assignment_ids
+    }
+    ids = list(assignment_ids)
+    for start in range(0, len(ids), _PREFETCH_CHUNK):
+        chunk = ids[start : start + _PREFETCH_CHUNK]
+        rows = db.query(HomeworkSubmission).filter(
+            HomeworkSubmission.assignment_id.in_(chunk)
+        ).all()
+        for s in rows:
+            grouped.setdefault(s.assignment_id, []).append(s)
+    return grouped
 
 
 def _legacy_expected_ids(db: Session, a: HomeworkAssignment) -> List[int]:
@@ -907,22 +944,78 @@ def _legacy_expected_ids(db: Session, a: HomeworkAssignment) -> List[int]:
     return sorted({row[0] for row in rows})
 
 
-def _effective_expected_ids(db: Session, a: HomeworkAssignment) -> List[int]:
+def _legacy_expected_ids_batch(
+    db: Session, assignments: Sequence[HomeworkAssignment]
+) -> Dict[int, List[int]]:
+    """migration 批次名单批量恢复（列表端点 N+1 消除）。
+
+    与 _legacy_expected_ids 逐批查询等价：按域一次取页内 [min_date,
+    max_date] 区间的超集（class IN + valid_from <= max_date + valid_to
+    为空或 >= min_date），Python 侧再按各批次 assigned_date 施加与单批
+    查询完全相同的过滤——任一单批查询能命中的成员行必然落入该超集，
+    故结果逐批一致（sorted 去重口径同）。只处理 batch_token 以
+    migration: 开头的批次；每个传入的 migration 批次都有条目（可为
+    空列表），非 migration 批次无条目（.get → None → 走快照分支）。"""
+    result: Dict[int, List[int]] = {}
+    homeroom_as = [
+        a for a in assignments
+        if a.batch_token.startswith("migration:") and a.data_domain == "homeroom"
+    ]
+    teaching_as = [
+        a for a in assignments
+        if a.batch_token.startswith("migration:") and a.data_domain == "teaching"
+    ]
+    for batches, model, class_col in (
+        (homeroom_as, Enrollment, Enrollment.admin_class_id),
+        (teaching_as, TeachingClassMember, TeachingClassMember.teaching_class_id),
+    ):
+        if not batches:
+            continue
+        min_d = min(a.assigned_date for a in batches)
+        max_d = max(a.assigned_date for a in batches)
+        rows = db.query(
+            model.identity_id, class_col, model.valid_from, model.valid_to,
+        ).filter(
+            class_col.in_(sorted({a.class_ref_id for a in batches})),
+            model.valid_from <= max_d,
+            (model.valid_to.is_(None)) | (model.valid_to >= min_d),
+        ).all()
+        for a in batches:
+            result[a.id] = sorted({
+                row[0] for row in rows
+                if row[1] == a.class_ref_id
+                and row[2] <= a.assigned_date
+                and (row[3] is None or row[3] >= a.assigned_date)
+            })
+    return result
+
+
+def _effective_expected_ids(
+    db: Session, a: HomeworkAssignment,
+    prefetched_legacy: Optional[List[int]] = None,
+) -> List[int]:
     """返回可用于业务统计的应交名单。
 
     新批次使用确认时快照；旧迁移批次的源系统只保存例外，因此按原班级、
     原日期的有效成员恢复名单。恢复只发生在原范围内，不扩大跨域权限。
+    prefetched_legacy（2026-11-09 审查 P2-3）：migration 批次经
+    _legacy_expected_ids_batch 批量恢复的名单；非 None 时直接使用、
+    不再按批查询，None 走原逐批恢复（其他调用方不变）。
     """
     expected = _parse_expected_ids(a.expected_members_json)
     if not expected and a.batch_token.startswith("migration:"):
-        expected = _legacy_expected_ids(db, a)
+        if prefetched_legacy is not None:
+            expected = prefetched_legacy
+        else:
+            expected = _legacy_expected_ids(db, a)
     return expected
 
 
 def _projected_expected(
-    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]]
+    db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
+    prefetched_legacy: Optional[List[int]] = None,
 ) -> List[int]:
-    expected = _effective_expected_ids(db, a)
+    expected = _effective_expected_ids(db, a, prefetched_legacy)
     if mapping is None:
         return expected
     return [mapping[pid] for pid in expected if pid in mapping]
@@ -932,6 +1025,8 @@ def _assignment_status_counts(
     db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
     skip_reader_ids: Optional[Set[int]] = None,
     day_flags: Optional[Dict[int, Dict[str, object]]] = None,
+    prefetched_submissions: Optional[List[HomeworkSubmission]] = None,
+    prefetched_legacy: Optional[List[int]] = None,
 ) -> Tuple[List[int], List[Tuple[HomeworkSubmission, int]], Dict[str, int],
            Dict[int, str], Dict[int, Optional[str]]]:
     """按例外登记口径统计批次。
@@ -942,9 +1037,13 @@ def _assignment_status_counts(
     应交与逐人行都不计入，行本身仍然保留。
     day_flags（2026-10-26 按天映射）：该批次日期上同天其他批次登记的
     请假/出勤异常，按人修正有效状态；返回值附带逐人有效状态与评价表，
-    供列表项 id 数组与详情行共用同一口径。"""
-    expected_reader = _projected_expected(db, a, mapping)
-    pairs = _projected_submissions(db, a, mapping)
+    供列表项 id 数组与详情行共用同一口径。
+    prefetched_submissions / prefetched_legacy（2026-11-09 审查 P2-3）：
+    列表端点批量预取的逐人行与 migration 名单，非 None 时透传给
+    _projected_submissions / _projected_expected 免按批查询；缺省 None
+    保持原逐批行为（详情/看板等调用方不变）。"""
+    expected_reader = _projected_expected(db, a, mapping, prefetched_legacy)
+    pairs = _projected_submissions(db, a, mapping, prefetched_submissions)
     row_by_reader = {rid: s for s, rid in pairs}
     reader_ids = sorted(set(expected_reader) | set(row_by_reader))
     if skip_reader_ids:
@@ -1976,10 +2075,14 @@ def homework_assignment_delete(
 def _list_item_of(
     db: Session, a: HomeworkAssignment, mapping: Optional[Dict[int, int]],
     day_flags: Optional[Dict[int, Dict[str, object]]] = None,
+    prefetched_submissions: Optional[List[HomeworkSubmission]] = None,
+    prefetched_legacy: Optional[List[int]] = None,
 ) -> HomeworkAssignmentListItem:
-    expected_reader = _projected_expected(db, a, mapping)
+    expected_reader = _projected_expected(db, a, mapping, prefetched_legacy)
     _reader_ids, pairs, counts, eff_status, eff_eval = _assignment_status_counts(
-        db, a, mapping, day_flags=day_flags
+        db, a, mapping, day_flags=day_flags,
+        prefetched_submissions=prefetched_submissions,
+        prefetched_legacy=prefetched_legacy,
     )
     rate, unavailable = _rate_stats_of(
         len(expected_reader),
@@ -2076,11 +2179,26 @@ def homework_assignments_list(
     total = len(entries)
     page = entries[offset : offset + limit]
     day_flags = _day_exception_flags(db, ctx, [a.assigned_date for a, _m in page])
+    # N+1 消除（2026-11-09 审查 P2-3）：对分页后的批次集合一次 IN 预取
+    # 逐人行，migration 空快照批次再按域一次预取 legacy 名单，行装配
+    # 路径（_list_item_of → _projected_submissions/_projected_expected）
+    # 零每批查询；_day_exception_flags 本身是页内日期范围的批次+逐行
+    # 查询，保持原样（口径共用，见 2026-10-26 按天映射）。预取结果对
+    # 页内每个批次必有条目（空行批次为 []），.get(a.id) 为 None 仅可能
+    # 出现在预取被禁用的测试回退路径，届时自动回退原逐批查询。
+    subs_by_assignment = _submissions_by_assignment(db, [a.id for a, _m in page])
+    legacy_by_assignment = _legacy_expected_ids_batch(db, [
+        a for a, _m in page if not _parse_expected_ids(a.expected_members_json)
+    ])
     return HomeworkAssignmentListResponse(
         metadata=_metadata(ctx),
         total=total,
         items=[
-            _list_item_of(db, a, mapping, day_flags.get(a.assigned_date))
+            _list_item_of(
+                db, a, mapping, day_flags.get(a.assigned_date),
+                prefetched_submissions=subs_by_assignment.get(a.id),
+                prefetched_legacy=legacy_by_assignment.get(a.id),
+            )
             for a, mapping in page
         ],
     )

@@ -274,27 +274,23 @@ def run_legacy_startup_migrations() -> dict:
 # 守门无法覆盖的脏库（如手工导库造成既有撞号）时，由人决策后手动执行：
 #   python -m app.db.migrate_student_ids
 
-from app.ingest.router import router as ingest_router  # noqa
+# 2026-11-10 旧路由族退役（全库审查 P2-5 落地）：ingest(/api/uploads)、
+# homework(/api/homework|weekly-focus)、notes(/api/notes)、rollover(/api/rollover)、
+# student_management(/api/manage) 五族前端零活调用（homework manage/warnings 死页
+# 与 HomeworkOverviewCard 已删；rollover/学生管理/名册 v1 均有等价端点+测试），
+# 挂载整体移除。服务模块保留（v1/聊天/MCP 仍用其函数）。保留的当前非 v1 面：
+# auth、backup、analysis-config/diagnosis-threshold-config/exams、teacher。
 from app.analysis.router import router as analysis_router  # noqa
 # 旧版 AI 聊天 HTTP 端点（POST /api/chat、GET /api/chat/config，
 # app/chat/session.py）已于 2026-10-23 下线：读已冻结 legacy 旧库、口径过时，
 # 前端唯一入口是 /api/v1/chat。app/chat/tools.py 与 app/chat/config.py 保留
 # （新版 chat 与 MCP 旧工具兼容路径仍在用）。
-from app.homework.router import router as homework_router  # noqa
-from app.notes.router import router as notes_router  # noqa
 from app.backup.router import router as backup_router  # noqa
-from app.rollover.router import router as rollover_router  # noqa
-from app.student_management.router import router as student_management_router  # noqa
 from app.auth_router import router as auth_router  # noqa
 from app.api import create_api_router  # noqa
 
 app.include_router(auth_router, prefix="/api")
-app.include_router(ingest_router, prefix="/api")
 app.include_router(analysis_router, prefix="/api")
-app.include_router(homework_router, prefix="/api")
-app.include_router(notes_router, prefix="/api")
 app.include_router(backup_router, prefix="/api")
-app.include_router(rollover_router, prefix="/api")
-app.include_router(student_management_router, prefix="/api")
 # P1 双工作台契约路由（/api/v1/*），契约见 docs/contracts/p1-api.md
 app.include_router(create_api_router())

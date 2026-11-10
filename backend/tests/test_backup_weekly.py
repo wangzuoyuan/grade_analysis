@@ -52,9 +52,8 @@ def test_restore_missing_file(client):
 
 
 def test_weekly_focus_shape(client):
+    """旧版 GET /api/weekly-focus 已于 2026-11-10 随 homework 旧路由族退役
+    （前端唯一入口为 /api/v1/homeroom/analysis/weekly-focus），须 404——
+    与 /api/chat/config 下线守卫同款口径。"""
     r = client.get("/api/weekly-focus?class_num=4")
-    assert r.status_code == 200
-    body = r.json()
-    assert "students" in body and "week" in body
-    for s in body["students"]:
-        assert "student_id" in s and "name" in s and isinstance(s["reasons"], list)
+    assert r.status_code == 404
