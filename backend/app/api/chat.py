@@ -42,6 +42,7 @@ _persist_chat_round 之前再验一次（失效则本轮连同 user 消息一并
 
 import asyncio
 import json
+import time
 from contextlib import suppress
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
@@ -715,18 +716,27 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
             stream_error: Optional[Exception] = None
             try:
                 event_iter = stream_obj.__aiter__()
+                # 心跳以「客户端多久没收到字节」为准，而非「多久没收到模型
+                # 事件」——智谱网关在生成期间持续发 keepalive 事件（每条都会
+                # 重置 asyncio.wait 的计时器），事件视角永不超时，而客户端
+                # 侧是纯静默（2026-11-15 线上实测：4520 次 wait 零 timeout，
+                # 公网 60s 被掐）。凡本轮事件未产生任何客户端帧且距上次
+                # 下发 ≥ _CHAT_PING_INTERVAL，即补一帧 ping。
+                last_forward = time.monotonic()
                 while True:
                     if pending is None:
                         pending = asyncio.ensure_future(event_iter.__anext__())
                     done, _ = await asyncio.wait({pending}, timeout=_CHAT_PING_INTERVAL)
                     if not done:
                         yield sse({"type": "ping"})
+                        last_forward = time.monotonic()
                         continue
                     task, pending = pending, None
                     try:
                         event = task.result()
                     except StopAsyncIteration:
                         break
+                    forwarded = False
                     etype = getattr(event, "type", "")
                     if etype == "content_block_start":
                         cbt = getattr(event.content_block, "type", "")
@@ -744,6 +754,7 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                         if dtype == "text_delta" and event.index in block_text:
                             block_text[event.index] += event.delta.text
                             published = True
+                            forwarded = True
                             yield sse({"type": "text", "delta": event.delta.text})
                         elif dtype == "input_json_delta" and event.index in block_tool:
                             block_tool[event.index]["json"] += event.delta.partial_json
@@ -756,6 +767,7 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                                 args = {}
                             spec["args"] = args
                             published = True
+                            forwarded = True
                             frames, drifted = _run_tool(
                                 spec["name"], str(spec["id"]), spec["id"], args, tool_results
                             )
@@ -767,7 +779,13 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                         stop_reason = getattr(event.delta, "stop_reason", None)
                     elif etype == "error":
                         raise RuntimeError(f"模型流内错误：{getattr(event, 'error', event)}")
-                    # message_start / ping / message_stop：无需处理
+                    # message_start / ping / message_stop：不产生客户端帧
+                    if forwarded:
+                        last_forward = time.monotonic()
+                    elif time.monotonic() - last_forward >= _CHAT_PING_INTERVAL:
+                        # 网关 keepalive 事件流：客户端侧已静默 ≥ 心跳间隔
+                        yield sse({"type": "ping"})
+                        last_forward = time.monotonic()
             except Exception as exc:
                 stream_error = exc
             finally:

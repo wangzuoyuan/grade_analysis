@@ -25,6 +25,11 @@ token 预算致回答只剩截断提示）。守卫 `tests/v1/test_p6_streaming.
 起（`_CHAT_DUPE_CALL_LIMIT`）不再执行：发 `tool_error` 帧（纠正性文案）
 并向模型回喂 `is_error` tool_result，模型可据此改道或收束；不同参数不受
 影响。守卫测试 `tests/v1/test_p6_heartbeat.py`（7 用例）。
+**v2.4 热修（同日晚）**：流式心跳触发条件从「无模型事件」改为「客户端
+静默时长」——智谱网关生成期间持续发 keepalive 事件（SSE ping），事件视角
+永不超时而客户端纯静默（线上实测 4520 次 wait 零 timeout、公网 60s 被掐
+零 ping），凡事件不产生客户端帧且静默 ≥ 心跳间隔即补发 ping（回归用例
+`test_gateway_keepalive_flood_still_pings_client`）。
 
 **2026-10-23 排名区间按指标类型分口径（v2.2）**：`get_rank_range` 与其封装的
 `/api/v1/homeroom/analysis/exams/{exam}/rank-range` 同步——指标清单按年级扩全

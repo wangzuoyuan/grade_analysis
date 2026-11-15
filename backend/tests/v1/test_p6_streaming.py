@@ -246,6 +246,71 @@ def test_streaming_ping_before_first_event(v1_seed, client, monkeypatch):
     assert frames[-1]["type"] == "done"
 
 
+# ────────────────────── 网关 keepalive 洪泛（2026-11-15 线上根因回归）──────────────────────
+
+
+def test_gateway_keepalive_flood_still_pings_client(v1_seed, client, monkeypatch):
+    """智谱网关生成期间持续发 keepalive 事件（SSE ping 等），事件视角永不
+    超时（每条都重置等待计时器）而客户端纯静默——心跳必须按「客户端静默
+    时长」触发，而不是「无事件时长」（v1.0.17 线上 4520 次 wait 零 timeout、
+    公网 60s 被掐的根因）。"""
+    import asyncio as _asyncio
+
+    monkeypatch.setattr(chat_module, "_CHAT_PING_INTERVAL", 0.05)
+
+    class _KeepaliveFloodStream:
+        def __init__(self):
+            self.i = 0
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.i == 0:
+                self.i += 1
+                return SimpleNamespace(type="message_start")
+            if self.i <= 40:  # 0.01s 一个 keepalive，共 ~0.4s 洪泛
+                self.i += 1
+                await _asyncio.sleep(0.01)
+                return SimpleNamespace(type="ping")  # 网关心跳事件：无客户端帧
+            if self.i == 41:
+                self.i += 1
+                return _ev_text_start(0)
+            if self.i == 42:
+                self.i += 1
+                return _ev_text_delta(0, "终于来了")
+            if self.i == 43:
+                self.i += 1
+                return _ev_stop(0)
+            raise StopAsyncIteration
+
+        async def close(self):
+            self.closed = True
+
+    class _Messages3:
+        async def create(self, **kwargs):
+            return _KeepaliveFloodStream()
+
+    class _Client3:
+        messages = _Messages3()
+
+    monkeypatch.setattr(
+        "app.api.chat.create_async_anthropic_client", lambda config: _Client3()
+    )
+
+    sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
+    r = client.post(f"/api/v1/chat/sessions/{sid}/messages", json={"content": "慢思考"})
+    frames = _frames(r.text)
+    pings = [f for f in frames if f["type"] == "ping"]
+    texts = [f for f in frames if f["type"] == "text"]
+    assert len(pings) >= 3, f"keepalive 洪泛期间必须照发客户端心跳，实得 {len(pings)}"
+    assert texts and texts[-1]["delta"] == "终于来了"
+    assert frames[-1]["type"] == "done"
+    # ping 必须出现在 text 之前（静默期先于心跳之后的正文）
+    assert frames.index(pings[0]) < frames.index(texts[0])
+
+
 # ────────────────────── 回退两态 ──────────────────────
 
 
