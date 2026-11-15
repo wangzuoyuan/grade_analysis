@@ -292,12 +292,8 @@ def test_gateway_keepalive_flood_still_pings_client(v1_seed, client, monkeypatch
         async def create(self, **kwargs):
             return _KeepaliveFloodStream()
 
-    class _Client3:
-        messages = _Messages3()
-
-    monkeypatch.setattr(
-        "app.api.chat.create_async_anthropic_client", lambda config: _Client3()
-    )
+    # _install 同时 patch get_chat_config（CI 无真实 key，不 patch 会 409）
+    _install(monkeypatch, _Messages3())
 
     sid = _create_session(client, {"mode": "homeroom"}).json()["session_id"]
     r = client.post(f"/api/v1/chat/sessions/{sid}/messages", json={"content": "慢思考"})
