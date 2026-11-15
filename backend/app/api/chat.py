@@ -13,8 +13,11 @@ data JSON 帧循环模式，本模块独立实现：
   | {"type":"tool_result",call_id,name,output}
   | {"type":"tool_error",call_id,name,error}
   | {"type":"error","message","code"?} | {"type":"done"}
+  | {"type":"ping"}（2026-11-15 心跳帧：等模型完整响应期间周期发送，
+    防公网入口反代按空闲超时掐线；前端对未知类型静默忽略，不落历史）
 error 帧可选 code（前端优先认 code，文字匹配仅兜底）：scope_drift /
 key_not_configured / provider_failed / tool_rounds_exceeded。
+同工具+同参数第 3 次起不再执行、改喂纠正性错误结果（重复取数止损）。
 
 模型调用走异步客户端（AsyncAnthropic / AsyncOpenAI），事件循环不再被
 同步请求阻塞；回答上限取 ChatConfig.max_tokens（CHAT_MAX_TOKENS，缺省
@@ -36,8 +39,9 @@ _persist_chat_round 之前再验一次（失效则本轮连同 user 消息一并
 
 import asyncio
 import json
+from contextlib import suppress
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -83,6 +87,19 @@ router = APIRouter(tags=["chat"])
 CHAT_MAX_TOOL_ROUNDS = 8
 CHAT_HISTORY_LIMIT = 20  # Q03：组装给模型的历史截断（最近 20 条）
 _CHAT_PROVIDER_RETRIES = 3
+# 2026-11-15 连接中断修复：等待模型完整响应期间 SSE 链路完全静默（非流式
+# 调用 + 多轮工具循环），公网入口反向代理按空闲超时掐线（当日 21:34/21:36
+# 两次，Mac caddy "reading: context canceled"）。每 _CHAT_PING_INTERVAL 秒
+# 发一帧 ping 心跳保持链路活跃；前端对未知帧类型静默忽略，零前端改动。
+_CHAT_PING_INTERVAL = 10.0
+# 同工具+同参数重复调用止损：第 _CHAT_DUPE_CALL_LIMIT 次起不再执行，改喂
+# 纠正性错误结果（当日故障里模型对 get_homework_warnings 连调 14 次，多为
+# 重复取数烧轮次）；同参数重复取数结果不会变化，拦截不损失信息。
+_CHAT_DUPE_CALL_LIMIT = 3
+_DUPE_CALL_MESSAGE = (
+    "同一工具与相同参数已连续调用多次，结果不会变化。"
+    "请直接基于已有工具结果作答，或改用不同参数/工具。"
+)
 # Q02/V02 范围失效帧文案（沿用既有文案：工具执行前/模型返回后/落库前共用）
 _SCOPE_DRIFT_FRAME = (
     "会话范围已变化（关联撤销/版本变化/成员变化），本轮流已终止，请新建会话"
@@ -92,6 +109,57 @@ _SCOPE_DRIFT_FRAME = (
 def sse(payload: dict) -> str:
     """H 版帧格式：data JSON 行 + 空行。"""
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _model_call_with_pings(factory, box: Dict[str, Any]):
+    """带心跳与取消清理的模型调用（2026-11-15 连接中断修复）。
+
+    非流式模型调用要等完整响应，期间对客户端零输出——多轮工具循环下静默
+    窗口可达分钟级，公网入口反代会按空闲掐线。本包装在等待期间每
+    _CHAT_PING_INTERVAL 秒 yield 一帧 {"type":"ping"}（前端忽略未知类型）。
+
+    factory：每次尝试返回新协程对象（重试不可复用已消费协程）；沿用既有
+    _CHAT_PROVIDER_RETRIES 次重试 + 0.4*n 退避语义。结果写入调用方传入的
+    box：box["result"]=response 成功 / box["error"]=last_exc 重试耗尽；
+    两者皆缺 = 在途被取消（客户端已断开），调用方应静默收束。
+
+    生成器被关闭/取消（客户端断开时 Starlette 会 aclose 整条生成器链）时，
+    在途模型调用立即 cancel 并等待收尾——浏览器已断线就不再白烧轮次；
+    GeneratorExit/CancelledError 原样上抛，绝不吞取消信号。
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(_CHAT_PROVIDER_RETRIES):
+        task: Optional[asyncio.Task] = None
+        try:
+            task = asyncio.ensure_future(factory())
+        except Exception as exc:  # factory 同步抛错与 await 抛错同路重试
+            last_exc = exc
+        if task is not None:
+            try:
+                while True:
+                    done, _ = await asyncio.wait({task}, timeout=_CHAT_PING_INTERVAL)
+                    if done:
+                        break
+                    yield sse({"type": "ping"})
+            except BaseException:
+                # 本生成器被关闭/取消（典型：客户端断开 → 消费方 aclose）：
+                # 取消在途调用后原样上抛，让取消语义沿生成器链继续传播
+                if not task.done():
+                    task.cancel()
+                    with suppress(BaseException):
+                        await task
+                raise
+            if task.cancelled():  # 防御：仅外都 cancel 才会到（上面已上抛）
+                return
+            exc = task.exception()
+            if exc is None:
+                box["result"] = task.result()
+                return
+            last_exc = exc
+        if attempt < _CHAT_PROVIDER_RETRIES - 1:
+            await asyncio.sleep(0.4 * (attempt + 1))
+    box["error"] = last_exc
+    return
 
 
 def _key_name_of(config) -> str:
@@ -467,8 +535,14 @@ async def _stream_session_reply(session_id: int, snapshot: dict, content: str):
             frames = _stream_anthropic_reply(
                 config, system, tools, messages, db, snapshot, content, sink
             )
-        async for frame in frames:
-            yield frame
+        try:
+            async for frame in frames:
+                yield frame
+        finally:
+            # 客户端断开时 Starlette 只 aclose 本生成器；async-for 不会自动
+            # 关闭被迭代生成器，须显式传导（分支内再到 _model_call_with_pings，
+            # 取消在途模型调用，止损白烧）
+            await frames.aclose()
         if sink["final_text"] is None:
             return
         # V02：落库前最后一道重验——文本帧发布后到写历史前关联再被撤销时，
@@ -489,34 +563,39 @@ async def _stream_session_reply(session_id: int, snapshot: dict, content: str):
 async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot, content, sink):
     client = create_async_anthropic_client(config)
     chat_messages = list(messages)
+    call_counts: Dict[str, int] = {}
     for _ in range(CHAT_MAX_TOOL_ROUNDS):
-        # 兼容端点偶发瞬时错误（401/429/5xx/网络抖动），读操作可安全重试
-        response = None
-        last_exc = None
-        for attempt in range(_CHAT_PROVIDER_RETRIES):
-            try:
-                response = await client.messages.create(
-                    model=config.model,
-                    max_tokens=config.max_tokens,
-                    system=system,
-                    messages=chat_messages,
-                    tools=tools,
+        # 兼容端点偶发瞬时错误（401/429/5xx/网络抖动），读操作可安全重试；
+        # 等待期间周期发 ping 心跳，客户端断开时在途调用即被取消（见
+        # _model_call_with_pings）
+        box: Dict[str, Any] = {}
+        agen = _model_call_with_pings(
+            lambda: client.messages.create(
+                model=config.model,
+                max_tokens=config.max_tokens,
+                system=system,
+                messages=chat_messages,
+                tools=tools,
+            ),
+            box,
+        )
+        try:
+            async for ping_frame in agen:
+                yield ping_frame
+        finally:
+            await agen.aclose()
+        if "result" not in box:
+            if "error" in box:
+                yield sse(
+                    {
+                        "type": "error",
+                        "code": "provider_failed",
+                        "message": f"模型调用失败（已重试）：{box['error']}",
+                    }
                 )
-                break
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _CHAT_PROVIDER_RETRIES - 1:
-                    await asyncio.sleep(0.4 * (attempt + 1))
-        if response is None:
-            yield sse(
-                {
-                    "type": "error",
-                    "code": "provider_failed",
-                    "message": f"模型调用失败（已重试）：{last_exc}",
-                }
-            )
-            yield sse({"type": "done"})
+                yield sse({"type": "done"})
             return
+        response = box["result"]
 
         # V02：模型返回后、发布任何文本/工具帧之前重验快照——慢生成期间
         # 关联被撤销时，旧范围的答复与工具帧绝不发布（final_text 保持
@@ -542,6 +621,29 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                     {"type": "tool_use", "id": block.id, "name": block.name, "input": args}
                 )
                 yield sse({"type": "tool_call", "call_id": call_id, "name": block.name, "input": args})
+                dupe_key = f"{block.name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
+                dupe_count = call_counts.get(dupe_key, 0) + 1
+                call_counts[dupe_key] = dupe_count
+                if dupe_count >= _CHAT_DUPE_CALL_LIMIT:
+                    # 重复调用止损：不执行，喂纠正性错误结果让模型改道/收束
+                    sink["tool_events"].append({"name": block.name, "status": "error"})
+                    yield sse(
+                        {
+                            "type": "tool_error",
+                            "call_id": call_id,
+                            "name": block.name,
+                            "error": _DUPE_CALL_MESSAGE,
+                        }
+                    )
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": _DUPE_CALL_MESSAGE,
+                            "is_error": True,
+                        }
+                    )
+                    continue
                 try:
                     result = execute_session_tool(db, snapshot, block.name, args)
                 except ScopeDriftError:
@@ -609,27 +711,31 @@ async def _stream_openai_reply(config, system, tools, messages, db, snapshot, co
     client = create_async_openai_client(config)
     oai_tools = to_openai_tools(tools)
     chat_messages: List[dict] = [{"role": "system", "content": system}, *messages]
+    call_counts: Dict[str, int] = {}
     for _ in range(CHAT_MAX_TOOL_ROUNDS):
         # 兼容端点偶发瞬时错误（401/429/5xx/网络抖动），读操作可安全重试
-        #（与 Anthropic 分支同款重试；OpenAI 通道不传 max_tokens，不设上限）
-        response = None
-        last_exc = None
-        for attempt in range(_CHAT_PROVIDER_RETRIES):
-            try:
-                response = await client.chat.completions.create(
-                    model=config.model,
-                    messages=chat_messages,
-                    tools=oai_tools,
-                )
-                break
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _CHAT_PROVIDER_RETRIES - 1:
-                    await asyncio.sleep(0.4 * (attempt + 1))
-        if response is None:
-            yield sse({"type": "error", "code": "provider_failed", "message": f"模型调用失败：{last_exc}"})
-            yield sse({"type": "done"})
+        #（与 Anthropic 分支同款重试；OpenAI 通道不传 max_tokens，不设上限）；
+        # 等待期间周期发 ping 心跳，客户端断开时在途调用即被取消
+        box: Dict[str, Any] = {}
+        agen = _model_call_with_pings(
+            lambda: client.chat.completions.create(
+                model=config.model,
+                messages=chat_messages,
+                tools=oai_tools,
+            ),
+            box,
+        )
+        try:
+            async for ping_frame in agen:
+                yield ping_frame
+        finally:
+            await agen.aclose()
+        if "result" not in box:
+            if "error" in box:
+                yield sse({"type": "error", "code": "provider_failed", "message": f"模型调用失败：{box['error']}"})
+                yield sse({"type": "done"})
             return
+        response = box["result"]
         # V02：模型返回后、发布任何文本/工具帧之前重验快照（同 Anthropic
         # 分支——慢生成期间撤销 → 旧答复不发布、本轮不落历史）
         try:
@@ -666,6 +772,24 @@ async def _stream_openai_reply(config, system, tools, messages, db, snapshot, co
                     args = {}
                 call_id = str(tc.id)
                 yield sse({"type": "tool_call", "call_id": call_id, "name": tc.function.name, "input": args})
+                dupe_key = f"{tc.function.name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
+                dupe_count = call_counts.get(dupe_key, 0) + 1
+                call_counts[dupe_key] = dupe_count
+                if dupe_count >= _CHAT_DUPE_CALL_LIMIT:
+                    # 重复调用止损（同 Anthropic 分支）：不执行，喂纠正性错误结果
+                    sink["tool_events"].append({"name": tc.function.name, "status": "error"})
+                    yield sse(
+                        {
+                            "type": "tool_error",
+                            "call_id": call_id,
+                            "name": tc.function.name,
+                            "error": _DUPE_CALL_MESSAGE,
+                        }
+                    )
+                    chat_messages.append(
+                        {"role": "tool", "tool_call_id": tc.id, "content": _DUPE_CALL_MESSAGE}
+                    )
+                    continue
                 try:
                     result = execute_session_tool(db, snapshot, tc.function.name, args)
                 except ScopeDriftError:
