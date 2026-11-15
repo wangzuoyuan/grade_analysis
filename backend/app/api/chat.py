@@ -13,8 +13,11 @@ data JSON 帧循环模式，本模块独立实现：
   | {"type":"tool_result",call_id,name,output}
   | {"type":"tool_error",call_id,name,error}
   | {"type":"error","message","code"?} | {"type":"done"}
-  | {"type":"ping"}（2026-11-15 心跳帧：等模型完整响应期间周期发送，
-    防公网入口反代按空闲超时掐线；前端对未知类型静默忽略，不落历史）
+  | {"type":"ping"}（2026-11-15 心跳帧：等模型事件期间周期发送，防公网
+    入口反代按空闲超时掐线；前端对未知类型静默忽略，不落历史）
+Anthropic 分支 2026-11-15（方案二）起 stream=True 真流式：text 增量逐帧
+转发、tool_use 流内拼装即时执行；网关不支持流式或流中断且未发布 → 自动
+回退非流式路径（本文件 `_stream_anthropic_reply` 头注）。
 error 帧可选 code（前端优先认 code，文字匹配仅兜底）：scope_drift /
 key_not_configured / provider_failed / tool_rounds_exceeded。
 同工具+同参数第 3 次起不再执行、改喂纠正性错误结果（重复取数止损）。
@@ -252,6 +255,14 @@ def build_system_prompt(snapshot: dict, time_anchor: Optional[dict] = None) -> s
         "让用户挑选，绝不瞎猜；考试名支持部分名称模糊匹配（唯一命中自动解析，"
         "多命中会返回候选清单）。\n"
     )
+    rule_economy = (
+        "8. 工具用量（2026-11-15）：全班或多学生的汇总问题（缺交/预警/分布等）"
+        "优先一次调用覆盖全班的汇总类工具（get_homework_warnings / "
+        "get_exam_students / get_diagnosis_summary 等），按学科细分用 subject / "
+        "homework_type 参数或在汇总结果上自行分组，**不要**对每个学生逐一调用"
+        "单人工具（get_homework_student / get_homework_student_subjects）——逐人"
+        "批量调用会耗尽回答长度上限，导致最终回答被截断。\n"
+    )
     return (
         header
         + anchor_line
@@ -271,6 +282,7 @@ def build_system_prompt(snapshot: dict, time_anchor: Optional[dict] = None) -> s
         "高一年级百分位、高二高三等级分，不能用班级相关系数推断个人。\n"
         + rule_time
         + rule_auto
+        + rule_economy
     )
 
 
@@ -561,13 +573,104 @@ async def _stream_session_reply(session_id: int, snapshot: dict, content: str):
 
 
 async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot, content, sink):
+    """Anthropic 分支（2026-11-15 方案二起真流式）。
+
+    每轮优先 stream=True 真流式：text 增量边生成边转发（打字机效果）、
+    tool_use 块流内拼装参数并在 content_block_stop 即时执行；事件等待期间
+    继续发 ping 心跳。网关不支持流式（create 返回完整响应对象）或流中途
+    失败且本轮尚未发布任何帧 → 自动回退到 v1.0.16 非流式路径（语义不变，
+    既有测试替身天然走回退路径）；已发布后中断 → provider_failed 收流，
+    半途轮次不落库。范围校验两道闸：轮前重验（真流式文本边生成边发布，
+    2026-11-15 用户拍板豁免「生成中途漂移」——成员/关联不会在提问进行中
+    变化）+ 落库前终验（_stream_session_reply）；回退路径另保留模型返回后
+    的发布前重验（V02 原语义）。
+    """
     client = create_async_anthropic_client(config)
     chat_messages = list(messages)
     call_counts: Dict[str, int] = {}
+    all_text_parts: List[str] = []  # 已随流发布的文本（流式路径跨轮累积，落库用）
+
+    def _run_tool(name: str, call_id: str, block_id, args: dict, tool_results: List[dict]):
+        """执行单个 tool_use 并产出待发帧（去重止损→执行→结果/错误帧）。
+        返回 (frames, drifted)：drifted=True 表示范围失效（帧含失效帧+done，
+        调用方立即收流）。"""
+        frames: List[str] = [
+            sse({"type": "tool_call", "call_id": call_id, "name": name, "input": args})
+        ]
+        dupe_key = f"{name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
+        dupe_count = call_counts.get(dupe_key, 0) + 1
+        call_counts[dupe_key] = dupe_count
+        if dupe_count >= _CHAT_DUPE_CALL_LIMIT:
+            # 重复调用止损：不执行，喂纠正性错误结果让模型改道/收束
+            sink["tool_events"].append({"name": name, "status": "error"})
+            frames.append(
+                sse(
+                    {
+                        "type": "tool_error",
+                        "call_id": call_id,
+                        "name": name,
+                        "error": _DUPE_CALL_MESSAGE,
+                    }
+                )
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block_id,
+                    "content": _DUPE_CALL_MESSAGE,
+                    "is_error": True,
+                }
+            )
+            return frames, False
+        try:
+            result = execute_session_tool(db, snapshot, name, args)
+        except ScopeDriftError:
+            # Q02：工具执行期间范围失效 → 失效帧 + 收流，旧上下文绝不继续
+            return (
+                [
+                    sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME}),
+                    sse({"type": "done"}),
+                ],
+                True,
+            )
+        if result.get("error"):
+            sink["tool_events"].append({"name": name, "status": "error"})
+            frames.append(
+                sse(
+                    {
+                        "type": "tool_error",
+                        "call_id": call_id,
+                        "name": name,
+                        "error": str(result.get("detail") or result["error"]),
+                    }
+                )
+            )
+        else:
+            sink["tool_events"].append({"name": name, "status": "ok"})
+            frames.append(
+                sse({"type": "tool_result", "call_id": call_id, "name": name, "output": result})
+            )
+        tool_results.append(
+            {
+                "type": "tool_result",
+                "tool_use_id": block_id,
+                "content": json.dumps(result, ensure_ascii=False, default=str),
+            }
+        )
+        return frames, False
+
     for _ in range(CHAT_MAX_TOOL_ROUNDS):
-        # 兼容端点偶发瞬时错误（401/429/5xx/网络抖动），读操作可安全重试；
-        # 等待期间周期发 ping 心跳，客户端断开时在途调用即被取消（见
-        # _model_call_with_pings）
+        # 轮前重验（两路径共用；真流式下文本边生成边发布，这里是发布前的
+        # 主闸——漂移即收流，本轮不发起模型调用）
+        try:
+            _assert_snapshot_fresh(db, snapshot, None)
+        except ScopeDriftError:
+            yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
+            yield sse({"type": "done"})
+            return
+
+        # 模型调用（create 本身经心跳包装重试；stream=True 由网关支持时
+        # 返回异步事件流，否则返回完整响应对象 → 回退路径）
         box: Dict[str, Any] = {}
         agen = _model_call_with_pings(
             lambda: client.messages.create(
@@ -576,6 +679,7 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                 system=system,
                 messages=chat_messages,
                 tools=tools,
+                stream=True,
             ),
             box,
         )
@@ -595,21 +699,170 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                 )
                 yield sse({"type": "done"})
             return
-        response = box["result"]
+        stream_obj = box["result"]
 
-        # V02：模型返回后、发布任何文本/工具帧之前重验快照——慢生成期间
-        # 关联被撤销时，旧范围的答复与工具帧绝不发布（final_text 保持
-        # None，本轮连同 user 消息不落历史）
+        assistant_content: List[dict] = []
+        tool_results: List[dict] = []
+        final_text_parts: List[str] = []
+        stop_reason: Optional[str] = None
+
+        if hasattr(stream_obj, "__aiter__"):
+            # ── 真流式路径：事件消费（ping 交织 + 流内工具执行）──
+            block_text: Dict[int, str] = {}
+            block_tool: Dict[int, dict] = {}
+            published = False  # 本轮是否已发过任何帧（决定中断后可否回退）
+            pending: Optional[asyncio.Task] = None
+            stream_error: Optional[Exception] = None
+            try:
+                event_iter = stream_obj.__aiter__()
+                while True:
+                    if pending is None:
+                        pending = asyncio.ensure_future(event_iter.__anext__())
+                    done, _ = await asyncio.wait({pending}, timeout=_CHAT_PING_INTERVAL)
+                    if not done:
+                        yield sse({"type": "ping"})
+                        continue
+                    task, pending = pending, None
+                    try:
+                        event = task.result()
+                    except StopAsyncIteration:
+                        break
+                    etype = getattr(event, "type", "")
+                    if etype == "content_block_start":
+                        cbt = getattr(event.content_block, "type", "")
+                        if cbt == "tool_use":
+                            block_tool[event.index] = {
+                                "id": event.content_block.id,
+                                "name": event.content_block.name,
+                                "json": "",
+                            }
+                        elif cbt == "text":
+                            block_text[event.index] = ""
+                        # 其他块类型（thinking 等）：不转发，聚合时跳过
+                    elif etype == "content_block_delta":
+                        dtype = getattr(event.delta, "type", "")
+                        if dtype == "text_delta" and event.index in block_text:
+                            block_text[event.index] += event.delta.text
+                            published = True
+                            yield sse({"type": "text", "delta": event.delta.text})
+                        elif dtype == "input_json_delta" and event.index in block_tool:
+                            block_tool[event.index]["json"] += event.delta.partial_json
+                    elif etype == "content_block_stop":
+                        if event.index in block_tool:
+                            spec = block_tool[event.index]
+                            try:
+                                args = json.loads(spec["json"] or "{}")
+                            except ValueError:
+                                args = {}
+                            spec["args"] = args
+                            published = True
+                            frames, drifted = _run_tool(
+                                spec["name"], str(spec["id"]), spec["id"], args, tool_results
+                            )
+                            for frame in frames:
+                                yield frame
+                            if drifted:
+                                return  # 失效帧+done 已在 frames 里发出
+                    elif etype == "message_delta":
+                        stop_reason = getattr(event.delta, "stop_reason", None)
+                    elif etype == "error":
+                        raise RuntimeError(f"模型流内错误：{getattr(event, 'error', event)}")
+                    # message_start / ping / message_stop：无需处理
+            except Exception as exc:
+                stream_error = exc
+            finally:
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                if pending is not None:
+                    with suppress(BaseException):
+                        await pending
+                with suppress(BaseException):
+                    await stream_obj.close()
+            if stream_error is not None:
+                if published:
+                    # 已发布过内容，无法安全重试/回退（会造成重复文本）：
+                    # 中断收流，半途轮次不落库
+                    yield sse(
+                        {
+                            "type": "error",
+                            "code": "provider_failed",
+                            "message": f"模型流式中断：{stream_error}",
+                        }
+                    )
+                    yield sse({"type": "done"})
+                    return
+                # 未发布任何帧 → 回退到非流式路径重取本轮
+                fallback_box: Dict[str, Any] = {}
+                fagen = _model_call_with_pings(
+                    lambda: client.messages.create(
+                        model=config.model,
+                        max_tokens=config.max_tokens,
+                        system=system,
+                        messages=chat_messages,
+                        tools=tools,
+                    ),
+                    fallback_box,
+                )
+                try:
+                    async for ping_frame in fagen:
+                        yield ping_frame
+                finally:
+                    await fagen.aclose()
+                if "result" not in fallback_box:
+                    if "error" in fallback_box:
+                        yield sse(
+                            {
+                                "type": "error",
+                                "code": "provider_failed",
+                                "message": f"模型调用失败（已重试）：{fallback_box['error']}",
+                            }
+                        )
+                        yield sse({"type": "done"})
+                    return
+                response = fallback_box["result"]
+            else:
+                # 流式轮正常结束：按块序聚合 assistant_content（下一轮请求体）
+                for idx in sorted(set(block_text) | set(block_tool)):
+                    if idx in block_tool:
+                        spec = block_tool[idx]
+                        assistant_content.append(
+                            {
+                                "type": "tool_use",
+                                "id": spec["id"],
+                                "name": spec["name"],
+                                "input": spec["args"],
+                            }
+                        )
+                    elif block_text[idx].strip():
+                        # 空文本块不入请求体（空 text 块会被 Anthropic 400 拒绝）
+                        assistant_content.append({"type": "text", "text": block_text[idx]})
+                round_text = "".join(block_text[i] for i in sorted(block_text))
+                all_text_parts.append(round_text)
+                if tool_results:
+                    chat_messages.append({"role": "assistant", "content": assistant_content})
+                    chat_messages.append({"role": "user", "content": tool_results})
+                    continue
+                # 最终轮：文本已随流发布，截断提示补发增量后收流
+                text = "".join(all_text_parts)
+                if stop_reason == "max_tokens":
+                    # 截断保险丝：明确告知被截断，而非无声截尾
+                    hint = "\n\n（回答达到长度上限被截断，可继续追问让我接着说。）"
+                    text += hint
+                    yield sse({"type": "text", "delta": hint})
+                sink["final_text"] = text if text.strip() else None
+                yield sse({"type": "done"})
+                return
+        else:
+            # ── 回退路径：完整响应（网关忽略 stream=True / 旧测试替身）──
+            response = stream_obj
+
+        # 回退路径的块处理（v1.0.16 语义：V02 发布前重验 + 文本轮末一次性发）
         try:
             _assert_snapshot_fresh(db, snapshot, None)
         except ScopeDriftError:
             yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
             yield sse({"type": "done"})
             return
-
-        assistant_content: List[dict] = []
-        tool_results: List[dict] = []
-        final_text_parts: List[str] = []
         for block in response.content:
             if block.type == "text":
                 assistant_content.append({"type": "text", "text": block.text})
@@ -620,65 +873,11 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
                 assistant_content.append(
                     {"type": "tool_use", "id": block.id, "name": block.name, "input": args}
                 )
-                yield sse({"type": "tool_call", "call_id": call_id, "name": block.name, "input": args})
-                dupe_key = f"{block.name}:{json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)}"
-                dupe_count = call_counts.get(dupe_key, 0) + 1
-                call_counts[dupe_key] = dupe_count
-                if dupe_count >= _CHAT_DUPE_CALL_LIMIT:
-                    # 重复调用止损：不执行，喂纠正性错误结果让模型改道/收束
-                    sink["tool_events"].append({"name": block.name, "status": "error"})
-                    yield sse(
-                        {
-                            "type": "tool_error",
-                            "call_id": call_id,
-                            "name": block.name,
-                            "error": _DUPE_CALL_MESSAGE,
-                        }
-                    )
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": _DUPE_CALL_MESSAGE,
-                            "is_error": True,
-                        }
-                    )
-                    continue
-                try:
-                    result = execute_session_tool(db, snapshot, block.name, args)
-                except ScopeDriftError:
-                    # Q02：多轮工具执行期间范围失效 → 发范围失效帧并收流，
-                    # 旧上下文绝不继续执行后续轮
-                    yield sse({"type": "error", "code": "scope_drift", "message": _SCOPE_DRIFT_FRAME})
-                    yield sse({"type": "done"})
+                frames, drifted = _run_tool(block.name, call_id, block.id, args, tool_results)
+                for frame in frames:
+                    yield frame
+                if drifted:
                     return
-                if result.get("error"):
-                    sink["tool_events"].append({"name": block.name, "status": "error"})
-                    yield sse(
-                        {
-                            "type": "tool_error",
-                            "call_id": call_id,
-                            "name": block.name,
-                            "error": str(result.get("detail") or result["error"]),
-                        }
-                    )
-                else:
-                    sink["tool_events"].append({"name": block.name, "status": "ok"})
-                    yield sse(
-                        {
-                            "type": "tool_result",
-                            "call_id": call_id,
-                            "name": block.name,
-                            "output": result,
-                        }
-                    )
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, ensure_ascii=False, default=str),
-                    }
-                )
         if tool_results:
             chat_messages.append({"role": "assistant", "content": assistant_content})
             chat_messages.append({"role": "user", "content": tool_results})
@@ -692,8 +891,10 @@ async def _stream_anthropic_reply(config, system, tools, messages, db, snapshot,
             yield sse({"type": "text", "delta": text})
         # Q03：正常完成才落库（异常收流路径 final_text 保持 None）；空白
         # 最终文本视同未完成不落库——空 assistant 行会让下一轮 Anthropic
-        # 请求 400（历史毒化），宁可本轮连同 user 消息不进历史
-        sink["final_text"] = text if text.strip() else None
+        # 请求 400（历史毒化），宁可本轮连同 user 消息不进历史。混流回退
+        # （此前轮已流式发布过文本）时把已发布部分并入落库文本
+        full_text = "".join(all_text_parts) + text
+        sink["final_text"] = full_text if full_text.strip() else None
         yield sse({"type": "done"})
         return
 
