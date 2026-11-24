@@ -1247,7 +1247,6 @@ export function AssignmentTable({
 
 /** 某个具体作业批次的逐人明细与编辑表格（平铺与合并展开共用）。 */
 function AssignmentDetailView({
-  mode,
   item,
   detail,
   detailError,
@@ -1262,7 +1261,6 @@ function AssignmentDetailView({
   onEditAssignment,
   onBackToOverview,
 }: {
-  mode: WorkspaceMode
   item: HomeworkAssignmentListItem
   detail: HomeworkAssignmentDetail | null
   detailError: string | null
@@ -1354,9 +1352,9 @@ function AssignmentDetailView({
       if (activeFilter === 'negative') return Boolean(s.quality_negative)
       return true
     })
-    // 仅教学批次逐人明细按姓名拼音排序，编辑状态与筛选均不改变姓名顺序。
-    return mode === 'teaching' ? filtered.sort(compareStudentNames) : filtered
-  }, [detail, edits, activeFilter, mode])
+    // 逐人明细两域统一按姓名拼音排序（2026-11-24 班主任侧启用），编辑状态与筛选均不改变姓名顺序。
+    return filtered.sort(compareStudentNames)
+  }, [detail, edits, activeFilter])
 
   if (detailError) {
     return <p className="text-sm text-slate-600">{detailError}</p>
@@ -2366,7 +2364,6 @@ function DayGroupRow({
                 />
               ) : activeAssignment ? (
                 <AssignmentDetailView
-                  mode={mode}
                   item={activeAssignment}
                   detail={detail}
                   detailError={detailError}
@@ -2522,7 +2519,6 @@ function FragmentRow({
         <TableRow className="hover:bg-transparent">
           <TableCell colSpan={showType ? 10 : 9} className="bg-slate-50/70 p-4">
             <AssignmentDetailView
-              mode={mode}
               item={item}
               detail={detail}
               detailError={detailError}

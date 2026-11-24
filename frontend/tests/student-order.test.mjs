@@ -57,7 +57,7 @@ test('长数字学号保持精度，字母数字学号使用自然序', () => {
   assert(result.indexOf(4) < result.indexOf(3))
 })
 
-test('教学作业姓名按姓氏拼音排序，同姓再按名字拼音', () => {
+test('作业逐人明细姓名按姓氏拼音排序（班主任与教学共用），同姓再按名字拼音', () => {
   const rows = [
     { person_id: 1, name: '张乙' },
     { person_id: 2, name: '王乙' },
@@ -66,6 +66,22 @@ test('教学作业姓名按姓氏拼音排序，同姓再按名字拼音', () =>
     { person_id: 5, name: '李甲' },
   ]
   assert.deepEqual(ordered(rows, compareStudentNames), [3, 5, 2, 4, 1])
+})
+
+test('班主任明细：接口按身份 ID 升序返回的名单同样排成姓名拼音序（2026-11-24 两域统一）', () => {
+  const rows = [
+    { person_id: 1, name: '倪甲' },
+    { person_id: 2, name: '刘乙' },
+    { person_id: 3, name: '刘甲' },
+    { person_id: 4, name: '卜丙' },
+    { person_id: 5, name: '陆甲' },
+    { person_id: 6, name: '郭乙' },
+    { person_id: 7, name: '诸甲' },
+    { person_id: 8, name: '许乙' },
+    { person_id: 9, name: '王甲' },
+  ]
+  // 卜 < 郭 < 刘（甲<乙）< 陆 < 倪 < 王 < 许 < 诸
+  assert.deepEqual(ordered(rows, compareStudentNames), [4, 6, 3, 2, 5, 1, 9, 8, 7])
 })
 
 test('同名和同学号以身份 ID 稳定排序，缺姓名排在最后', () => {

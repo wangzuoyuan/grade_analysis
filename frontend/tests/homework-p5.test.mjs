@@ -296,3 +296,32 @@ test('交名单与「已交：名单」反向口径：列出的=已交、其余=
   assert.match(entryPanel, /已交：名单/, '帮助文案须示范「已交：名单」写法')
   assert.match(apiV1, /'submitted_only'/, '前端类型须含 submitted_only')
 })
+
+test('作业记录逐人明细两域统一按姓名拼音排序，全科透视与接口顺序不动（2026-11-24，契约 §1.3 注）', () => {
+  const contract = readFileSync(new URL('../../docs/contracts/p5-homework.md', import.meta.url), 'utf8')
+  const detailStart = assignmentTable.indexOf('function AssignmentDetailView(')
+  const detailEnd = assignmentTable.indexOf('function DayGroupOverview(')
+  assert.ok(detailStart > 0 && detailEnd > detailStart, '须能定位逐人明细组件源码区间')
+  const detail = assignmentTable.slice(detailStart, detailEnd)
+
+  // 1. 明细行不再按工作台区分：筛选后无条件按姓名拼音排序（旧写法「仅教学才排」必须消失）
+  assert.match(detail, /return filtered\.sort\(compareStudentNames\)/, '逐人明细须按姓名拼音排序')
+  assert.doesNotMatch(detail, /mode === 'teaching'/, '排序不得再限定教学域')
+  assert.doesNotMatch(assignmentTable, /仅教学批次逐人明细按姓名拼音排序/)
+  // 该 memo 无条件排序且不再读 mode（排序不得依赖工作台）
+  assert.match(detail, /return filtered\.sort\(compareStudentNames\)\n\s*\}, \[detail, edits, activeFilter\]\)/)
+
+  // 2. 范围守卫：全科透视仍按「缺交多的排前面」，人员轴仍按身份 ID，未被顺带改动
+  assert.match(assignmentTable, /roster\.sort\(\(a, b\) => a\.personId - b\.personId\)/)
+  assert.match(
+    assignmentTable,
+    /b\.missing\.length - a\.missing\.length \|\|\s*\n\s*b\.excused\.length - a\.excused\.length \|\|\s*\n\s*a\.name\.localeCompare\(b\.name, 'zh-CN'\)/,
+    '全科透视待跟进名单须保持缺交次数降序'
+  )
+
+  // 3. 契约已记载：两域统一 + 班主任侧启用 + 全科透视/接口顺序不变
+  assert.match(contract, /两个工作台\*\*展开批次的逐人明细均在前端按姓名拼音升序/)
+  assert.match(contract, /2026-11-24 注\*\*：班主任侧「作业记录」同步启用/)
+  assert.match(contract, /API 响应顺序不变/)
+  assert.doesNotMatch(contract, /不改 API 顺序或班主任作业名单的展示顺序/, '旧的「班主任不排序」表述须移除')
+})
